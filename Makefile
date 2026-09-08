@@ -1,0 +1,13 @@
+.PHONY: build test check install
+build:
+	go build -o bin/contremaitre ./cmd/contremaitre
+test:
+	go test -race ./...
+check:
+	test -z "$$(gofmt -l cmd internal)"
+	go vet ./...
+	go test -race ./...
+	go build ./...
+install: build
+	install -d $(HOME)/.local/bin
+	install bin/contremaitre $(HOME)/.local/bin/contremaitre
