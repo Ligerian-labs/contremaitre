@@ -89,6 +89,9 @@ func TestDeploymentDisconnectCancelsWork(t *testing.T) {
 }
 func TestRuntimeStreamsBuildAndMigrationOutput(t *testing.T) {
 	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "Dockerfile"), []byte("FROM scratch\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	executable := filepath.Join(root, "container")
 	if err := os.WriteFile(executable, []byte("#!/bin/sh\necho stdout-progress\necho stderr-progress >&2\n"), 0700); err != nil {
 		t.Fatal(err)
