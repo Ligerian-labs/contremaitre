@@ -337,6 +337,9 @@ func (m *Manager) serviceEnv(env *Environment, s *ServiceState) (map[string]stri
 		}
 	}
 	if s.Spec.Kind == "postgres" {
+		if env.Credentials == nil {
+			env.Credentials = map[string]string{}
+		}
 		password := env.Credentials[s.Name]
 		if password == "" {
 			b := make([]byte, 24)

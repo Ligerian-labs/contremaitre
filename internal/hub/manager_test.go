@@ -434,3 +434,30 @@ func TestDeployPersistsBuildCacheAndHonorsRebuild(t *testing.T) {
 		t.Fatal("rebuild did not produce a tracked replacement image")
 	}
 }
+
+func TestRetryFirstBuildFailureAfterHubRestart(t *testing.T) {
+	m, f, root := fixture(t)
+	manifest := strings.Replace(testManifest, "image: web:1", "build: .", 1)
+	if err := os.WriteFile(filepath.Join(root, ".contremaitre.yaml"), []byte(manifest), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "Dockerfile"), []byte("FROM scratch"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	f.failBuild = true
+	if _, err := m.Deploy(context.Background(), DeployRequest{Root: root, Branch: "main"}); err == nil {
+		t.Fatal("expected build failure")
+	}
+	f.failBuild = false
+	restarted, err := NewManager(m.Store, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, err := restarted.Deploy(context.Background(), DeployRequest{Root: root, Branch: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restarted.State.Environments[env.Identity.ID].Credentials["postgres"] == "" {
+		t.Fatal("database password was not initialized")
+	}
+}
