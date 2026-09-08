@@ -1,0 +1,20 @@
+version: 1
+project: example
+services:
+  postgres:
+    kind: postgres
+    memory: 512M
+  redis:
+    kind: redis
+    memory: 256M
+  web:
+    build: .
+    port: 80
+    http: true
+    depends_on: [postgres, redis]
+    environment:
+      DATABASE_URL: '{{postgres.url}}'
+      REDIS_URL: '{{redis.url}}'
+    volumes:
+      uploads: /uploads
+    memory: 256M
