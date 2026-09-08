@@ -4,8 +4,8 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { context } from "../src/model.js";
-import { reapProcesses, trackProcess } from "../src/process-journal.js";
+import { context } from "@contremaitre/execution/context";
+import { reapProcesses, trackProcess } from "@contremaitre/execution/process-journal";
 
 test("reaps an interrupted owned group but leaves an unrelated process alone", async () => {
   const dir = mkdtempSync(join(tmpdir(), "cm-process-journal-")),

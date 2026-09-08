@@ -10,12 +10,13 @@ import {
 } from "node:fs";
 import * as fs from "node:fs/promises";
 import { join } from "node:path";
+import { type Context, decode, fail, message, phase } from "@contremaitre/execution/context";
+import { atomicWrite, privateFile, removeFile } from "@contremaitre/execution/files";
+import { order } from "@contremaitre/projects/config";
 import { Schema } from "effect";
-import { order } from "./config.js";
 import { invokeDriver } from "./driver.js";
 import type { Manager } from "./manager.js";
-import { type Context, decode, type Environment, fail, message, phase } from "./model.js";
-import { atomicWrite, privateFile, removeFile } from "./store.js";
+import type { Environment } from "./model.js";
 
 const recoverySchema = Schema.Struct({
   version: Schema.Literal(1),

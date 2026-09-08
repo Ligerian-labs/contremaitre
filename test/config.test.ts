@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { order, parseManifest, prepareManifest } from "../src/config.js";
+import { order, parseManifest, prepareManifest } from "@contremaitre/projects/config";
 
 const manifest =
   'version: 1\nproject: shop\nservices:\n  postgres:\n    kind: postgres\n  api:\n    image: api\n    port: 3000\n    http: true\n    depends_on: [postgres]\n    environment:\n      DATABASE_URL: "{{postgres.url}}"\n      CORS: "{{web.local_url}}"\n  web:\n    image: web\n    port: 80\n    http: true\n    depends_on: [api]\n';

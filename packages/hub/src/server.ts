@@ -1,10 +1,20 @@
 import { chmodSync, existsSync, unlinkSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { join } from "node:path";
+import { Apple, type Runtime } from "@contremaitre/environments/apple";
+import { Manager } from "@contremaitre/environments/manager";
+import { requestSchema } from "@contremaitre/environments/model";
+import { Store } from "@contremaitre/environments/store";
+import { Tunnels } from "@contremaitre/environments/tunnel";
+import { context, decode, fail, keys, message } from "@contremaitre/execution/context";
+import { lockHome } from "@contremaitre/execution/files";
+import { reapProcesses } from "@contremaitre/execution/process-journal";
+import { sleep } from "@contremaitre/execution/sleep";
+import { type Operation, Operations, terminal } from "@contremaitre/operations/operations";
+import { closeServer, listen, proxyServer, type Route } from "@contremaitre/routing/proxy";
 import { load, Settings } from "@structure-ai/config";
 import { Readiness, Shutdown } from "@structure-ai/runtime";
 import { Duration, Effect, Layer } from "effect";
-import { Apple, type Runtime } from "./apple.js";
 import {
   application,
   attempt,
@@ -22,14 +32,6 @@ import {
   Share,
   StopShare,
 } from "./application.js";
-import { Manager } from "./manager.js";
-import { context, decode, fail, keys, message, requestSchema } from "./model.js";
-import { type Operation, Operations, terminal } from "./operations.js";
-import { sleep } from "./process.js";
-import { reapProcesses } from "./process-journal.js";
-import { closeServer, listen, proxyServer, type Route } from "./proxy.js";
-import { lockHome, Store } from "./store.js";
-import { Tunnels } from "./tunnel.js";
 export interface ServerOptions {
   home: string;
   port: number;

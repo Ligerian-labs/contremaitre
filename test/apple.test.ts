@@ -2,8 +2,8 @@ import { expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Apple } from "../src/apple.js";
-import { context } from "../src/model.js";
+import { Apple } from "@contremaitre/environments/apple";
+import { context } from "@contremaitre/execution/context";
 
 test("separate hub runtimes serialize the shared Apple builder and preserve its resources", async () => {
   const root = await mkdtemp(join(tmpdir(), "cm-apple-")),

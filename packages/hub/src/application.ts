@@ -1,3 +1,14 @@
+import type { Manager } from "@contremaitre/environments/manager";
+import { type Environment, type Request, requestSchema } from "@contremaitre/environments/model";
+import {
+  type Context,
+  context,
+  fail,
+  HubError,
+  keys,
+  message,
+} from "@contremaitre/execution/context";
+import { type Operations, operationSchema } from "@contremaitre/operations/operations";
 import {
   Command,
   CommandBus,
@@ -10,19 +21,6 @@ import {
 } from "@structure-ai/cqrs";
 import { layer as observabilityLayer } from "@structure-ai/observability";
 import { Effect, Context as EffectContext, Layer, ManagedRuntime, Schema } from "effect";
-import type { Manager } from "./manager.js";
-import {
-  type Context,
-  context,
-  type Environment,
-  fail,
-  HubError,
-  keys,
-  message,
-  type Request,
-  requestSchema,
-} from "./model.js";
-import { type Operations, operationSchema } from "./operations.js";
 export const Deploy = Command.define("DeployEnvironment", {
   payload: requestSchema,
   success: operationSchema,

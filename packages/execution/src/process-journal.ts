@@ -2,9 +2,9 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Schema } from "effect";
-import { type Context, decode, fail } from "./model.js";
-import { sleep } from "./process.js";
-import { atomicWrite, removeFile } from "./store.js";
+import { type Context, decode, fail } from "./context.js";
+import { atomicWrite, removeFile } from "./files.js";
+import { sleep } from "./sleep.js";
 
 const recordSchema = Schema.Struct({
   version: Schema.Literal(1),

@@ -2,10 +2,10 @@ import { spawn } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, renameSync, statSync } from "node:fs";
 import { request } from "node:http";
 import { dirname, join, resolve } from "node:path";
+import { type Context, decode, fail } from "@contremaitre/execution/context";
+import { sleep } from "@contremaitre/execution/sleep";
+import { type Operation, operationSchema, terminal } from "@contremaitre/operations/operations";
 import { Schema } from "effect";
-import { type Context, decode, fail } from "./model.js";
-import { type Operation, operationSchema, terminal } from "./operations.js";
-import { sleep } from "./process.js";
 
 const replySchema = Schema.Struct({
   version: Schema.Literal(1),

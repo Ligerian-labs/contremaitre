@@ -1,20 +1,13 @@
 import { appendFileSync, readFileSync, statSync } from "node:fs";
 import { isIP } from "node:net";
 import { join } from "node:path";
+import { type Context, decode, fail, hash, keys, phase } from "@contremaitre/execution/context";
+import { atomicWrite, privateFile, removeFile } from "@contremaitre/execution/files";
+import { type RunOptions, run } from "@contremaitre/execution/process";
+import { safePath, validName } from "@contremaitre/projects/config";
+import type { Driver } from "@contremaitre/projects/model";
 import { Schema } from "effect";
-import { safePath, validName } from "./config.js";
-import {
-  type Context,
-  type Driver,
-  decode,
-  type Environment,
-  fail,
-  hash,
-  keys,
-  phase,
-} from "./model.js";
-import { type RunOptions, run } from "./process.js";
-import { atomicWrite, privateFile, removeFile } from "./store.js";
+import type { Environment } from "./model.js";
 
 const replySchema = Schema.Struct({
   version: Schema.Literal(1),

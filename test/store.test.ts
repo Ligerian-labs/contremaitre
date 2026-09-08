@@ -2,8 +2,8 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { newIdentity } from "../src/model.js";
-import { publicEnvironment, Store } from "../src/store.js";
+import { publicEnvironment, Store } from "@contremaitre/environments/store";
+import { newIdentity } from "@contremaitre/projects/model";
 
 test("version 1 Go null collections normalize without losing credentials or leaking them", () => {
   const home = mkdtempSync(join(tmpdir(), "cm-state-")),

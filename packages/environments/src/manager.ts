@@ -1,8 +1,17 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { type Runtime, tcpReady } from "./apple.js";
-import { cloneData, cloneDriver, recoverClones } from "./clone.js";
+import {
+  type Context,
+  context,
+  fail,
+  keys,
+  message,
+  now,
+  phase,
+} from "@contremaitre/execution/context";
+import { privateEnv, removeFile } from "@contremaitre/execution/files";
+import { sleep } from "@contremaitre/execution/sleep";
 import {
   detectIdentity,
   loadManifest,
@@ -10,26 +19,19 @@ import {
   prepareManifest,
   readEnv,
   safePath,
-} from "./config.js";
+} from "@contremaitre/projects/config";
+import type { Identity, Manifest } from "@contremaitre/projects/model";
+import { type Runtime, tcpReady } from "./apple.js";
+import { cloneData, cloneDriver, recoverClones } from "./clone.js";
 import { applyDriverReply, invokeDriver, snapshotDriver } from "./driver.js";
 import {
-  type Context,
-  context,
   type Environment,
-  fail,
-  type Identity,
-  keys,
-  type Manifest,
-  message,
-  now,
-  phase,
   type Request,
   resourceName,
   type ServiceState,
   type State,
 } from "./model.js";
-import { sleep } from "./process.js";
-import { privateEnv, publicEnvironment, removeFile, type Store } from "./store.js";
+import { publicEnvironment, type Store } from "./store.js";
 export interface PreparedDeploy {
   root: string;
   identity: Identity;

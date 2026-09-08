@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
 import type { Readable } from "node:stream";
-import { type Context, HubError } from "./model.js";
+import { type Context, HubError } from "./context.js";
 import { trackProcess } from "./process-journal.js";
 
 export interface RunOptions {
@@ -157,23 +157,5 @@ export async function run(
       });
     }
     child.stdin?.on("error", () => {});
-  });
-}
-export async function sleep(ms: number, signal: AbortSignal): Promise<void> {
-  signal.throwIfAborted();
-  await new Promise<void>((resolve, reject) => {
-    const done = () => {
-      clearTimeout(timer);
-      signal.removeEventListener("abort", abort);
-    };
-    const timer = setTimeout(() => {
-      done();
-      resolve();
-    }, ms);
-    const abort = () => {
-      done();
-      reject(signal.reason);
-    };
-    signal.addEventListener("abort", abort, { once: true });
   });
 }

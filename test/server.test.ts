@@ -2,10 +2,10 @@ import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { call } from "../src/client.js";
-import { context, decode } from "../src/model.js";
-import { operationSchema } from "../src/operations.js";
-import { startServer } from "../src/server.js";
+import { call } from "@contremaitre/cli/client";
+import { context, decode } from "@contremaitre/execution/context";
+import { startServer } from "@contremaitre/hub/server";
+import { operationSchema } from "@contremaitre/operations/operations";
 import { FakeRuntime } from "./fake-runtime.js";
 
 test("Unix API owns deploy beyond caller lifetime and preserves state across hub restart", async () => {

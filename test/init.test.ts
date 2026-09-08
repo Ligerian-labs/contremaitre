@@ -2,8 +2,8 @@ import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseManifest } from "../src/config.js";
-import { dockerfilePort, importCompose, initProject } from "../src/init.js";
+import { parseManifest } from "@contremaitre/projects/config";
+import { dockerfilePort, importCompose, initProject } from "@contremaitre/projects/init";
 
 test("monorepo init discovers named Dockerfiles without a root start script", () => {
   const root = mkdtempSync(join(tmpdir(), "cm-init-"));

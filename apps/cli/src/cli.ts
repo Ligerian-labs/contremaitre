@@ -1,5 +1,14 @@
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { Apple } from "@contremaitre/environments/apple";
+import { driverProcess } from "@contremaitre/environments/driver";
+import type { Environment, Request } from "@contremaitre/environments/model";
+import { context, decode, fail, keys } from "@contremaitre/execution/context";
+import { attempt } from "@contremaitre/hub/application";
+import { serve } from "@contremaitre/hub/server";
+import { operationSchema } from "@contremaitre/operations/operations";
+import { initProject } from "@contremaitre/projects/init";
+import { tcpProxy } from "@contremaitre/routing/proxy";
 import { BunContext, BunRuntime } from "@effect/platform-bun";
 import {
   Args,
@@ -10,15 +19,7 @@ import {
   withSubcommands,
 } from "@structure-ai/cli";
 import { Cause, Effect, Exit, Option } from "effect";
-import { Apple } from "./apple.js";
-import { attempt } from "./application.js";
 import { attach, call, launch, projectRoot } from "./client.js";
-import { driverProcess } from "./driver.js";
-import { initProject } from "./init.js";
-import { context, decode, type Environment, fail, keys, type Request } from "./model.js";
-import { operationSchema } from "./operations.js";
-import { tcpProxy } from "./proxy.js";
-import { serve } from "./server.js";
 
 const common = {
   home: Options.text("home").pipe(

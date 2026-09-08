@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, request, type Server } from "node:http";
 import { createConnection, createServer as createTCPServer, type Socket } from "node:net";
-import { type Context, fail } from "./model.js";
+import { type Context, fail } from "@contremaitre/execution/context";
 
 const sockets = new WeakMap<Server, Set<Socket>>();
 export interface Route {

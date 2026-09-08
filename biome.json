@@ -18,7 +18,8 @@
   },
   "files": {
     "includes": [
-      "src/**",
+      "apps/**",
+      "packages/**",
       "test/**",
       "scripts/**"
     ]

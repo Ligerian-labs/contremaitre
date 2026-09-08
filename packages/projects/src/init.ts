@@ -1,9 +1,10 @@
 import { existsSync, lstatSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
+import { decode, fail, strings } from "@contremaitre/execution/context";
 import { Schema } from "effect";
 import { parse, stringify } from "yaml";
 import { parseManifest, safePath, validName } from "./config.js";
-import { decode, fail, type Service, slug, strings } from "./model.js";
+import { type Service, slug } from "./model.js";
 export function dockerfilePort(contents: string): number {
   const stages = new Map<string, string[]>();
   let exposed: string[] = [],

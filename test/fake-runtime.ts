@@ -1,6 +1,8 @@
-import type { Inspection, RunSpec, Runtime } from "../src/apple.js";
-import type { BuildRecord, Context } from "../src/model.js";
-import { type RunOptions, sleep } from "../src/process.js";
+import type { Inspection, RunSpec, Runtime } from "@contremaitre/environments/apple";
+import type { BuildRecord } from "@contremaitre/environments/model";
+import type { Context } from "@contremaitre/execution/context";
+import type { RunOptions } from "@contremaitre/execution/process";
+import { sleep } from "@contremaitre/execution/sleep";
 export class FakeRuntime implements Runtime {
   containers = new Map<string, Inspection>();
   calls: string[] = [];

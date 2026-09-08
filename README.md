@@ -224,6 +224,10 @@ State lives in `~/.local/share/contremaitre`, configurable with `--home` or `CON
 
 Use `--json` for versioned machine output. CLI failures exit nonzero; `exec` propagates the executed command's exit code. Exec and logs stream application output directly. Build diagnostics go to the operation log. Startup errors report its location. TCP/HTTP application traffic is streamed and request bodies are not logged by the hub.
 
+The CLI lives in `apps/cli`; domain capabilities live in `packages/*` as private
+Bun workspaces. See [the workspace layout](docs/workspace-layout.md) for ownership,
+dependency direction, and package boundary checks.
+
 ```sh
 make check   # lint, typecheck, tests, standalone build and crash/restart checks
 make build

@@ -2,8 +2,8 @@ import { expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { context } from "../src/model.js";
-import { run } from "../src/process.js";
+import { context } from "@contremaitre/execution/context";
+import { run } from "@contremaitre/execution/process";
 
 test("streams output, bounds capture, and preserves exit failures", async () => {
   const seen: string[] = [];

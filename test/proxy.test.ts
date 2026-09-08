@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createServer, request } from "node:http";
-import { closeServer, listen, proxyServer } from "../src/proxy.js";
+import { closeServer, listen, proxyServer } from "@contremaitre/routing/proxy";
 
 function get(port: number, host: string) {
   return new Promise<{ status: number; body: string }>((resolve, reject) => {

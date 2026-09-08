@@ -1,20 +1,14 @@
 import { appendFileSync, readFileSync } from "node:fs";
 import type { Server } from "node:http";
 import { isAbsolute, join } from "node:path";
+import { type Context, context, decode, fail } from "@contremaitre/execution/context";
+import { atomicWrite } from "@contremaitre/execution/files";
+import { EnvironmentLocks } from "@contremaitre/execution/locks";
+import { run } from "@contremaitre/execution/process";
+import { closeServer, type Lookup, listen, proxyServer } from "@contremaitre/routing/proxy";
 import { Schema } from "effect";
-import { EnvironmentLocks } from "./locks.js";
 import type { Manager } from "./manager.js";
-import {
-  type Context,
-  context,
-  decode,
-  type Environment,
-  fail,
-  type TunnelReservation,
-} from "./model.js";
-import { run } from "./process.js";
-import { closeServer, type Lookup, listen, proxyServer } from "./proxy.js";
-import { atomicWrite } from "./store.js";
+import type { Environment, TunnelReservation } from "./model.js";
 
 const configSchema = Schema.Struct({
   default: Schema.String,

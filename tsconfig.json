@@ -12,7 +12,8 @@
     "allowImportingTsExtensions": true
   },
   "include": [
-    "src",
+    "apps",
+    "packages",
     "test",
     "scripts"
   ]

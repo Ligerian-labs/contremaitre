@@ -2,10 +2,11 @@ import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseManifest, prepareManifest } from "../src/config.js";
-import { Manager, type PreparedDeploy } from "../src/manager.js";
-import { context, newIdentity } from "../src/model.js";
-import { Store } from "../src/store.js";
+import { Manager, type PreparedDeploy } from "@contremaitre/environments/manager";
+import { Store } from "@contremaitre/environments/store";
+import { context } from "@contremaitre/execution/context";
+import { parseManifest, prepareManifest } from "@contremaitre/projects/config";
+import { newIdentity } from "@contremaitre/projects/model";
 import { FakeRuntime } from "./fake-runtime.js";
 
 const spec =

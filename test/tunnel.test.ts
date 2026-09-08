@@ -2,10 +2,11 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Manager } from "../src/manager.js";
-import { context, newIdentity } from "../src/model.js";
-import { Store } from "../src/store.js";
-import { Tunnels } from "../src/tunnel.js";
+import { Manager } from "@contremaitre/environments/manager";
+import { Store } from "@contremaitre/environments/store";
+import { Tunnels } from "@contremaitre/environments/tunnel";
+import { context } from "@contremaitre/execution/context";
+import { newIdentity } from "@contremaitre/projects/model";
 import { FakeRuntime } from "./fake-runtime.js";
 
 test("provider reservations remain stable across connector stop and hub restart", async () => {

@@ -1,0 +1,22 @@
+{
+  "name": "@contremaitre/environments",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./apple": "./src/apple.ts",
+    "./build-context": "./src/build-context.ts",
+    "./driver": "./src/driver.ts",
+    "./manager": "./src/manager.ts",
+    "./model": "./src/model.ts",
+    "./store": "./src/store.ts",
+    "./tunnel": "./src/tunnel.ts"
+  },
+  "dependencies": {
+    "@balena/dockerignore": "1.0.2",
+    "@contremaitre/execution": "workspace:*",
+    "@contremaitre/projects": "workspace:*",
+    "@contremaitre/routing": "workspace:*",
+    "effect": "3.22.1"
+  }
+}

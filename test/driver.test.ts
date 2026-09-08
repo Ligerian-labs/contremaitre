@@ -2,10 +2,11 @@ import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applyDriverReply, invokeDriver, snapshotDriver } from "../src/driver.js";
-import { Manager } from "../src/manager.js";
-import { context, newIdentity } from "../src/model.js";
-import { Store } from "../src/store.js";
+import { applyDriverReply, invokeDriver, snapshotDriver } from "@contremaitre/environments/driver";
+import { Manager } from "@contremaitre/environments/manager";
+import { Store } from "@contremaitre/environments/store";
+import { context } from "@contremaitre/execution/context";
+import { newIdentity } from "@contremaitre/projects/model";
 import { FakeRuntime } from "./fake-runtime.js";
 
 test("driver executable is frozen and response validation rejects non-loopback upstreams", async () => {

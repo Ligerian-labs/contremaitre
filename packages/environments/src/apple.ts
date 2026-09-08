@@ -1,21 +1,22 @@
 import { createConnection } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { Schema } from "effect";
-import { prepareBuildContext } from "./build-context.js";
-import { Semaphore } from "./locks.js";
 import {
-  type BuildRecord,
   type Context,
   fail,
   HubError,
   keys,
   message,
   phase,
-  type Service,
-} from "./model.js";
-import { type RunOptions, run, sleep } from "./process.js";
-import { lockHome } from "./store.js";
+} from "@contremaitre/execution/context";
+import { lockHome } from "@contremaitre/execution/files";
+import { Semaphore } from "@contremaitre/execution/locks";
+import { type RunOptions, run } from "@contremaitre/execution/process";
+import { sleep } from "@contremaitre/execution/sleep";
+import type { Service } from "@contremaitre/projects/model";
+import { Schema } from "effect";
+import { prepareBuildContext } from "./build-context.js";
+import type { BuildRecord } from "./model.js";
 export interface Inspection {
   IP: string;
   Running: boolean;

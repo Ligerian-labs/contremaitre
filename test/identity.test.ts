@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { newIdentity } from "../src/model.js";
+import { newIdentity } from "@contremaitre/projects/model";
 
 test("preserves a deployed Go environment identity", () => {
   const i = newIdentity(

@@ -12,10 +12,10 @@ import {
   unlinkSync,
 } from "node:fs";
 import { join } from "node:path";
+import { type Context, context, fail, message, now, phase } from "@contremaitre/execution/context";
+import { atomicWrite } from "@contremaitre/execution/files";
+import { EnvironmentLocks, Semaphore } from "@contremaitre/execution/locks";
 import { Schema } from "effect";
-import { EnvironmentLocks, Semaphore } from "./locks.js";
-import { type Context, context, fail, message, now, phase } from "./model.js";
-import { atomicWrite } from "./store.js";
 
 export const operationSchema = Schema.Struct({
   version: Schema.Literal(1),

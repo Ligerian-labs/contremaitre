@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
+import { makeRoot, normalizeArguments } from "@contremaitre/cli/cli";
 import { runCliForTest } from "@structure-ai/cli";
 import { Effect } from "effect";
-import { makeRoot, normalizeArguments } from "../src/cli.js";
 
 test("preserves exec passthrough and global flag ordering", async () => {
   const parsed = normalizeArguments([

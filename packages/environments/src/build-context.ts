@@ -4,8 +4,8 @@ import * as fs from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import ignore from "@balena/dockerignore";
-import { inside } from "./config.js";
-import { type Context, fail, isCode } from "./model.js";
+import { type Context, fail, isCode } from "@contremaitre/execution/context";
+import { inside } from "@contremaitre/projects/config";
 
 export async function prepareBuildContext(
   ctx: Context,

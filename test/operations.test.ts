@@ -2,8 +2,8 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Operations } from "../src/operations.js";
-import { sleep } from "../src/process.js";
+import { sleep } from "@contremaitre/execution/sleep";
+import { Operations } from "@contremaitre/operations/operations";
 
 const fixture = () => {
   const home = mkdtempSync(join(tmpdir(), "cm-ops-"));

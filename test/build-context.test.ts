@@ -2,8 +2,8 @@ import { expect, test } from "bun:test";
 import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { prepareBuildContext } from "../src/build-context.js";
-import { context } from "../src/model.js";
+import { prepareBuildContext } from "@contremaitre/environments/build-context";
+import { context } from "@contremaitre/execution/context";
 
 test("staging excludes dependencies, preserves nested COPY, and hashes included changes only", async () => {
   const root = await mkdtemp(join(tmpdir(), "cm-context-"));

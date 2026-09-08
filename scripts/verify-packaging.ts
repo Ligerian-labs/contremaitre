@@ -3,10 +3,10 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { call, health } from "../src/client.js";
-import { context, decode } from "../src/model.js";
-import { operationSchema } from "../src/operations.js";
-import { sleep } from "../src/process.js";
+import { call, health } from "@contremaitre/cli/client";
+import { context, decode } from "@contremaitre/execution/context";
+import { sleep } from "@contremaitre/execution/sleep";
+import { operationSchema } from "@contremaitre/operations/operations";
 
 const signal = AbortSignal.timeout(60_000),
   ctx = context(signal),

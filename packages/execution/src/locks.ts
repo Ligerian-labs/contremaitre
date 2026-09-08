@@ -1,4 +1,4 @@
-import { fail } from "./model.js";
+import { fail } from "./context.js";
 export class Semaphore {
   private available: number;
   private readonly waiting: Array<{
