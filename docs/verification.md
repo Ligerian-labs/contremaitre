@@ -33,8 +33,6 @@ Two platform findings changed the implementation: Postgres needs a subdirectory 
 
 Port 80 is denied to the ordinary user on this Mac. The default hub uses port 8080. The optional `forward-http` helper requires administrator access and was not run with elevated privileges during verification.
 
-## Integration and delivery limits
+## Integration limits
 
 The production SaaS tunnel cannot be tested until its provider executable exists. The sibling `contremaitre-tunnel` repository was empty during implementation; executable contract tests do not establish production SaaS compatibility.
-
-No Git remote was configured or supplied. The implementation is committed on its dedicated task bookmark, but pushing and creating a PR require a remote. The default workspace contains no implementation changes.
