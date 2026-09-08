@@ -27,7 +27,7 @@ const usage = `contremaitre: isolated local application environments
 
   init [--compose compose.yaml]       Generate a project manifest
   start [--http-port 8080]               Start the local hub
-  deploy [--branch NAME] [--main]      Deploy current working files
+  deploy [--branch NAME] [--main] [--rebuild]      Deploy current working files
   list | status                       Show environments
   main --env PROJECT/ENV              Designate the clone source
   exec SERVICE -- COMMAND [ARGS...]   Execute inside a service
@@ -45,6 +45,7 @@ Exec commands should follow --. Proxy runs until interrupted.
 `
 
 type options struct {
+	rebuild                         bool
 	publicPort                      int
 	home, selector, branch, compose string
 	port                            int
@@ -97,6 +98,8 @@ func parse(args []string) (options, error) {
 			o.json = true
 		case "--delete-data":
 			o.deleteData = true
+		case "--rebuild":
+			o.rebuild = true
 		case "--main":
 			o.main = true
 		case "--help", "-h":
@@ -272,7 +275,7 @@ func run(ctx context.Context, o options) error {
 	}
 	action := o.args[0]
 	args := o.args[1:]
-	req := hub.Request{Root: projectRoot(), Branch: o.branch, Selector: o.selector, DeleteData: o.deleteData, Main: o.main}
+	req := hub.Request{Root: projectRoot(), Branch: o.branch, Selector: o.selector, DeleteData: o.deleteData, Main: o.main, Rebuild: o.rebuild}
 	switch action {
 	case "serve":
 		return hub.Serve(ctx, o.home, o.port, o.publicPort)

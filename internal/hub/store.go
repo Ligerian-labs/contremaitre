@@ -21,8 +21,9 @@ type ServiceState struct {
 	Initialized                        bool
 }
 type Environment struct {
-	Driver                       *ProjectDriver `json:"driver,omitempty"`
-	DriverDirectory              string         `json:"driver_directory,omitempty"`
+	Builds                       map[string]BuildRecord `json:"builds,omitempty"`
+	Driver                       *ProjectDriver         `json:"driver,omitempty"`
+	DriverDirectory              string                 `json:"driver_directory,omitempty"`
 	Identity                     Identity
 	Root, Status, Error, Network string
 	Services                     map[string]*ServiceState

@@ -74,11 +74,8 @@ func (a Apple) StartSystem(ctx context.Context) error {
 	return a.call(ctx, "system", "start", "--enable-kernel-install")
 }
 func (a Apple) Build(ctx context.Context, root, dockerfile, tag string) error {
-	args := []string{"build", "--tag", tag, "--file", dockerfile, "--progress", "plain", root}
-	c := a.command(ctx, args...)
-	c.Stdout = deploymentOutput(ctx)
-	c.Stderr = c.Stdout
-	return c.Run()
+	_, err := a.BuildCached(ctx, root, dockerfile, tag, BuildRecord{})
+	return err
 }
 func (a Apple) Network(ctx context.Context, name string) error {
 	if _, e := a.output(ctx, "network", "inspect", name); e == nil {

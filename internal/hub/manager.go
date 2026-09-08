@@ -30,6 +30,7 @@ type Manager struct {
 type DeployRequest struct {
 	Root, Branch string
 	Main         bool
+	Rebuild      bool
 }
 
 func NewManager(store Store, r Runtime) (*Manager, error) {
@@ -176,10 +177,34 @@ func (m *Manager) Deploy(ctx context.Context, req DeployRequest) (result *Enviro
 			return nil, e
 		}
 		progress(ctx, "Building %s", name)
-		if e = m.Runtime.Build(ctx, buildRoot, dockerfile, tag); e != nil {
-			return nil, fmt.Errorf("build %s: %w", name, e)
+		if builder, ok := m.Runtime.(interface {
+			BuildCached(context.Context, string, string, string, BuildRecord) (BuildRecord, error)
+		}); ok {
+			previous := env.Builds[name]
+			if req.Rebuild {
+				previous = BuildRecord{}
+			}
+			built, buildErr := builder.BuildCached(ctx, buildRoot, dockerfile, tag, previous)
+			if buildErr != nil {
+				return nil, fmt.Errorf("build %s: %w", name, buildErr)
+			}
+			if env.Builds == nil {
+				env.Builds = map[string]BuildRecord{}
+			}
+			env.Builds[name] = built
+			images[name] = built.Image
+			if built.Image != tag {
+				env.Images = env.Images[:len(env.Images)-1]
+			}
+			if e = m.save(); e != nil {
+				return nil, e
+			}
+		} else {
+			if e = m.Runtime.Build(ctx, buildRoot, dockerfile, tag); e != nil {
+				return nil, fmt.Errorf("build %s: %w", name, e)
+			}
+			images[name] = tag
 		}
-		images[name] = tag
 	}
 	progress(ctx, "Preparing network for %s", identity.Name)
 	if e = m.Runtime.Network(ctx, env.Network); e != nil {
@@ -312,6 +337,9 @@ func (m *Manager) serviceEnv(env *Environment, s *ServiceState) (map[string]stri
 		}
 	}
 	if s.Spec.Kind == "postgres" {
+		if env.Credentials == nil {
+			env.Credentials = map[string]string{}
+		}
 		password := env.Credentials[s.Name]
 		if password == "" {
 			b := make([]byte, 24)
@@ -329,7 +357,7 @@ func (m *Manager) serviceEnv(env *Environment, s *ServiceState) (map[string]stri
 		values["PGDATA"] = "/var/lib/postgresql/data/pgdata"
 		values["POSTGRES_PASSWORD"] = password
 	}
-	ref := regexp.MustCompile(`\{\{([a-z][a-z0-9-]*)\.(host|port|url)\}\}`)
+	ref := regexp.MustCompile(`\{\{([a-z][a-z0-9-]*)\.(host|port|url|local_url)\}\}`)
 	for k, v := range values {
 		baseURL := m.LocalURL(env, s.Name)
 		if t := env.Tunnels[s.Name]; t != nil {
@@ -341,6 +369,9 @@ func (m *Manager) serviceEnv(env *Environment, s *ServiceState) (map[string]stri
 		values[k] = ref.ReplaceAllStringFunc(v, func(token string) string {
 			parts := ref.FindStringSubmatch(token)
 			dep := env.Services[parts[1]]
+			if dep != nil && parts[2] == "local_url" {
+				return m.LocalURL(env, dep.Name)
+			}
 			if dep == nil || dep.IP == "" {
 				resolveErr = fmt.Errorf("%s: %s is not ready; declare depends_on", s.Name, parts[1])
 				return token
@@ -475,7 +506,10 @@ func (m *Manager) waitReady(ctx context.Context, s *ServiceState) error {
 				ready = []string{"redis-cli", "ping"}
 			}
 			if len(ready) > 0 {
-				e = m.Runtime.Exec(ctx, s.Container, ready, nil, io.Discard, io.Discard)
+				// A stalled runtime exec must not consume the entire readiness window.
+				probeCtx, cancelProbe := context.WithTimeout(ctx, 5*time.Second)
+				e = m.Runtime.Exec(probeCtx, s.Container, ready, nil, io.Discard, io.Discard)
+				cancelProbe()
 			} else if s.Port > 0 {
 				var conn net.Conn
 				conn, e = net.DialTimeout("tcp", net.JoinHostPort(s.IP, fmt.Sprint(s.Port)), time.Second)
