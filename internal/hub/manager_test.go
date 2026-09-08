@@ -122,7 +122,7 @@ func fixture(t *testing.T) (*Manager, *fakeRuntime, string) {
 func TestDeployForkRetainAndDelete(t *testing.T) {
 	m, f, dir := fixture(t)
 	ctx := context.Background()
-	main, e := m.Deploy(ctx, DeployRequest{dir, "main", true})
+	main, e := m.Deploy(ctx, DeployRequest{Root: dir, Branch: "main", Main: true})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -130,7 +130,7 @@ func TestDeployForkRetainAndDelete(t *testing.T) {
 	if e = os.WriteFile(file, []byte("hello"), 0600); e != nil {
 		t.Fatal(e)
 	}
-	branch, e := m.Deploy(ctx, DeployRequest{dir, "feat", false})
+	branch, e := m.Deploy(ctx, DeployRequest{Root: dir, Branch: "feat", Main: false})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -155,7 +155,7 @@ func TestDeployForkRetainAndDelete(t *testing.T) {
 	if len(f.volumes) != count {
 		t.Fatal("down deleted database")
 	}
-	if _, e = m.Deploy(ctx, DeployRequest{dir, "feat", false}); e != nil {
+	if _, e = m.Deploy(ctx, DeployRequest{Root: dir, Branch: "feat", Main: false}); e != nil {
 		t.Fatal(e)
 	}
 	if strings.Count(strings.Join(f.events, "\n"), ":pg_dump") != 1 {
@@ -174,12 +174,12 @@ func TestDeployForkRetainAndDelete(t *testing.T) {
 func TestFailedCloneAlwaysResumesMain(t *testing.T) {
 	m, f, dir := fixture(t)
 	ctx := context.Background()
-	main, e := m.Deploy(ctx, DeployRequest{dir, "main", true})
+	main, e := m.Deploy(ctx, DeployRequest{Root: dir, Branch: "main", Main: true})
 	if e != nil {
 		t.Fatal(e)
 	}
 	f.failDump = true
-	if _, e = m.Deploy(ctx, DeployRequest{dir, "feat", false}); e == nil {
+	if _, e = m.Deploy(ctx, DeployRequest{Root: dir, Branch: "feat", Main: false}); e == nil {
 		t.Fatal("expected clone error")
 	}
 	if !f.containers[main.Services["web"].Container].Running {
@@ -189,7 +189,7 @@ func TestFailedCloneAlwaysResumesMain(t *testing.T) {
 func TestFailedBuildLeavesCurrentApplicationRunning(t *testing.T) {
 	m, f, dir := fixture(t)
 	ctx := context.Background()
-	env, e := m.Deploy(ctx, DeployRequest{dir, "main", true})
+	env, e := m.Deploy(ctx, DeployRequest{Root: dir, Branch: "main", Main: true})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -201,7 +201,7 @@ func TestFailedBuildLeavesCurrentApplicationRunning(t *testing.T) {
 		t.Fatal(e)
 	}
 	f.failBuild = true
-	if _, e = m.Deploy(ctx, DeployRequest{dir, "main", false}); e == nil {
+	if _, e = m.Deploy(ctx, DeployRequest{Root: dir, Branch: "main", Main: false}); e == nil {
 		t.Fatal("expected build error")
 	}
 	if !f.containers[env.Services["web"].Container].Running || m.State.Environments[env.Identity.ID].Status != "running" {
@@ -211,14 +211,14 @@ func TestFailedBuildLeavesCurrentApplicationRunning(t *testing.T) {
 func TestCloneStoppedMain(t *testing.T) {
 	m, _, dir := fixture(t)
 	ctx := context.Background()
-	main, e := m.Deploy(ctx, DeployRequest{dir, "main", true})
+	main, e := m.Deploy(ctx, DeployRequest{Root: dir, Branch: "main", Main: true})
 	if e != nil {
 		t.Fatal(e)
 	}
 	if e = m.Down(ctx, main.Identity.ID, false); e != nil {
 		t.Fatal(e)
 	}
-	if _, e = m.Deploy(ctx, DeployRequest{dir, "feature", false}); e != nil {
+	if _, e = m.Deploy(ctx, DeployRequest{Root: dir, Branch: "feature", Main: false}); e != nil {
 		t.Fatal(e)
 	}
 	if m.State.Environments[main.Identity.ID].Status != "stopped" {
@@ -228,7 +228,7 @@ func TestCloneStoppedMain(t *testing.T) {
 func TestPruneRequiresExplicitDataDeletion(t *testing.T) {
 	m, _, dir := fixture(t)
 	ctx := context.Background()
-	env, e := m.Deploy(ctx, DeployRequest{dir, "main", true})
+	env, e := m.Deploy(ctx, DeployRequest{Root: dir, Branch: "main", Main: true})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -250,7 +250,7 @@ func TestPruneRequiresExplicitDataDeletion(t *testing.T) {
 }
 func TestPublicStateOmitsCredentials(t *testing.T) {
 	m, _, dir := fixture(t)
-	env, e := m.Deploy(context.Background(), DeployRequest{dir, "main", false})
+	env, e := m.Deploy(context.Background(), DeployRequest{Root: dir, Branch: "main", Main: false})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -265,7 +265,7 @@ func TestPublicStateOmitsCredentials(t *testing.T) {
 
 func TestPostgresDataDirectoryIsBelowVolumeRoot(t *testing.T) {
 	m, _, dir := fixture(t)
-	env, e := m.Deploy(context.Background(), DeployRequest{dir, "main", false})
+	env, e := m.Deploy(context.Background(), DeployRequest{Root: dir, Branch: "main", Main: false})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -282,10 +282,10 @@ func TestPostgresDataDirectoryIsBelowVolumeRoot(t *testing.T) {
 func TestCloneDoesNotReseedExistingMainData(t *testing.T) {
 	m, _, dir := fixture(t)
 	ctx := context.Background()
-	if _, e := m.Deploy(ctx, DeployRequest{dir, "main", true}); e != nil {
+	if _, e := m.Deploy(ctx, DeployRequest{Root: dir, Branch: "main", Main: true}); e != nil {
 		t.Fatal(e)
 	}
-	env, e := m.Deploy(ctx, DeployRequest{dir, "feat", false})
+	env, e := m.Deploy(ctx, DeployRequest{Root: dir, Branch: "feat", Main: false})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -297,11 +297,11 @@ func TestCloneDoesNotReseedExistingMainData(t *testing.T) {
 func TestCloneRefreshesMainUpstreamAfterRestart(t *testing.T) {
 	m, f, dir := fixture(t)
 	ctx := context.Background()
-	main, e := m.Deploy(ctx, DeployRequest{dir, "main", true})
+	main, e := m.Deploy(ctx, DeployRequest{Root: dir, Branch: "main", Main: true})
 	if e != nil {
 		t.Fatal(e)
 	}
-	if _, e = m.Deploy(ctx, DeployRequest{dir, "feat", false}); e != nil {
+	if _, e = m.Deploy(ctx, DeployRequest{Root: dir, Branch: "feat", Main: false}); e != nil {
 		t.Fatal(e)
 	}
 	s := m.State.Environments[main.Identity.ID].Services["web"]
@@ -313,7 +313,7 @@ func TestCloneRefreshesMainUpstreamAfterRestart(t *testing.T) {
 func TestInvalidEnvironmentReferenceDoesNotStopRunningApp(t *testing.T) {
 	m, f, dir := fixture(t)
 	ctx := context.Background()
-	env, e := m.Deploy(ctx, DeployRequest{dir, "main", true})
+	env, e := m.Deploy(ctx, DeployRequest{Root: dir, Branch: "main", Main: true})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -321,7 +321,7 @@ func TestInvalidEnvironmentReferenceDoesNotStopRunningApp(t *testing.T) {
 	if e = os.WriteFile(filepath.Join(dir, ".contremaitre.yaml"), []byte(bad), 0600); e != nil {
 		t.Fatal(e)
 	}
-	if _, e = m.Deploy(ctx, DeployRequest{dir, "main", false}); e == nil {
+	if _, e = m.Deploy(ctx, DeployRequest{Root: dir, Branch: "main", Main: false}); e == nil {
 		t.Fatal("unknown service reference accepted")
 	}
 	if !f.containers[env.Services["web"].Container].Running {
@@ -331,7 +331,7 @@ func TestInvalidEnvironmentReferenceDoesNotStopRunningApp(t *testing.T) {
 func TestFrameworkURLUsesReservedTunnel(t *testing.T) {
 	m, _, dir := fixture(t)
 	ctx := context.Background()
-	env, e := m.Deploy(ctx, DeployRequest{dir, "main", true})
+	env, e := m.Deploy(ctx, DeployRequest{Root: dir, Branch: "main", Main: true})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -347,7 +347,7 @@ func TestFrameworkURLUsesReservedTunnel(t *testing.T) {
 
 func TestStopRetainsIncompleteDeletionState(t *testing.T) {
 	m, _, dir := fixture(t)
-	env, e := m.Deploy(context.Background(), DeployRequest{dir, "main", false})
+	env, e := m.Deploy(context.Background(), DeployRequest{Root: dir, Branch: "main", Main: false})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -357,5 +357,135 @@ func TestStopRetainsIncompleteDeletionState(t *testing.T) {
 	}
 	if m.State.Environments[env.Identity.ID].Status != "deleting" {
 		t.Fatal("stop made partially deleted data deployable")
+	}
+}
+
+func TestLocalURLReferencesDoNotRequireDependencyCycles(t *testing.T) {
+	root := t.TempDir()
+	manifest := []byte("version: 1\nproject: urls\nservices:\n  api:\n    image: example\n    http: true\n    port: 3000\n    ready: [echo]\n    environment:\n      ALLOWED_ORIGIN: '{{web.local_url}}'\n  web:\n    image: example\n    http: true\n    port: 3000\n    ready: [echo]\n    depends_on: [api]\n")
+	if err := os.WriteFile(filepath.Join(root, ".contremaitre.yaml"), manifest, 0600); err != nil {
+		t.Fatal(err)
+	}
+	m, err := NewManager(Store{t.TempDir()}, fake())
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, err := m.Deploy(context.Background(), DeployRequest{Root: root, Branch: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	internal := m.State.Environments[env.Identity.ID]
+	values, err := m.serviceEnv(internal, internal.Services["api"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if values["ALLOWED_ORIGIN"] != m.LocalURL(internal, "web") {
+		t.Fatal(values["ALLOWED_ORIGIN"])
+	}
+}
+
+// Persisted build records must survive a hub restart, and --rebuild must bypass
+// them without losing ownership of the images for prune/down.
+type cachedFakeRuntime struct {
+	*fakeRuntime
+	previous []BuildRecord
+}
+
+func (f *cachedFakeRuntime) BuildCached(_ context.Context, _, _, tag string, previous BuildRecord) (BuildRecord, error) {
+	f.previous = append(f.previous, previous)
+	if previous.Image != "" {
+		return previous, nil
+	}
+	return BuildRecord{Digest: "source", Image: tag}, nil
+}
+func TestDeployPersistsBuildCacheAndHonorsRebuild(t *testing.T) {
+	m, f, root := fixture(t)
+	runtime := &cachedFakeRuntime{fakeRuntime: f}
+	m.Runtime = runtime
+	manifest := strings.Replace(testManifest, "image: web:1", "build: .", 1)
+	if err := os.WriteFile(filepath.Join(root, ".contremaitre.yaml"), []byte(manifest), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "Dockerfile"), []byte("FROM scratch"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	first, err := m.Deploy(ctx, DeployRequest{Root: root, Branch: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstImage := first.Services["web"].Image
+	m, err = NewManager(m.Store, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := m.Deploy(ctx, DeployRequest{Root: root, Branch: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Services["web"].Image != firstImage || len(second.Images) != 1 || runtime.previous[1].Image != firstImage {
+		t.Fatal("lost persisted cache or recorded a nonexistent image")
+	}
+	third, err := m.Deploy(ctx, DeployRequest{Root: root, Branch: "main", Rebuild: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.Services["web"].Image == firstImage || runtime.previous[2].Image != "" || len(third.Images) != 2 {
+		t.Fatal("rebuild did not produce a tracked replacement image")
+	}
+}
+
+func TestRetryFirstBuildFailureAfterHubRestart(t *testing.T) {
+	m, f, root := fixture(t)
+	manifest := strings.Replace(testManifest, "image: web:1", "build: .", 1)
+	if err := os.WriteFile(filepath.Join(root, ".contremaitre.yaml"), []byte(manifest), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "Dockerfile"), []byte("FROM scratch"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	f.failBuild = true
+	if _, err := m.Deploy(context.Background(), DeployRequest{Root: root, Branch: "main"}); err == nil {
+		t.Fatal("expected build failure")
+	}
+	f.failBuild = false
+	restarted, err := NewManager(m.Store, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, err := restarted.Deploy(context.Background(), DeployRequest{Root: root, Branch: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restarted.State.Environments[env.Identity.ID].Credentials["postgres"] == "" {
+		t.Fatal("database password was not initialized")
+	}
+}
+
+type stalledProbeRuntime struct {
+	*fakeRuntime
+	probes int
+}
+
+func (f *stalledProbeRuntime) Exec(ctx context.Context, _ string, _ []string, _ io.Reader, _, _ io.Writer) error {
+	f.probes++
+	if f.probes == 1 {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	return nil
+}
+func TestReadinessRetriesStalledExec(t *testing.T) {
+	f := &stalledProbeRuntime{fakeRuntime: fake()}
+	f.containers["app"] = Container{Running: true, IP: "192.168.64.2"}
+	m, err := NewManager(Store{t.TempDir()}, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = m.waitReady(context.Background(), &ServiceState{Name: "app", Container: "app", Spec: Service{Ready: []string{"health"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if f.probes != 2 {
+		t.Fatal("stalled readiness probe was not retried")
 	}
 }

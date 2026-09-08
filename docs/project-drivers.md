@@ -82,7 +82,7 @@ The resource prefix includes the state-home namespace and environment identity. 
 }
 ```
 
-Successful `deploy` must report `running` and at least one service. `stop` and `delete` must confirm `stopped`. The response is limited to 1 MiB; unknown fields and trailing JSON are rejected. Diagnostics belong on stderr. Contremaitre stores them in a private, rotated `driver.log`; protocol errors do not echo stderr to the public API.
+Successful `deploy` must report `running` and at least one service. `stop` and `delete` must confirm `stopped`. The response is limited to 1 MiB; unknown fields and trailing JSON are rejected. Diagnostics and live progress belong on stderr. Flush output during long operations so the CLI receives it immediately. The deploying CLI streams stderr over the private control socket; stdout is reserved for this JSON response. Emit build stages, migration progress, and readiness details without dumping secrets or protocol payloads. Contremaitre stores them in a private, rotated `driver.log`; protocol errors do not echo stderr to the public API.
 
 HTTP upstreams must use loopback addresses. An optional `url` overrides the printed local URL and must use the environment hostname or a service subdomain beneath it. This allows a Kubernetes driver to terminate trusted local HTTPS itself while providing a plain HTTP upstream for the hub and tunnel adapter. The driver is responsible for accepting routed Host headers and forwarding the external origin correctly. OAuth callbacks and application URL settings must also be configured for the selected public URL; reserving a tunnel alone does not rewrite arbitrary driver configuration.
 

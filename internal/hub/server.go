@@ -105,6 +105,7 @@ func RouteHandler(routes *Routes, fixed string) http.Handler {
 
 type routeKey struct{}
 type Request struct {
+	Rebuild    bool   `json:"rebuild,omitempty"`
 	Root       string `json:"root,omitempty"`
 	Branch     string `json:"branch,omitempty"`
 	Selector   string `json:"env,omitempty"`
@@ -237,7 +238,10 @@ func Serve(ctx context.Context, home string, httpPort, publicPort int) error {
 		if err == nil {
 			switch action {
 			case "deploy":
-				data, err = m.Deploy(r.Context(), DeployRequest{req.Root, req.Branch, req.Main})
+				serveDeploy(w, r, func(ctx context.Context) (*Environment, error) {
+					return m.Deploy(ctx, DeployRequest{Root: req.Root, Branch: req.Branch, Main: req.Main, Rebuild: req.Rebuild})
+				})
+				return
 			case "list":
 				data = m.List()
 			case "down":

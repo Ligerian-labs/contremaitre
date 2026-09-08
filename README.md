@@ -70,11 +70,11 @@ services:
     memory: 512M
 ```
 
-Use exactly one of `image` and `build`. Build contexts, Dockerfiles, and env files must remain within the manifest directory, including after resolving symlinks. Dockerfile paths are relative to that directory. Docker's build context ignore rules apply; exclude secrets from your build context. Images must support ARM64.
+Use exactly one of `image` and `build`. Build contexts, Dockerfiles, and env files must remain within the manifest directory, including after resolving symlinks. Dockerfile paths are relative to that directory. Docker's build context ignore rules apply; exclude secrets from your build context. Images must support ARM64. Native builds stage only files allowed by `.dockerignore` (or the selected Dockerfile’s `.dockerignore` file) before contacting the Apple builder. This avoids repeatedly scanning ignored dependency trees. Temporary contexts use the user cache directory and are removed after each build. Symlinks that point outside the build context are rejected.
 
 Commands are argument arrays; no host shell interpolation occurs. For an intentional shell command, use `[sh, -c, 'your command']`. The app must listen on `0.0.0.0` inside its container.
 
-Dependencies start first. Managed databases use readiness commands; applications use `ready`, a TCP connection to `port`, or running-container status when neither is provided. Readiness has a 90-second deadline. A TCP check only proves that a port accepts connections; use `ready` for stronger checks.
+Dependencies start first. Managed databases use readiness commands; applications use `ready`, a TCP connection to `port`, or running-container status when neither is provided. Readiness has a 90-second deadline. Each readiness command gets up to five seconds; a stalled attempt is cancelled and retried within that deadline. A TCP check only proves that a port accepts connections; use `ready` for stronger checks.
 
 `init` runs once on clean initialization. Forked services inherit matching initialization state from main. `migrate` runs on every deployment. These commands run in temporary containers with the service's network, environment, and volumes, before its normal process starts. Failed migrations leave a failed environment for inspection and retry; database changes are not rolled back automatically.
 
@@ -84,9 +84,24 @@ Managed Postgres defaults to `postgres:17`, database/user `app`, and a generated
 
 `{{service.host}}`, `{{service.port}}`, and `{{service.url}}` resolve within the environment. Declare referenced services in `depends_on`. Postgres URLs include credentials; Redis URLs select database 0. App URLs use internal container IPs. Port numbers can be identical across environments because service ports are not published on the host.
 
+`{{service.local_url}}` resolves the browser-facing URL of another HTTP service, including the hub port. Use it for browser API endpoints and CORS origins. These URLs are known before services start, so this reference does not require `depends_on`; internal host/port/url references still do.
+
 `env_file` supports one-line `KEY=value` entries, optional outer quotes, comments, and blank lines. It does not evaluate shell expressions or expand `${...}`. Explicit `environment` entries take precedence. Multiline values are unsupported.
 
 Services receive `CONTREMAITRE_ENVIRONMENT`, `CONTREMAITRE_LOCAL_URL`, and, when reserved, `CONTREMAITRE_PUBLIC_URL`. The runtime retains private configuration needed to restart a deployed image, even after its source workspace changes.
+
+For large Angular or Node builds, check `container builder status`. A builder with
+2 GB RAM can become unresponsive under compiler load. On a machine with enough
+available memory, stop it when no builds are active and restart it with more
+resources:
+
+```sh
+container builder stop
+container builder start --cpus 4 --memory 8G
+```
+
+These settings affect the shared Apple builder. Application VM resources remain
+controlled by each service's `cpus` and `memory` settings.
 
 ## Environment identity and routing
 
@@ -117,6 +132,12 @@ contremaitre prune
 contremaitre prune --delete-data
 contremaitre stop
 ```
+
+`deploy` streams progress to stderr while it runs: build output, initialization/migration output, native service startup logs, and project-driver diagnostics. Phase messages identify the current step; a five-second elapsed-time update keeps long waits visible. URLs and the final result remain on stdout, so `deploy --json` still produces one JSON result. A truncated stream or failed deployment returns a nonzero exit code.
+
+Native deployment output is retained in the private `daemon.log` under the Contremaitre home. Driver diagnostics stay in the environment's private `driver.log`, whose path is printed during deployment. Use `contremaitre logs SERVICE` for application logs after deployment. Driver projects must emit progress on stderr; Contremaitre preserves stdout for their JSON protocol. An older running hub needs a restart to enable streaming; the CLI reports when it falls back to the older response format.
+
+Native deployments fingerprint the filtered context, file permissions, symlink targets, Dockerfile, and ignore rules. If these inputs are unchanged and the previous image still exists, deployment logs `Reusing unchanged image` and skips the builder. Successful builds are retained even if a later service fails. `deploy --rebuild` bypasses this image reuse and invokes the builder with its normal layer cache; it does not force a base-image pull. Runtime environment changes still take effect when services restart.
 
 All builds finish before replacing existing processes. A build failure leaves the current application running. Image-based services use the image's code; local source changes require a build-based service.
 

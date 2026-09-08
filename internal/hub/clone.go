@@ -125,13 +125,13 @@ func (m *Manager) clone(ctx context.Context, source, target *Environment) (err e
 		e = func() error {
 			defer os.Remove(dump.Name())
 			defer dump.Close()
-			if e := m.Runtime.Exec(ctx, from.Container, []string{"pg_dump", "-Fc", "--no-owner", "-U", "app", "-d", "app"}, nil, dump, os.Stderr); e != nil {
+			if e := m.Runtime.Exec(ctx, from.Container, []string{"pg_dump", "-Fc", "--no-owner", "-U", "app", "-d", "app"}, nil, dump, deploymentOutput(ctx)); e != nil {
 				return e
 			}
 			if _, e := dump.Seek(0, 0); e != nil {
 				return e
 			}
-			return m.Runtime.Exec(ctx, to.Container, []string{"pg_restore", "--clean", "--if-exists", "--no-owner", "--exit-on-error", "-U", "app", "-d", "app"}, dump, io.Discard, os.Stderr)
+			return m.Runtime.Exec(ctx, to.Container, []string{"pg_restore", "--clean", "--if-exists", "--no-owner", "--exit-on-error", "-U", "app", "-d", "app"}, dump, io.Discard, deploymentOutput(ctx))
 		}()
 		if e != nil {
 			return fmt.Errorf("clone database %s: %w", name, e)

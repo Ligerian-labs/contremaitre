@@ -74,11 +74,8 @@ func (a Apple) StartSystem(ctx context.Context) error {
 	return a.call(ctx, "system", "start", "--enable-kernel-install")
 }
 func (a Apple) Build(ctx context.Context, root, dockerfile, tag string) error {
-	args := []string{"build", "--tag", tag, "--file", dockerfile, "--progress", "plain", root}
-	c := a.command(ctx, args...)
-	c.Stdout = os.Stderr
-	c.Stderr = os.Stderr
-	return c.Run()
+	_, err := a.BuildCached(ctx, root, dockerfile, tag, BuildRecord{})
+	return err
 }
 func (a Apple) Network(ctx context.Context, name string) error {
 	if _, e := a.output(ctx, "network", "inspect", name); e == nil {
@@ -125,7 +122,24 @@ func (a Apple) Run(ctx context.Context, s RunSpec) error {
 	}
 	args = append(args, s.Image)
 	args = append(args, s.Service.Command...)
+	if s.Task {
+		ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+		defer cancel()
+		c := a.command(ctx, args...)
+		c.Stdout = deploymentOutput(ctx)
+		c.Stderr = c.Stdout
+		return c.Run()
+	}
 	return a.call(ctx, args...)
+}
+
+// Follow startup output only for the lifetime of the readiness check.
+func (a Apple) Logs(ctx context.Context, name string, out io.Writer) error {
+	c := a.command(ctx, "logs", "--follow", name)
+	c.WaitDelay = 5 * time.Second
+	c.Stdout = out
+	c.Stderr = out
+	return c.Run()
 }
 func (a Apple) Inspect(ctx context.Context, name string) (Container, error) {
 	b, e := a.output(ctx, "inspect", name)

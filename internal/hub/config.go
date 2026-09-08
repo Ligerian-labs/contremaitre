@@ -234,7 +234,7 @@ func prepareManifest(root string, m Manifest) (Manifest, error) {
 		if s.EnvFile != "" {
 			p, e := SafePath(root, s.EnvFile)
 			if e != nil {
-				return m, e
+				return m, fmt.Errorf("%s: env_file %q: %w", name, s.EnvFile, e)
 			}
 			b, e := os.ReadFile(p)
 			if e != nil {
@@ -272,11 +272,17 @@ func prepareManifest(root string, m Manifest) (Manifest, error) {
 					continue
 				}
 				parts := strings.Split(match[1], ".")
-				if len(parts) != 2 || (parts[1] != "host" && parts[1] != "port" && parts[1] != "url") {
+				if len(parts) != 2 || (parts[1] != "host" && parts[1] != "port" && parts[1] != "url" && parts[1] != "local_url") {
 					return m, fmt.Errorf("%s: unsupported environment reference", name)
 				}
 				if _, ok := m.Services[parts[0]]; !ok {
 					return m, fmt.Errorf("%s: unknown service reference %s", name, parts[0])
+				}
+				if parts[1] == "local_url" {
+					if !m.Services[parts[0]].HTTP {
+						return m, fmt.Errorf("%s: local_url requires HTTP service %s", name, parts[0])
+					}
+					continue
 				}
 				seen := map[string]bool{}
 				var depends func(string) bool
