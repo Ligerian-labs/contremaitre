@@ -1,0 +1,16 @@
+{
+  "name": "@contremaitre/projects",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./config": "./src/config.ts",
+    "./init": "./src/init.ts",
+    "./model": "./src/model.ts"
+  },
+  "dependencies": {
+    "@contremaitre/execution": "workspace:*",
+    "effect": "3.22.1",
+    "yaml": "2.9.0"
+  }
+}

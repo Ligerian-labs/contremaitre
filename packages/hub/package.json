@@ -1,0 +1,21 @@
+{
+  "name": "@contremaitre/hub",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./application": "./src/application.ts",
+    "./server": "./src/server.ts"
+  },
+  "dependencies": {
+    "@contremaitre/environments": "workspace:*",
+    "@contremaitre/execution": "workspace:*",
+    "@contremaitre/operations": "workspace:*",
+    "@contremaitre/routing": "workspace:*",
+    "@structure-ai/config": "0.1.1",
+    "@structure-ai/cqrs": "0.1.1",
+    "@structure-ai/observability": "0.1.1",
+    "@structure-ai/runtime": "0.1.1",
+    "effect": "3.22.1"
+  }
+}

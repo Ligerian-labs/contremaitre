@@ -1,0 +1,17 @@
+{
+  "name": "@contremaitre/execution",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./context": "./src/context.ts",
+    "./files": "./src/files.ts",
+    "./locks": "./src/locks.ts",
+    "./process-journal": "./src/process-journal.ts",
+    "./process": "./src/process.ts",
+    "./sleep": "./src/sleep.ts"
+  },
+  "dependencies": {
+    "effect": "3.22.1"
+  }
+}

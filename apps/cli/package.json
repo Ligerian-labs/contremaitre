@@ -1,0 +1,22 @@
+{
+  "name": "@contremaitre/cli",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./cli": "./src/cli.ts",
+    "./client": "./src/client.ts"
+  },
+  "dependencies": {
+    "@contremaitre/environments": "workspace:*",
+    "@contremaitre/execution": "workspace:*",
+    "@contremaitre/hub": "workspace:*",
+    "@contremaitre/operations": "workspace:*",
+    "@contremaitre/projects": "workspace:*",
+    "@contremaitre/routing": "workspace:*",
+    "@effect/platform": "0.97.1",
+    "@effect/platform-bun": "0.91.2",
+    "@structure-ai/cli": "0.1.1",
+    "effect": "3.22.1"
+  }
+}
