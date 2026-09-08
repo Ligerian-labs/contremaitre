@@ -177,3 +177,7 @@ make build
 ```
 
 See [docs/acceptance.md](docs/acceptance.md) and [docs/verification.md](docs/verification.md) for scope and verification results. The HTTP router supports WebSocket upgrades and streaming through Go's reverse proxy. Local TLS and automatic hot reload are outside this release.
+
+## Existing Kubernetes projects
+
+Use [project deployment drivers](docs/project-drivers.md) when a repository already needs its own Kubernetes deployment, workers, keys, or agent volumes. Contremaitre manages workspace identity, main-data forks, routing, and cleanup through the driver. See the [Kohral verification and Tokenops assessment](docs/complex-projects.md) for concrete integration requirements.

@@ -154,7 +154,13 @@ func call(ctx context.Context, o options, action string, req hub.Request, out an
 	if e != nil {
 		return e
 	}
-	res, e := hub.Client(o.home).Do(r)
+	client := hub.Client(o.home)
+	if action == "deploy" {
+		if manifest, _, err := hub.LoadManifest(req.Root); err == nil && manifest.Driver != nil {
+			client.Timeout = time.Duration(3*manifest.Driver.TimeoutSeconds+120) * time.Second
+		}
+	}
+	res, e := client.Do(r)
 	if e != nil {
 		return fmt.Errorf("hub unavailable; run contremaitre start: %w", e)
 	}
@@ -293,6 +299,10 @@ func run(ctx context.Context, o options) error {
 		fmt.Printf("%s [%s]\n", env.Identity.Name, env.Identity.ID)
 		for _, name := range keys(env.Services) {
 			s := env.Services[name]
+			if s.HTTP && s.URL != "" {
+				fmt.Printf("%s: %s\n", name, s.URL)
+				continue
+			}
 			if s.HTTP {
 				host := env.Identity.Host
 				first := ""
@@ -348,6 +358,16 @@ func run(ctx context.Context, o options) error {
 		s := env.Services[args[0]]
 		if s == nil {
 			return fmt.Errorf("service %q not found", args[0])
+		}
+		if env.Driver != nil {
+			command := args[1:]
+			if len(o.command) > 0 {
+				command = o.command
+			}
+			if action == "exec" && len(command) == 0 {
+				return fmt.Errorf("exec requires a command after --")
+			}
+			return hub.DriverInteractive(ctx, &env, action, args[0], command, os.Stdin, os.Stdout, os.Stderr)
 		}
 		if action == "exec" {
 			command := o.command

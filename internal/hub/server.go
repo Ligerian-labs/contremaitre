@@ -149,6 +149,19 @@ func Serve(ctx context.Context, home string, httpPort, publicPort int) error {
 	m.Tunnel = NewTunnelManager(home)
 	defer m.Tunnel.Close()
 	for _, env := range m.State.Environments {
+		if env.Driver != nil {
+			if env.Status == "running" {
+				statusCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+				reply, err := invokeDriver(statusCtx, env, "status", nil)
+				cancel()
+				if err != nil {
+					env.Status, env.Error = "failed", err.Error()
+				} else if err = applyDriverReply(env, reply); err != nil {
+					env.Status, env.Error = "failed", err.Error()
+				}
+			}
+			continue
+		}
 		all := len(env.Services) > 0
 		for _, s := range env.Services {
 			v, e := m.Runtime.Inspect(ctx, s.Container)

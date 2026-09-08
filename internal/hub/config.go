@@ -16,6 +16,7 @@ import (
 type Manifest struct {
 	Version  int                `yaml:"version" json:"version"`
 	Project  string             `yaml:"project" json:"project"`
+	Driver   *ProjectDriver     `yaml:"driver,omitempty" json:"driver,omitempty"`
 	Services map[string]Service `yaml:"services" json:"services"`
 }
 type Service struct {
@@ -71,6 +72,22 @@ func ParseManifest(b []byte) (Manifest, error) {
 	}
 	if !validName.MatchString(m.Project) {
 		return m, fmt.Errorf("project must be a lowercase DNS label, at most 40 characters")
+	}
+	if m.Driver != nil {
+		if len(m.Services) != 0 {
+			return m, fmt.Errorf("driver and services are mutually exclusive")
+		}
+		p := m.Driver.Executable
+		if p == "" || filepath.IsAbs(p) || p == ".." || strings.HasPrefix(filepath.Clean(p), "../") {
+			return m, fmt.Errorf("driver executable must be a file inside the project")
+		}
+		if m.Driver.TimeoutSeconds == 0 {
+			m.Driver.TimeoutSeconds = 1800
+		}
+		if m.Driver.TimeoutSeconds < 1 || m.Driver.TimeoutSeconds > 7200 {
+			return m, fmt.Errorf("driver timeout_seconds must be 1..7200")
+		}
+		return m, nil
 	}
 	if len(m.Services) == 0 {
 		return m, fmt.Errorf("at least one service is required")

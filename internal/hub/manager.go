@@ -97,6 +97,9 @@ func (m *Manager) Deploy(ctx context.Context, req DeployRequest) (result *Enviro
 	if e != nil {
 		return nil, e
 	}
+	if manifest.Driver != nil {
+		return m.deployDriver(ctx, req, root, manifest)
+	}
 	manifest, e = prepareManifest(root, manifest)
 	if e != nil {
 		return nil, e
@@ -106,6 +109,9 @@ func (m *Manager) Deploy(ctx context.Context, req DeployRequest) (result *Enviro
 		return nil, e
 	}
 	env := m.State.Environments[identity.ID]
+	if env != nil && env.Driver != nil {
+		return nil, fmt.Errorf("environment uses a project driver; explicitly delete its data before changing runtime")
+	}
 	if env != nil && env.Status == "deleting" {
 		return nil, fmt.Errorf("finish down --delete-data before redeploying this environment")
 	}
@@ -475,6 +481,9 @@ func (m *Manager) waitReady(ctx context.Context, s *ServiceState) error {
 	}
 }
 func (m *Manager) LocalURL(e *Environment, service string) string {
+	if s := e.Services[service]; s != nil && s.URL != "" {
+		return s.URL
+	}
 	host := e.Identity.Host
 	first := ""
 	for _, n := range sortedKeys(e.Services) {
@@ -511,6 +520,9 @@ func (m *Manager) Down(ctx context.Context, selector string, deleteData bool) er
 	return m.down(ctx, env, deleteData)
 }
 func (m *Manager) down(ctx context.Context, env *Environment, deleteData bool) error {
+	if env.Driver != nil {
+		return m.downDriver(ctx, env, deleteData)
+	}
 	wasDeleting := env.Status == "deleting"
 	var tunnelErr error
 	if m.Tunnel != nil {

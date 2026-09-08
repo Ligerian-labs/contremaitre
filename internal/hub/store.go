@@ -12,6 +12,7 @@ import (
 )
 
 type ServiceState struct {
+	URL                                string            `json:"url,omitempty"`
 	RawEnvironment                     map[string]string `json:"raw_environment,omitempty"`
 	Name, Container, Image, IP, Volume string
 	Port                               int
@@ -20,6 +21,8 @@ type ServiceState struct {
 	Initialized                        bool
 }
 type Environment struct {
+	Driver                       *ProjectDriver `json:"driver,omitempty"`
+	DriverDirectory              string         `json:"driver_directory,omitempty"`
 	Identity                     Identity
 	Root, Status, Error, Network string
 	Services                     map[string]*ServiceState
