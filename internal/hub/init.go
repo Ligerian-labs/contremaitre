@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"go.yaml.in/yaml/v3"
@@ -12,8 +13,12 @@ import (
 
 func InitProject(dir, compose string) (string, error) {
 	target := filepath.Join(dir, ".contremaitre.yaml")
-	if _, e := os.Stat(target); e == nil {
-		return "", fmt.Errorf("manifest already exists")
+	for _, name := range []string{".contremaitre.yaml", ".contremaitre.yml"} {
+		if _, e := os.Lstat(filepath.Join(dir, name)); e == nil {
+			return "", fmt.Errorf("manifest already exists: %s", name)
+		} else if !os.IsNotExist(e) {
+			return "", e
+		}
 	}
 	m := Manifest{Version: 1, Project: Slug(filepath.Base(dir)), Services: map[string]Service{}}
 	if compose != "" {
@@ -27,6 +32,10 @@ func InitProject(dir, compose string) (string, error) {
 		}
 	} else if _, e := os.Stat(filepath.Join(dir, "Dockerfile")); e == nil {
 		m.Services["web"] = Service{Build: ".", Port: 3000, HTTP: true}
+	} else if services, e := discoverDockerfiles(dir); e != nil {
+		return "", e
+	} else if len(services) > 0 {
+		m.Services = services
 	} else if b, e := os.ReadFile(filepath.Join(dir, "package.json")); e == nil {
 		var pkg struct {
 			Scripts map[string]string `json:"scripts"`
@@ -35,7 +44,7 @@ func InitProject(dir, compose string) (string, error) {
 			return "", e
 		}
 		if pkg.Scripts["start"] == "" {
-			return "", fmt.Errorf("package.json needs a start script, or provide a Dockerfile")
+			return "", fmt.Errorf("no runnable app detected: package.json has no start script; add a root Dockerfile, docker/<service>.Dockerfile, or write .contremaitre.yaml for your stack")
 		}
 		install := "npm ci"
 		runner := "npm"
@@ -73,6 +82,107 @@ func InitProject(dir, compose string) (string, error) {
 	}
 	return target, nil
 }
+
+// Named Dockerfiles under docker/ conventionally build from the repository root.
+// Do not recurse into workspaces, dependencies, or arbitrary app directories.
+func discoverDockerfiles(dir string) (map[string]Service, error) {
+	entries, e := os.ReadDir(filepath.Join(dir, "docker"))
+	if os.IsNotExist(e) {
+		return nil, nil
+	}
+	if e != nil {
+		return nil, e
+	}
+	services := map[string]Service{}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".Dockerfile") {
+			continue
+		}
+		rel := filepath.Join("docker", entry.Name())
+		name := Slug(strings.TrimSuffix(entry.Name(), ".Dockerfile"))
+		if !validName.MatchString(name) {
+			return nil, fmt.Errorf("%s: invalid service name; write .contremaitre.yaml explicitly", rel)
+		}
+		if previous, ok := services[name]; ok {
+			return nil, fmt.Errorf("%s and %s resolve to the same service name %q; rename one or write .contremaitre.yaml explicitly", previous.Dockerfile, rel, name)
+		}
+		path, e := SafePath(dir, rel)
+		if e != nil {
+			return nil, e
+		}
+		b, e := os.ReadFile(path)
+		if e != nil {
+			return nil, e
+		}
+		port, e := dockerfilePort(string(b))
+		if e != nil {
+			return nil, fmt.Errorf("%s: %w; set the service port explicitly in .contremaitre.yaml", rel, e)
+		}
+		services[name] = Service{Build: ".", Dockerfile: rel, Port: port, HTTP: port != 0}
+	}
+	return services, nil
+}
+
+// Infer only literal EXPOSE ports in the final stage, including local stage
+// inheritance. No EXPOSE leaves routing disabled for the user to configure.
+// Image metadata and build-time variables are intentionally not evaluated.
+func dockerfilePort(contents string) (int, error) {
+	stages := map[string][]string{}
+	var exposed []string
+	stage, instruction := "", ""
+	for _, line := range strings.Split(contents, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		// Heredocs and custom escapes require a full Dockerfile parser. Avoid
+		// mistaking their contents for instructions when generating routes.
+		if strings.Contains(line, "<<") || strings.HasSuffix(line, "`") {
+			return 0, fmt.Errorf("cannot infer a port from this Dockerfile syntax")
+		}
+		instruction += strings.TrimSuffix(line, "\\") + " "
+		if strings.HasSuffix(line, "\\") {
+			continue
+		}
+		fields := strings.Fields(instruction)
+		instruction = ""
+		switch strings.ToUpper(fields[0]) {
+		case "FROM":
+			stages[stage] = exposed
+			args := fields[1:]
+			for len(args) > 0 && strings.HasPrefix(args[0], "--") {
+				args = args[1:]
+			}
+			if len(args) == 0 {
+				return 0, fmt.Errorf("FROM is missing an image")
+			}
+			exposed = append([]string(nil), stages[strings.ToLower(args[0])]...)
+			stage = ""
+			if len(args) == 3 && strings.EqualFold(args[1], "AS") {
+				stage = strings.ToLower(args[2])
+			}
+		case "EXPOSE":
+			exposed = append(exposed, fields[1:]...)
+		}
+	}
+	port := 0
+	for _, value := range exposed {
+		number, protocol, _ := strings.Cut(value, "/")
+		n, e := strconv.Atoi(number)
+		if e != nil || n < 1 || n > 65535 || (protocol != "" && protocol != "tcp" && protocol != "udp") {
+			return 0, fmt.Errorf("EXPOSE must use literal port numbers")
+		}
+		if protocol == "udp" {
+			continue
+		}
+		if port != 0 && port != n {
+			return 0, fmt.Errorf("multiple TCP ports are exposed")
+		}
+		port = n
+	}
+	return port, nil
+}
+
 func writeNew(path string, b []byte) error {
 	f, e := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
 	if e != nil {
