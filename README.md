@@ -28,7 +28,15 @@ contremaitre list
 
 The example builds a static web page and starts PostgreSQL and Redis. Its web service receives connection settings but does not query the databases. Change `index.html` and redeploy to verify working-file builds.
 
-For an existing application, `contremaitre init` generates `.contremaitre.yaml` from a Dockerfile or a Node project with a start script and a supported lockfile. Review the generated port and commands. Node detection supports npm and pnpm; other build systems can supply a Dockerfile. Node detection creates a dedicated Dockerfile and ignore file without overwriting existing files.
+For an existing application, `contremaitre init` generates `.contremaitre.yaml`. It checks these conventions in order:
+
+1. A root `Dockerfile` creates a `web` service with port 3000 for you to review.
+2. Named `docker/<service>.Dockerfile` files create one service per file, using the repository root as the build context. For example, `docker/api.Dockerfile` and `docker/web.Dockerfile` create `api` and `web` services. A root Node `start` script is not needed. Init does not search nested workspaces.
+3. A Node project with a `start` script and an npm or pnpm lockfile gets a generated Dockerfile and ignore file. Existing files are never overwritten.
+
+Named Dockerfiles use a single literal TCP port from the final stage's `EXPOSE` instructions and enable HTTP routing on it. Local stage inheritance is supported; base image metadata is not inspected. With no declared TCP port, routing stays disabled. Multiple ports, variable ports, and complex Dockerfile syntax require an explicit manifest. Review whether the service speaks HTTP before deploying.
+
+Init generates a starting configuration. Review build contexts, ports, commands, dependencies, environment variables, and persistent storage before deploying. It does not infer databases or application settings from production Compose files. For a monorepo, add managed database services and connect the applications with `depends_on` and environment references as shown below. Both `.contremaitre.yaml` and `.contremaitre.yml` are protected from replacement.
 
 `init --compose compose.yaml` imports a strict subset of Compose: app images/builds, argument-list commands, string environment maps, dependency lists, a single published port, and named file volumes. Host port numbers are discarded; routes use the container port. Database services, interpolation, health conditions, bind mounts, and unsupported fields fail with an explanation. Define managed databases explicitly in the resulting manifest. This is not a Compose runtime.
 
