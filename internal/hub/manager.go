@@ -89,6 +89,7 @@ func (m *Manager) Current(ctx context.Context, root, branch string) (Identity, e
 func (m *Manager) Deploy(ctx context.Context, req DeployRequest) (result *Environment, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	progress(ctx, "Reading project configuration")
 	root, e := filepath.Abs(req.Root)
 	if e != nil {
 		return nil, e
@@ -174,11 +175,13 @@ func (m *Manager) Deploy(ctx context.Context, req DeployRequest) (result *Enviro
 		if e = m.save(); e != nil {
 			return nil, e
 		}
+		progress(ctx, "Building %s", name)
 		if e = m.Runtime.Build(ctx, buildRoot, dockerfile, tag); e != nil {
 			return nil, fmt.Errorf("build %s: %w", name, e)
 		}
 		images[name] = tag
 	}
+	progress(ctx, "Preparing network for %s", identity.Name)
 	if e = m.Runtime.Network(ctx, env.Network); e != nil {
 		return nil, e
 	}
@@ -238,6 +241,7 @@ func (m *Manager) Deploy(ctx context.Context, req DeployRequest) (result *Enviro
 	if !env.CloneComplete {
 		source := m.State.Environments[m.State.Main[identity.Project]]
 		if source != nil && source != env {
+			progress(ctx, "Forking data from %s", source.Identity.Name)
 			if e = m.clone(ctx, source, env); e != nil {
 				return nil, e
 			}
@@ -427,23 +431,34 @@ func (m *Manager) startService(ctx context.Context, env *Environment, s *Service
 			if e = m.Runtime.Remove(ctx, task.Name); e != nil {
 				return e
 			}
+			progress(ctx, "%s: running initialization/migration", s.Name)
 			if e = m.Runtime.Run(ctx, task); e != nil {
 				return fmt.Errorf("%s initialization/migration: %w", s.Name, e)
 			}
 		}
 	}
+	progress(ctx, "Starting %s", s.Name)
 	if e = m.Runtime.Run(ctx, spec); e != nil {
 		return fmt.Errorf("start %s: %w", s.Name, e)
 	}
 	if e = m.waitReady(ctx, s); e != nil {
 		return e
 	}
+	progress(ctx, "%s: ready", s.Name)
 	s.Initialized = true
 	return m.save()
 }
 func (m *Manager) waitReady(ctx context.Context, s *ServiceState) error {
 	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
+	progress(ctx, "%s: waiting for readiness", s.Name)
+	if logger, ok := m.Runtime.(interface {
+		Logs(context.Context, string, io.Writer) error
+	}); ok {
+		done := make(chan struct{})
+		go func() { defer close(done); _ = logger.Logs(ctx, s.Container, deploymentOutput(ctx)) }()
+		defer func() { cancel(); <-done }()
+	}
 	var last error
 	for {
 		v, e := m.Runtime.Inspect(ctx, s.Container)

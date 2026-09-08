@@ -237,7 +237,10 @@ func Serve(ctx context.Context, home string, httpPort, publicPort int) error {
 		if err == nil {
 			switch action {
 			case "deploy":
-				data, err = m.Deploy(r.Context(), DeployRequest{req.Root, req.Branch, req.Main})
+				serveDeploy(w, r, func(ctx context.Context) (*Environment, error) {
+					return m.Deploy(ctx, DeployRequest{req.Root, req.Branch, req.Main})
+				})
+				return
 			case "list":
 				data = m.List()
 			case "down":

@@ -116,6 +116,7 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 	return b.Buffer.Write(p)
 }
 func invokeDriver(ctx context.Context, env *Environment, operation string, source *Environment) (DriverReply, error) {
+	progress(ctx, "Driver %s: %s", env.Identity.Name, operation)
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(env.Driver.TimeoutSeconds)*time.Second)
 	defer cancel()
 	c, cleanup, e := driverCommand(ctx, env, driverRequest(env, operation, source))
@@ -132,8 +133,9 @@ func invokeDriver(ctx context.Context, env *Environment, operation string, sourc
 		return DriverReply{}, e
 	}
 	defer log.Close()
+	progress(ctx, "Driver log: %s", logPath)
 	var out boundedBuffer
-	c.Stdout, c.Stderr = &out, log
+	c.Stdout, c.Stderr = &out, io.MultiWriter(log, progressOutput(ctx))
 	if e = c.Run(); e != nil {
 		return DriverReply{}, fmt.Errorf("project driver %s failed (%w); see %s", operation, e, logPath)
 	}

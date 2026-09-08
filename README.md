@@ -118,6 +118,10 @@ contremaitre prune --delete-data
 contremaitre stop
 ```
 
+`deploy` streams progress to stderr while it runs: build output, initialization/migration output, native service startup logs, and project-driver diagnostics. Phase messages identify the current step; a five-second elapsed-time update keeps long waits visible. URLs and the final result remain on stdout, so `deploy --json` still produces one JSON result. A truncated stream or failed deployment returns a nonzero exit code.
+
+Native deployment output is retained in the private `daemon.log` under the Contremaitre home. Driver diagnostics stay in the environment's private `driver.log`, whose path is printed during deployment. Use `contremaitre logs SERVICE` for application logs after deployment. Driver projects must emit progress on stderr; Contremaitre preserves stdout for their JSON protocol. An older running hub needs a restart to enable streaming; the CLI reports when it falls back to the older response format.
+
 All builds finish before replacing existing processes. A build failure leaves the current application running. Image-based services use the image's code; local source changes require a build-based service.
 
 A new environment clones matching Postgres services and declared file volumes from main. Main's running application services and workers stop while copying. The runtime dumps/restores the databases, copies files, and recreates the source writers in dependency order with refreshed addresses. Source writers are restarted even when cloning fails or the deploy is cancelled. A stopped main database starts temporarily for the dump and stops afterward. Avoid independent database/file writes through external clients during the copy.

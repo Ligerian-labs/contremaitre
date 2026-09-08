@@ -156,6 +156,7 @@ func call(ctx context.Context, o options, action string, req hub.Request, out an
 	}
 	client := hub.Client(o.home)
 	if action == "deploy" {
+		r.Header.Set("Accept", hub.DeployStreamType)
 		if manifest, _, err := hub.LoadManifest(req.Root); err == nil && manifest.Driver != nil {
 			client.Timeout = time.Duration(3*manifest.Driver.TimeoutSeconds+120) * time.Second
 		}
@@ -165,6 +166,12 @@ func call(ctx context.Context, o options, action string, req hub.Request, out an
 		return fmt.Errorf("hub unavailable; run contremaitre start: %w", e)
 	}
 	defer res.Body.Close()
+	if action == "deploy" && res.Header.Get("Content-Type") == hub.DeployStreamType {
+		return readDeployStream(res.Body, os.Stderr, out)
+	}
+	if action == "deploy" {
+		fmt.Fprintln(os.Stderr, "[contremaitre] This running hub does not support live logs; restart it after deployment to enable them.")
+	}
 	var reply struct {
 		Version int
 		Data    json.RawMessage
@@ -526,4 +533,45 @@ func keys[V any](m map[string]V) []string {
 	}
 	slices.Sort(out)
 	return out
+}
+
+func readDeployStream(in io.Reader, logs io.Writer, out any) error {
+	decoder := json.NewDecoder(in)
+	for {
+		var event struct {
+			Version              int
+			Type, Message, Error string
+			Output               []byte
+			Data                 json.RawMessage
+		}
+		if err := decoder.Decode(&event); err != nil {
+			if errors.Is(err, io.EOF) {
+				return fmt.Errorf("deployment stream ended without a result; check contremaitre list and deployment logs")
+			}
+			return fmt.Errorf("read deployment progress: %w", err)
+		}
+		if event.Version != 1 {
+			return fmt.Errorf("unsupported deployment stream version")
+		}
+		switch event.Type {
+		case "log":
+			chunk := event.Output
+			if chunk == nil {
+				chunk = []byte(event.Message)
+			}
+			if _, err := logs.Write(chunk); err != nil {
+				return err
+			}
+		case "result":
+			if event.Error != "" {
+				return errors.New(event.Error)
+			}
+			if out != nil && len(event.Data) > 0 && string(event.Data) != "null" {
+				return json.Unmarshal(event.Data, out)
+			}
+			return nil
+		default:
+			return fmt.Errorf("unknown deployment stream event %q", event.Type)
+		}
+	}
 }
