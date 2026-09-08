@@ -461,3 +461,31 @@ func TestRetryFirstBuildFailureAfterHubRestart(t *testing.T) {
 		t.Fatal("database password was not initialized")
 	}
 }
+
+type stalledProbeRuntime struct {
+	*fakeRuntime
+	probes int
+}
+
+func (f *stalledProbeRuntime) Exec(ctx context.Context, _ string, _ []string, _ io.Reader, _, _ io.Writer) error {
+	f.probes++
+	if f.probes == 1 {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	return nil
+}
+func TestReadinessRetriesStalledExec(t *testing.T) {
+	f := &stalledProbeRuntime{fakeRuntime: fake()}
+	f.containers["app"] = Container{Running: true, IP: "192.168.64.2"}
+	m, err := NewManager(Store{t.TempDir()}, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = m.waitReady(context.Background(), &ServiceState{Name: "app", Container: "app", Spec: Service{Ready: []string{"health"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if f.probes != 2 {
+		t.Fatal("stalled readiness probe was not retried")
+	}
+}

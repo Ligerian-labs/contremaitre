@@ -506,7 +506,10 @@ func (m *Manager) waitReady(ctx context.Context, s *ServiceState) error {
 				ready = []string{"redis-cli", "ping"}
 			}
 			if len(ready) > 0 {
-				e = m.Runtime.Exec(ctx, s.Container, ready, nil, io.Discard, io.Discard)
+				// A stalled runtime exec must not consume the entire readiness window.
+				probeCtx, cancelProbe := context.WithTimeout(ctx, 5*time.Second)
+				e = m.Runtime.Exec(probeCtx, s.Container, ready, nil, io.Discard, io.Discard)
+				cancelProbe()
 			} else if s.Port > 0 {
 				var conn net.Conn
 				conn, e = net.DialTimeout("tcp", net.JoinHostPort(s.IP, fmt.Sprint(s.Port)), time.Second)
