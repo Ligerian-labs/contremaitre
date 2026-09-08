@@ -1,0 +1,33 @@
+{
+  "name": "contremaitre",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.4.2",
+  "scripts": {
+    "check": "bun run lint && bun run typecheck && bun test && bun run build && bun run test:packaging",
+    "lint": "biome check src test scripts",
+    "format": "biome check --write src test scripts",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "build": "bun build src/cli.ts --compile --target=bun-darwin-arm64 --no-compile-autoload-dotenv --no-compile-autoload-bunfig --outfile bin/contremaitre",
+    "test:packaging": "bun scripts/verify-packaging.ts"
+  },
+  "dependencies": {
+    "@structure-ai/cli": "0.1.1",
+    "@structure-ai/config": "0.1.1",
+    "@structure-ai/cqrs": "0.1.1",
+    "@structure-ai/observability": "0.1.1",
+    "@structure-ai/runtime": "0.1.1",
+    "@effect/platform": "0.97.1",
+    "@effect/platform-bun": "0.91.2",
+    "@balena/dockerignore": "1.0.2",
+    "effect": "3.22.1",
+    "yaml": "2.9.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.12",
+    "@types/bun": "1.4.2",
+    "typescript": "5.9.3"
+  }
+}

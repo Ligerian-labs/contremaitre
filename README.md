@@ -4,15 +4,16 @@ Run isolated local application stacks for Git branches and Jujutsu workspaces on
 
 ## Install
 
-Requires Apple silicon, macOS 26, Go 1.27.1 or later, and Apple `container`. Tested with `container` 1.3.1 on an M2 Max.
+Requires Apple silicon, macOS 26, Bun 1.4.2 for building, and Apple `container`. Tested with `container` 1.3.1 on an M2 Max.
 
 ```sh
 brew install container
+bun install --frozen-lockfile
 make install
 contremaitre start
 ```
 
-The binary installs to `~/.local/bin`. Add that directory to your PATH if needed. Starting the hub starts Apple container and installs its recommended kernel if missing. No Kubernetes cluster is required.
+The standalone binary includes Bun and installs to `~/.local/bin`. Go and Node are not required to run it. Add that directory to your PATH if needed. Starting the hub starts Apple container and installs its recommended kernel if missing. No Kubernetes cluster is required.
 
 The hub listens on loopback port 8080 without administrator access; printed URLs include the port. If occupied, choose another port with `contremaitre start --http-port 18080`. macOS restricts port 80 to privileged processes. For port-free URLs, run `sudo "$HOME/.local/bin/contremaitre" forward-http` in a separate terminal, then start the ordinary hub with `contremaitre start --public-port 80`. The forwarder only bridges loopback port 80 to 8080 and exits when interrupted. Do not run the hub or application runtime with sudo. The control API uses a private Unix socket. A detached daemon owns state and connector processes, so closing the terminal does not stop applications.
 
@@ -133,9 +134,40 @@ contremaitre prune --delete-data
 contremaitre stop
 ```
 
-`deploy` streams progress to stderr while it runs: build output, initialization/migration output, native service startup logs, and project-driver diagnostics. Phase messages identify the current step; a five-second elapsed-time update keeps long waits visible. URLs and the final result remain on stdout, so `deploy --json` still produces one JSON result. A truncated stream or failed deployment returns a nonzero exit code.
+`deploy` prints an operation ID and streams build, migration, readiness, and application
+startup output to stderr. URLs and the final result stay on stdout, so `deploy
+--json` produces one JSON result. The hub owns the operation. Closing the terminal
+or pressing Ctrl-C detaches the client and leaves deployment running.
 
-Native deployment output is retained in the private `daemon.log` under the Contremaitre home. Driver diagnostics stay in the environment's private `driver.log`, whose path is printed during deployment. Use `contremaitre logs SERVICE` for application logs after deployment. Driver projects must emit progress on stderr; Contremaitre preserves stdout for their JSON protocol. An older running hub needs a restart to enable streaming; the CLI reports when it falls back to the older response format.
+```sh
+contremaitre deploy --detach
+contremaitre operations
+contremaitre attach OPERATION_ID
+contremaitre cancel OPERATION_ID
+```
+
+`attach --offset N` resumes from a byte offset in the operation log. A duplicate
+deploy for an environment returns its active operation ID. Another mutation of a
+busy environment reports a conflict. `cancel` waits for subprocess termination
+and clone recovery. An interrupted migration is never replayed automatically.
+
+Operation records and logs live under `<state-home>/operations`, separate from the version
+1 environment state. The hub retains 100 completed operations, at most 4 MiB of
+output each, plus active operations. It discards additional output after printing
+a limit notice. Driver diagnostics also go to the private driver log. Use
+`contremaitre logs SERVICE` for application logs after deployment.
+
+The hub runs two environment operations concurrently by default. Set
+`CONTREMAITRE_CONCURRENCY` to an integer from 1 through 16 before starting it to
+change that limit. The queue accepts up to 64 active or waiting operations. The
+shared Apple builder runs one build at a time across Contremaitre hubs using a
+process-independent advisory lock. Cloning locks both
+source and target against concurrent mutations.
+
+The hub captures manifest configuration, environment identity, and the selected
+main source when accepting a deployment. Build files are staged when the queued
+operation starts. Wait for that staging step before editing files whose exact
+contents must be part of a deployment.
 
 Native deployments fingerprint the filtered context, file permissions, symlink targets, Dockerfile, and ignore rules. If these inputs are unchanged and the previous image still exists, deployment logs `Reusing unchanged image` and skips the builder. Successful builds are retained even if a later service fails. `deploy --rebuild` bypasses this image reuse and invokes the builder with its normal layer cache; it does not force a base-image pull. Runtime environment changes still take effect when services restart.
 
@@ -190,15 +222,47 @@ Each state home has a distinct runtime resource namespace. Project names identif
 
 State lives in `~/.local/share/contremaitre`, configurable with `--home` or `CONTREMAITRE_HOME`. The JSON state file and temporary env files are mode 0600; state includes database credentials and deployed environment values. Do not publish it. The daemon holds an exclusive filesystem lock and saves state using fsync plus atomic rename.
 
-Use `--json` for versioned machine output. CLI failures exit nonzero; `exec` propagates the executed command's exit code. Exec and logs stream application output directly. Build diagnostics go to the daemon log. Startup errors report its location. TCP/HTTP application traffic is streamed and request bodies are not logged by the hub.
+Use `--json` for versioned machine output. CLI failures exit nonzero; `exec` propagates the executed command's exit code. Exec and logs stream application output directly. Build diagnostics go to the operation log. Startup errors report its location. TCP/HTTP application traffic is streamed and request bodies are not logged by the hub.
 
 ```sh
-make check   # gofmt, vet, race tests, build
+make check   # lint, typecheck, tests, standalone build and crash/restart checks
 make build
 ```
 
-See [docs/acceptance.md](docs/acceptance.md) and [docs/verification.md](docs/verification.md) for scope and verification results. The HTTP router supports WebSocket upgrades and streaming through Go's reverse proxy. Local TLS and automatic hot reload are outside this release.
+See [docs/acceptance.md](docs/acceptance.md) and [docs/verification.md](docs/verification.md) for scope and verification results. The HTTP router supports WebSocket upgrades and streaming through the Bun/Node HTTP adapter. Local TLS and automatic hot reload are outside this release.
 
 ## Existing Kubernetes projects
 
 Use [project deployment drivers](docs/project-drivers.md) when a repository already needs its own Kubernetes deployment, workers, keys, or agent volumes. Contremaitre manages workspace identity, main-data forks, routing, and cleanup through the driver. See the [Kohral verification and Tokenops assessment](docs/complex-projects.md) for concrete integration requirements.
+
+## TypeScript migration and rollback
+
+The CLI uses `@structure-ai/cli`; application commands and queries use
+`@structure-ai/cqrs`. Structure configuration, observability, readiness, and
+shutdown services run the hub. Native Apple containers, project drivers, tunnels,
+Unix sockets, and filesystem state remain explicit application adapters. There is
+no event sourcing or database dependency.
+
+Before replacing an installed Go binary, retain a copy as `contremaitre-go`.
+Stop the hub process with SIGTERM to preserve running applications, then start
+the new executable with the same `--home` and ports. `contremaitre stop` explicitly
+stops applications as well. Only one hub may own a home directory; both versions
+use the same advisory lock. The old Go CLI can use the new hub's existing API.
+Use the matching Go executable when rolling the hub back.
+
+The new hub reads and writes version 1 state without changing environment IDs,
+URLs, credentials, or volume names. Operation and recovery records are separate.
+On restart it reports unfinished operations as interrupted, reaps recorded
+subprocesses after checking their process identity, and resumes recorded main
+writers before accepting work. If recovery fails, startup fails with the journal
+retained. Resolve recovery before rolling back to Go, which cannot read these new
+journals. Rollback does not undo application database migrations.
+
+The TypeScript build fingerprint has its own version. The first deployment after
+migration recomputes an image through Apple's existing build cache. Subsequent
+unchanged deployments reuse the stored image directly.
+
+Run `bun run check` for formatting, lint, typechecking, tests, and the standalone
+macOS ARM64 build. `make compat-check` checks the preserved Go reference under
+`compat/go`; it is not part of the new runtime. See
+[the migration contract](docs/structure-migration.md) for acceptance criteria.

@@ -1,13 +1,12 @@
-.PHONY: build test check install
+.PHONY: build test check install compat-check
 build:
-	go build -o bin/contremaitre ./cmd/contremaitre
+	bun run build
 test:
-	go test -race ./...
+	bun test
 check:
-	test -z "$$(gofmt -l cmd internal)"
-	go vet ./...
-	go test -race ./...
-	go build ./...
+	bun run check
+compat-check:
+	cd compat/go && go vet ./... && go test -race ./...
 install: build
 	install -d $(HOME)/.local/bin
 	install bin/contremaitre $(HOME)/.local/bin/contremaitre
