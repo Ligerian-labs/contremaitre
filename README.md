@@ -74,7 +74,7 @@ Use exactly one of `image` and `build`. Build contexts, Dockerfiles, and env fil
 
 Commands are argument arrays; no host shell interpolation occurs. For an intentional shell command, use `[sh, -c, 'your command']`. The app must listen on `0.0.0.0` inside its container.
 
-Dependencies start first. Managed databases use readiness commands; applications use `ready`, a TCP connection to `port`, or running-container status when neither is provided. Readiness has a 90-second deadline. A TCP check only proves that a port accepts connections; use `ready` for stronger checks.
+Dependencies start first. Managed databases use readiness commands; applications use `ready`, a TCP connection to `port`, or running-container status when neither is provided. Readiness has a 90-second deadline. Each readiness command gets up to five seconds; a stalled attempt is cancelled and retried within that deadline. A TCP check only proves that a port accepts connections; use `ready` for stronger checks.
 
 `init` runs once on clean initialization. Forked services inherit matching initialization state from main. `migrate` runs on every deployment. These commands run in temporary containers with the service's network, environment, and volumes, before its normal process starts. Failed migrations leave a failed environment for inspection and retry; database changes are not rolled back automatically.
 
@@ -93,7 +93,7 @@ Services receive `CONTREMAITRE_ENVIRONMENT`, `CONTREMAITRE_LOCAL_URL`, and, when
 For large Angular or Node builds, check `container builder status`. A builder with
 2 GB RAM can become unresponsive under compiler load. On a machine with enough
 available memory, stop it when no builds are active and restart it with more
-resources; this retains its layer cache:
+resources:
 
 ```sh
 container builder stop
