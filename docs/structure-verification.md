@@ -7,7 +7,7 @@ Verified on 2026-09-08 using an Apple M2 Max, macOS 26, Bun 1.4.2, and Apple
 
 `bun run check` passed lint, TypeScript checking, 26 tests with 102 assertions,
 the standalone macOS ARM64 build, and the compiled executable smoke test.
-`make compat-check` passed Go vet and the preserved Go race-test suite.
+The Go reference passed Go vet and its race-test suite before its removal.
 
 The tests cover:
 
@@ -53,8 +53,8 @@ removed after verification. Shared builder caches were retained.
 
 ## Compatibility boundaries
 
-The executable has no runtime dependency on Go. The old Go implementation remains
-under `compat/go` for the rollback window. Operation, process, and clone-recovery
+The executable has no runtime dependency on Go. The old Go implementation is
+available in git history at `280b6cd3`. Operation, process, and clone-recovery
 journals are additive sidecar files. Finish recovery in the new hub before
 rolling back, because Go does not understand those journals.
 
