@@ -83,11 +83,11 @@ Commands are argument arrays; no host shell interpolation occurs. For an intenti
 
 Dependencies start first. Managed databases use readiness commands; applications use `ready`, a TCP connection to `port`, or running-container status when neither is provided. Readiness has a 90-second deadline. Each readiness command gets up to five seconds; a stalled attempt is cancelled and retried within that deadline. A TCP check only proves that a port accepts connections; use `ready` for stronger checks.
 
-`init` runs once on clean initialization. Forked services inherit matching initialization state from main. `migrate` runs on every deployment. These commands run in temporary containers with the service's network, environment, and volumes, before its normal process starts. Failed migrations leave a failed environment for inspection and retry; database changes are not rolled back automatically.
+`init` runs once on clean initialization. Forked services inherit matching initialization state from main. `migrate` runs when its app is replaced; unchanged apps skip it. These commands run in temporary containers with the service's network, environment, and volumes, before its normal process starts. Failed migrations leave a failed environment for inspection and retry; database changes are not rolled back automatically.
 
 Use `{{contremaitre.url}}` to map the external application origin into a framework variable. It resolves to the reserved public URL when available and otherwise to the local URL. `{{contremaitre.local_url}}` always selects the local URL. Redeploy after reserving a tunnel to update application configuration.
 
-Managed Postgres defaults to `postgres:17`, database/user `app`, and a generated password per environment. It stores data in an Apple named volume, under a subdirectory of the mount. This managed layout supports Postgres 17; changing an existing database image requires an explicit migration. Managed Redis defaults to `redis:7-alpine` and has no persistent volume, so it starts empty after each redeployment.
+Managed Postgres defaults to `postgres:17`, database/user `app`, and a generated password per environment. It stores data in an Apple named volume, under a subdirectory of the mount. This managed layout supports Postgres 17; changing an existing database image requires an explicit migration. Managed Redis defaults to `redis:7-alpine` and has no persistent volume, so it starts empty when replaced or restarted. An unchanged Redis process retains its in-memory data.
 
 `{{service.host}}`, `{{service.port}}`, and `{{service.url}}` resolve within the environment. Declare referenced services in `depends_on`. Postgres URLs include credentials; Redis URLs select database 0. App URLs use internal container IPs. Port numbers can be identical across environments because service ports are not published on the host.
 
@@ -140,44 +140,79 @@ contremaitre prune --delete-data
 contremaitre stop
 ```
 
-`deploy` prints an operation ID and streams build, migration, readiness, and application
-startup output to stderr. URLs and the final result stay on stdout, so `deploy
---json` produces one JSON result. The hub owns the operation. Closing the terminal
-or pressing Ctrl-C detaches the client and leaves deployment running.
+Restart the hub with the updated binary when upgrading to this deployment protocol.
+
+`deploy` stays attached until services pass readiness checks. It prints the project and
+branch, then one status row per service. Terminal rows update in place with a loader,
+✅ for ready services, ❌ for failures, and a blocked or cancelled state when appropriate.
+Successful HTTP service rows include their URLs. Redirected output contains plain final
+rows without animation. `deploy --json` produces one JSON result without progress output.
+
+Ctrl-C cancels the deployment and waits for active subprocesses to stop. Completed
+migrations are not rolled back, and services already started remain running. Closing
+or losing the client connection alone does not cancel the hub-owned operation.
 
 ```sh
-contremaitre deploy --detach
+contremaitre deploy --detach   # -d also returns immediately
+contremaitre deploy logs
+contremaitre deploy logs --failure
+contremaitre deploy logs --follow   # -f also follows deployment output
 contremaitre operations
 contremaitre attach OPERATION_ID
 contremaitre cancel OPERATION_ID
 ```
 
-`attach --offset N` resumes from a byte offset in the operation log. A duplicate
-deploy for an environment returns its active operation ID. Another mutation of a
-busy environment reports a conflict. `cancel` waits for subprocess termination
-and clone recovery. An interrupted migration is never replayed automatically.
+`deploy logs` prints a snapshot of the latest deployment of the current workspace and
+exits, even if it is still running. Use `--branch NAME` or `--env ENV` to select another
+environment. `--follow` follows that same deployment through completion. `--failure`
+prints failed services' deployment logs plus shared setup/error output; it prints
+nothing after a successful deployment and does not search older failures. While a
+deployment is active, failure filtering waits for its final outcome when combined
+with `--follow`. Shared failures without a failed service return the full deployment
+log. Older operation records without service attribution also return the full log.
+Use `contremaitre logs SERVICE` for application output after deployment.
 
-Operation records and logs live under `<state-home>/operations`, separate from the version
-1 environment state. The hub retains 100 completed operations, at most 4 MiB of
-output each, plus active operations. It discards additional output after printing
-a limit notice. Driver diagnostics also go to the private driver log. Use
-`contremaitre logs SERVICE` for application logs after deployment.
+`attach --offset N` resumes from a byte offset in the operation log. A duplicate deploy
+for an environment returns its active operation ID. Another mutation of a busy
+environment reports a conflict. `cancel` waits for subprocess termination and clone
+recovery. An interrupted migration is never replayed automatically.
+
+Operation records and logs live under `<state-home>/operations`, separate from the
+version 1 environment state. The hub retains 100 completed operations plus active
+operations. Logs are stored completely on disk, including service-attributed copies
+for failure filtering; they are no longer truncated at 4 MiB. Reads use bounded 64 KiB
+pages. Retention removes each completed operation's record and all its logs together.
+Driver diagnostics also go to the private driver log.
 
 The hub runs two environment operations concurrently by default. Set
 `CONTREMAITRE_CONCURRENCY` to an integer from 1 through 16 before starting it to
-change that limit. The queue accepts up to 64 active or waiting operations. The
-shared Apple builder runs one build at a time across Contremaitre hubs using a
-process-independent advisory lock. Cloning locks both
-source and target against concurrent mutations.
+change that limit. The queue accepts up to 64 active or waiting operations. Service
+builds are scheduled concurrently; each Apple runtime admits up to four builds at
+once. A process-independent lock serializes shared builder startup only. Existing
+builder CPU and memory settings are preserved. Infrastructure starts before apps,
+with independent services starting concurrently and dependencies waiting for readiness.
+Cloning locks both source and target against concurrent mutations.
 
 The hub captures manifest configuration, environment identity, and the selected
 main source when accepting a deployment. Build files are staged when the queued
 operation starts. Wait for that staging step before editing files whose exact
 contents must be part of a deployment.
 
-Native deployments fingerprint the filtered context, file permissions, symlink targets, Dockerfile, and ignore rules. If these inputs are unchanged and the previous image still exists, deployment logs `Reusing unchanged image` and skips the builder. Successful builds are retained even if a later service fails. `deploy --rebuild` bypasses this image reuse and invokes the builder with its normal layer cache; it does not force a base-image pull. Runtime environment changes still take effect when services restart.
+Native deployments fingerprint the filtered context, file permissions, symlink targets, Dockerfile, and ignore rules. If these inputs are unchanged and the previous image still exists, deployment logs `Reusing unchanged image` and skips the builder. Successful builds are retained even if a later service fails. `deploy --rebuild` bypasses this image reuse and invokes the builder with its normal layer cache; it does not force a base-image pull. `--rebuild` also forces service replacement and migrations.
 
-All builds finish before replacing existing processes. A build failure leaves the current application running. Image-based services use the image's code; local source changes require a build-based service.
+All required builds must succeed before replacing existing processes. A build failure
+leaves the current application running. A running service with an unchanged image,
+configuration, and dependency connections keeps its process and skips migrations;
+readiness is still checked. Changing a dependency conservatively redeploys its
+dependents. Stopped services restart. The first deploy after upgrading records the
+service fingerprints and may restart services once.
+
+After startup begins, an individual failure blocks its dependents while independent
+services finish. Ready services remain routable even if another service fails; the
+overall command exits unsuccessfully. Startup and migration failures can leave a
+partially updated environment. Image-based services use the image's code; local
+source changes require a build-based service. Driver-managed projects display one
+aggregate driver row; the driver owns internal scheduling and readiness.
 
 A new environment clones matching Postgres services and declared file volumes from main. Main's running application services and workers stop while copying. The runtime dumps/restores the databases, copies files, and recreates the source writers in dependency order with refreshed addresses. Source writers are restarted even when cloning fails or the deploy is cancelled. A stopped main database starts temporarily for the dump and stops afterward. Avoid independent database/file writes through external clients during the copy.
 

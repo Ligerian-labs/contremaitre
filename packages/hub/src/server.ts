@@ -48,7 +48,9 @@ export function routes(m: Manager, host: string): Route | undefined {
       if (!s.HTTP) continue;
       const route: Route = {
         upstream:
-          env.Status === "running" && s.IP
+          ["running", "deploying", "failed"].includes(env.Status) &&
+          (s.ready ?? env.Status === "running") &&
+          s.IP
             ? `http://${s.IP.includes(":") ? `[${s.IP}]` : s.IP}:${s.Port}`
             : "",
       };
@@ -177,7 +179,12 @@ export async function startServer(
             res.end();
             return;
           }
-          json(res, { public_port: manager.httpPort, version: "0.2.0", operations: true });
+          json(res, {
+            public_port: manager.httpPort,
+            version: "0.2.0",
+            operations: true,
+            deployment_progress: 1,
+          });
           return;
         }
         if (!ready) fail("Hub is not accepting requests", "transient");
@@ -209,6 +216,19 @@ export async function startServer(
           return;
         }
         const payload = decode(requestSchema, value, "request");
+        if (action === "deployment") {
+          const id = payload.env
+            ? manager.resolve(payload.env).Identity.ID
+            : (
+                await manager.current(
+                  context(controller.signal),
+                  payload.root ?? process.cwd(),
+                  payload.branch,
+                )
+              ).ID;
+          json(res, operations.latestDeployment(id));
+          return;
+        }
         switch (action) {
           case "deploy":
           case "deploy-async": {

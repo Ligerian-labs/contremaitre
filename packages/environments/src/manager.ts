@@ -5,10 +5,13 @@ import {
   type Context,
   context,
   fail,
+  hash,
   keys,
   message,
   now,
   phase,
+  progress,
+  serviceContext,
 } from "@contremaitre/execution/context";
 import { privateEnv, removeFile } from "@contremaitre/execution/files";
 import { sleep } from "@contremaitre/execution/sleep";
@@ -158,7 +161,15 @@ export class Manager {
         env.driver_directory = candidate.driver_directory;
         env.Root = root;
       }
-      await this.deployDriver(ctx, env, request, p.sourceId);
+      const driver = serviceContext(ctx, "driver");
+      try {
+        await this.deployDriver(driver, env, request, p.sourceId);
+        progress(driver, "ready", "ready");
+      } catch (error) {
+        driver.log(`${message(error)}\n`);
+        progress(driver, ctx.signal.aborted ? "cancelled" : "failed", message(error));
+        throw error;
+      }
       return;
     }
     if (!env) {
@@ -168,37 +179,70 @@ export class Manager {
     if (request.main || (identity.Branch === "main" && !this.state.Main[identity.Project]))
       this.state.Main[identity.Project] = identity.ID;
     this.save();
-    const previousStatus = env.Status;
+    const e = env,
+      previousStatus = e.Status;
     let mutated = false;
-    try {
-      const names = order(manifest.services),
-        images: Record<string, string> = {};
-      for (const name of names) {
-        const s = manifest.services[name];
-        if (!s.build) {
-          images[name] = s.image ?? "";
-          continue;
-        }
-        const buildRoot = safePath(root, s.build),
-          dockerfile = safePath(root, s.dockerfile || join(s.build, "Dockerfile"));
-        const tag = `cm-${identity.ID}-${name}:${Date.now()}${randomBytes(3).toString("hex")}`;
-        env.Images.push(tag);
-        this.save();
-        phase(ctx, `Building ${name}`);
-        const built = await this.runtime.build(
-          ctx,
-          buildRoot,
-          dockerfile,
-          tag,
-          request.rebuild ? undefined : env.builds?.[name],
-        );
-        env.builds ??= {};
-        env.builds[name] = built;
-        images[name] = built.image;
-        if (tag !== built.image) env.Images = env.Images.filter((i) => i !== tag);
-        this.save();
+    const names = order(manifest.services);
+    const scopes = Object.fromEntries(names.map((name) => [name, serviceContext(ctx, name)]));
+    const errors: string[] = [];
+    const failed = new Set<string>();
+    const attemptService = async (name: string, work: () => Promise<void>) => {
+      try {
+        ctx.signal.throwIfAborted();
+        await work();
+      } catch (error) {
+        const text = `${name}: ${message(error)}`;
+        scopes[name].log(`${text}\n`);
+        progress(scopes[name], ctx.signal.aborted ? "cancelled" : "failed", message(error));
+        failed.add(name);
+        errors.push(text);
       }
-      for (const [name, old] of Object.entries(env.Services)) {
+    };
+    try {
+      for (const name of names) {
+        const spec = manifest.services[name];
+        if (
+          spec.kind !== "app" &&
+          spec.depends_on?.some((dep) => manifest.services[dep].kind === "app")
+        )
+          fail(`${name}: infrastructure services cannot depend on apps`);
+      }
+      const images: Record<string, string> = {};
+      const builds = await Promise.allSettled(
+        names.map((name) =>
+          attemptService(name, async () => {
+            const s = manifest.services[name];
+            if (!s.build) {
+              progress(scopes[name], "waiting", "waiting for builds");
+              images[name] = s.image ?? "";
+              return;
+            }
+            const tag = `cm-${identity.ID}-${name}:${Date.now()}${randomBytes(3).toString("hex")}`;
+            e.Images.push(tag);
+            this.save();
+            phase(scopes[name], "building");
+            const built = await this.runtime.build(
+              scopes[name],
+              safePath(root, s.build),
+              safePath(root, s.dockerfile || join(s.build, "Dockerfile")),
+              tag,
+              request.rebuild ? undefined : e.builds?.[name],
+            );
+            e.builds ??= {};
+            e.builds[name] = built;
+            images[name] = built.image;
+            if (tag !== built.image) e.Images = e.Images.filter((i) => i !== tag);
+            this.save();
+            progress(scopes[name], "waiting", "build complete");
+          }),
+        ),
+      );
+      const buildError = builds.find((result) => result.status === "rejected");
+      if (buildError?.status === "rejected") throw buildError.reason;
+      ctx.signal.throwIfAborted();
+      if (errors.length) fail(errors.join("; "));
+      // Every required build must succeed before touching the current deployment.
+      for (const [name, old] of Object.entries(e.Services)) {
         const next = manifest.services[name];
         if (
           next &&
@@ -209,68 +253,167 @@ export class Manager {
             `${name}: database kind/image changed; use an explicit data migration or delete this environment`,
           );
       }
-      phase(ctx, `Preparing network for ${identity.Name}`);
-      await this.runtime.network(ctx, env.Network);
-      mutated = true;
-      env.Status = "deploying";
-      env.Error = "";
-      this.save();
-      for (const name of keys(env.Services)) {
-        const s = env.Services[name];
-        await this.runtime.stop(ctx, s.Container);
-        await this.runtime.remove(ctx, s.Container);
-        await this.runtime.remove(ctx, `${s.Container}-task`);
-      }
-      if (keys(env.Services).length) {
-        await this.runtime.removeNetwork(ctx, env.Network);
-        await this.runtime.network(ctx, env.Network);
-      }
-      const services: Environment["Services"] = {};
+      const previous = e.Services;
+      const services: Environment["Services"] = Object.fromEntries(
+        names.map((name) => {
+          const s = manifest.services[name],
+            old = previous[name];
+          return [
+            name,
+            {
+              Name: name,
+              Container: resourceName(e.Network, name),
+              Image: images[name],
+              IP: old?.IP ?? "",
+              Volume: old?.Volume ?? "",
+              Port: s.port ?? 0,
+              HTTP: s.http ?? false,
+              Spec: s,
+              Initialized: old?.Initialized ?? false,
+            },
+          ];
+        }),
+      );
+      const candidate = { ...e, Root: root, Services: services };
+      const retained = new Set<string>();
       for (const name of names) {
-        const s = manifest.services[name],
-          old = env.Services[name];
-        services[name] = {
-          Name: name,
-          Container: resourceName(env.Network, name),
-          Image: images[name],
-          IP: "",
-          Volume: old?.Volume ?? "",
-          Port: s.port ?? 0,
-          HTTP: s.http ?? false,
-          Spec: s,
-          Initialized: old?.Initialized ?? false,
-        };
+        const old = previous[name],
+          s = services[name];
+        if (
+          !old?.deployment ||
+          request.rebuild ||
+          !e.CloneComplete ||
+          s.Spec.depends_on?.some((dep) => !retained.has(dep))
+        )
+          continue;
+        const inspected = await this.runtime.inspect(scopes[name], old.Container);
+        if (!inspected?.Running || !inspected.IP || inspected.IP !== old.IP) continue;
+        if (old.deployment !== this.deploymentFingerprint(candidate, s)) continue;
+        retained.add(name);
+        s.deployment = old.deployment;
+        s.ready = true;
       }
-      env.Services = services;
-      env.Root = root;
+      ctx.signal.throwIfAborted();
+      const changing = names.filter((name) => !retained.has(name));
+      const removing = keys(previous).filter((name) => !retained.has(name));
+      mutated = changing.length > 0 || removing.length > 0;
+      e.Status = "deploying";
+      e.Error = "";
       this.save();
-      for (const name of names)
-        if (env.Services[name].Spec.kind !== "app")
-          await this.startService(ctx, env, env.Services[name], false);
-      if (!env.CloneComplete) {
+      if (mutated) {
+        phase(ctx, `Preparing network for ${identity.Name}`);
+        await this.runtime.network(ctx, e.Network);
+        // Settle all cleanup calls before proceeding or releasing the environment lock.
+        const stopped = await Promise.allSettled(
+          removing.map(async (name) => {
+            const scope = scopes[name] ?? serviceContext(ctx, name),
+              s = previous[name];
+            if (scopes[name]) phase(scope, "stopping previous process");
+            s.ready = false;
+            this.save();
+            await this.runtime.stop(scope, s.Container);
+            await this.runtime.remove(scope, s.Container);
+            await this.runtime.remove(scope, `${s.Container}-task`);
+          }),
+        );
+        const error = stopped.find((result) => result.status === "rejected");
+        if (error?.status === "rejected") throw error.reason;
+        if (!retained.size && keys(previous).length) {
+          await this.runtime.removeNetwork(ctx, e.Network);
+          await this.runtime.network(ctx, e.Network);
+        }
+      }
+      for (const name of changing) services[name].IP = "";
+      e.Services = services;
+      e.Root = root;
+      this.save();
+      const tasks = new Map<string, Promise<void>>();
+      const startGroup = async (apps: boolean) => {
+        for (const name of names.filter((name) => (services[name].Spec.kind === "app") === apps)) {
+          const s = services[name],
+            scope = scopes[name];
+          const dependencies = s.Spec.depends_on ?? [];
+          progress(
+            scope,
+            "waiting",
+            dependencies.length ? `waiting for ${dependencies.join(", ")}` : "waiting to start",
+          );
+          tasks.set(
+            name,
+            (async () => {
+              await Promise.all(dependencies.map((dep) => tasks.get(dep)));
+              if (dependencies.some((dep) => failed.has(dep))) {
+                failed.add(name);
+                progress(
+                  scope,
+                  "blocked",
+                  `blocked by ${dependencies.filter((dep) => failed.has(dep)).join(", ")}`,
+                );
+                return;
+              }
+              await attemptService(name, async () => {
+                if (retained.has(name)) {
+                  await this.waitReady(scope, s);
+                  progress(
+                    scope,
+                    "ready",
+                    "unchanged",
+                    s.HTTP ? this.localURL(e, name) : undefined,
+                  );
+                } else {
+                  await this.startService(scope, e, s, apps);
+                  s.deployment = this.deploymentFingerprint(e, s);
+                  this.save();
+                  progress(scope, "ready", "ready", s.HTTP ? this.localURL(e, name) : undefined);
+                }
+              });
+            })(),
+          );
+        }
+        const finished = await Promise.allSettled(tasks.values());
+        const error = finished.find((result) => result.status === "rejected");
+        if (error?.status === "rejected") throw error.reason;
+        ctx.signal.throwIfAborted();
+      };
+      await startGroup(false);
+      if (!e.CloneComplete) {
         const source = this.state.Environments[p.sourceId ?? ""];
-        if (source && source !== env) {
+        if (source && source !== e) {
+          if (errors.length) fail(errors.join("; "));
           if (source.driver) fail("Cannot clone between native and driver environments");
           phase(ctx, `Forking data from ${source.Identity.Name}`);
-          await cloneData(this, ctx, source, env);
+          await cloneData(this, ctx, source, e);
         }
-        env.CloneComplete = true;
+        e.CloneComplete = true;
         this.save();
       }
-      for (const name of names)
-        if (env.Services[name].Spec.kind === "app")
-          await this.startService(ctx, env, env.Services[name], true);
-      env.Status = "running";
-      env.Error = "";
-      env.UpdatedAt = now();
+      await startGroup(true);
+      if (errors.length) fail(errors.join("; "));
+      e.Status = "running";
+      e.Error = "";
+      e.UpdatedAt = now();
       this.save();
-    } catch (e) {
-      env.Error = message(e);
-      env.Status = mutated ? "failed" : previousStatus;
-      env.UpdatedAt = now();
+    } catch (error) {
+      e.Error = message(error);
+      e.Status = mutated ? "failed" : previousStatus;
+      e.UpdatedAt = now();
       this.save();
-      throw e;
+      throw error;
     }
+  }
+  private deploymentFingerprint(env: Environment, s: ServiceState): string {
+    return hash(
+      JSON.stringify([
+        s.Image,
+        s.Spec,
+        this.serviceEnv(env, s),
+        (s.Spec.depends_on ?? []).map((name) => [
+          name,
+          env.Services[name]?.IP,
+          env.Services[name]?.Port,
+        ]),
+      ]),
+    );
   }
   private async deployDriver(ctx: Context, env: Environment, req: Request, sourceId?: string) {
     const previous = env.Status;
@@ -416,9 +559,17 @@ export class Manager {
       this.save();
     } finally {
       removeFile(envFile);
+      if (ctx.signal.aborted) {
+        // Killing the host CLI does not guarantee that its temporary task VM stopped.
+        await this.runtime.remove(
+          context(AbortSignal.timeout(15_000), ctx.log),
+          `${s.Container}-task`,
+        );
+      }
     }
   }
   async waitReady(parent: Context, s: ServiceState) {
+    s.ready = false;
     const controller = new AbortController(),
       signal = AbortSignal.any([parent.signal, AbortSignal.timeout(90_000), controller.signal]),
       ctx = { ...parent, signal };
@@ -439,9 +590,15 @@ export class Manager {
                 ? ["redis-cli", "ping"]
                 : s.Spec.ready;
           try {
-            if (ready?.length) await this.runtime.exec(ctx, s.Container, ready, { timeout: 5000 });
+            if (ready?.length)
+              await this.runtime.exec(ctx, s.Container, ready, {
+                timeout: 5000,
+                stdout: ctx.log,
+                stderr: ctx.log,
+              });
             else if (s.Port && !(await tcpReady(s.IP, s.Port, signal)))
               throw Error("Port unavailable");
+            s.ready = true;
             return;
           } catch (e) {
             if (signal.aborted) throw e;

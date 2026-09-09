@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 import { Apple } from "@contremaitre/environments/apple";
 import { driverProcess } from "@contremaitre/environments/driver";
 import type { Environment, Request } from "@contremaitre/environments/model";
-import { context, decode, fail, keys } from "@contremaitre/execution/context";
+import { context, decode, fail } from "@contremaitre/execution/context";
 import { attempt } from "@contremaitre/hub/application";
 import { serve } from "@contremaitre/hub/server";
 import { operationSchema } from "@contremaitre/operations/operations";
@@ -11,9 +11,12 @@ import { tcpProxy } from "@contremaitre/routing/proxy";
 import { BunContext, BunRuntime } from "@effect/platform-bun";
 import { Args, Command, defineCommand, exitCodeFor, withSubcommands } from "@structure-ai/cli";
 import { Cause, Effect, Exit, Option } from "effect";
-import { attach, call, launch, projectRoot } from "./client.js";
+import { attach, call, deploymentLogs, launch, projectRoot } from "./client.js";
+import { deploy } from "./deploy.js";
 import {
+  type CommandHelp,
   commands as commandHelp,
+  deployLogsHelp,
   helpRequest,
   normalizeArguments,
   optionsFor,
@@ -31,7 +34,7 @@ export function makeRoot(passthrough: readonly string[] = []) {
   const definitions = commandHelp.flatMap((definition) =>
     [definition.name, ...(definition.aliases ?? [])].map((name) => ({ ...definition, name })),
   );
-  const commands = definitions.map(({ name, ...definition }) =>
+  const buildCommand = ({ name, ...definition }: CommandHelp, action = name) =>
     defineCommand({
       name,
       description: definition.description,
@@ -43,6 +46,12 @@ export function makeRoot(passthrough: readonly string[] = []) {
       },
       handler: (o) => {
         const home = resolve(o.home);
+        if (action === "deploy")
+          return deploy(
+            home,
+            { root: projectRoot(), branch: o.branch, main: o.main, rebuild: o.rebuild },
+            o,
+          );
         if (name === "serve")
           return serve({ home, port: o.port, publicPort: o.publicPort }).pipe(Effect.asVoid);
         return attempt(async (signal) => {
@@ -58,7 +67,7 @@ export function makeRoot(passthrough: readonly string[] = []) {
               main: o.main,
               rebuild: o.rebuild,
             };
-          switch (name) {
+          switch (action) {
             case "version":
               output(o.json, "contremaitre 0.2.0");
               return;
@@ -69,39 +78,20 @@ export function makeRoot(passthrough: readonly string[] = []) {
               await launch(ctx, home, o.port, o.publicPort);
               output(o.json, "Contremaitre is running");
               return;
-            case "deploy": {
-              await launch(ctx, home, o.port, o.publicPort);
+            case "deploy-logs": {
               const op = decode(
                 operationSchema,
-                await call(ctx, home, "deploy-async", req),
-                "deployment operation",
+                await call(ctx, home, "deployment", req),
+                "latest deployment",
               );
-              process.stderr.write(
-                `[contremaitre] Operation ${op.id}; reconnect with contremaitre attach ${op.id}\n`,
+              await deploymentLogs(
+                context(signal, (data) => {
+                  process.stdout.write(data);
+                }),
+                home,
+                op.id,
+                { failure: o.failure, follow: o.follow },
               );
-              if (o.detach) {
-                output(o.json, op);
-                return;
-              }
-              await attach(ctx, home, op.id);
-              const env = (await call(ctx, home, "resolve", {
-                env: op.environmentId,
-              })) as Environment;
-              if (o.json) {
-                output(true, env);
-                return;
-              }
-              output(false, `${env.Identity.Name} [${env.Identity.ID}]`);
-              const health = (await call(ctx, home, "health")) as { public_port: number };
-              const first = keys(env.Services).find((n) => env.Services[n].HTTP);
-              for (const n of keys(env.Services)) {
-                const s = env.Services[n];
-                if (s.HTTP)
-                  output(
-                    false,
-                    `${n}: ${s.url || `http://${first === n ? "" : `${n}.`}${env.Identity.Host}${health.public_port === 80 ? "" : `:${health.public_port}`}`}`,
-                  );
-              }
               return;
             }
             case "attach":
@@ -217,7 +207,11 @@ export function makeRoot(passthrough: readonly string[] = []) {
           }
         });
       },
-    }),
+    });
+  const commands = definitions.map((definition) =>
+    definition.name === "deploy"
+      ? withSubcommands(buildCommand(definition), [buildCommand(deployLogsHelp, "deploy-logs")])
+      : buildCommand(definition),
   );
   return withSubcommands(
     defineCommand({

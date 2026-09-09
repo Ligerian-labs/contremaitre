@@ -113,6 +113,7 @@ const progressSchema = Schema.Struct({
   operation: operationSchema,
   offset: Schema.Int,
   output: Schema.String,
+  size: Schema.optional(Schema.Int),
 });
 export async function attach(
   ctx: Context,
@@ -151,5 +152,53 @@ export function projectRoot(dir = process.cwd()): string {
     if ([".contremaitre.yaml", ".contremaitre.yml"].some((f) => existsSync(join(path, f))))
       return path;
     if (dirname(path) === path) return resolve(dir);
+  }
+}
+
+export async function followDeployment(
+  ctx: Context,
+  home: string,
+  op: Operation,
+  update: (op: Operation) => void,
+): Promise<Operation> {
+  update(op);
+  while (!terminal(op)) {
+    await sleep(150, ctx.signal);
+    const reply = decode(
+      progressSchema,
+      await call(ctx, home, "operation", { id: op.id, summary: true }),
+      "deployment progress",
+    );
+    op = reply.operation;
+    update(op);
+  }
+  return op;
+}
+
+export async function deploymentLogs(
+  ctx: Context,
+  home: string,
+  id: string,
+  options: { failure?: boolean; follow?: boolean } = {},
+): Promise<void> {
+  let offset = 0,
+    end: number | undefined;
+  while (true) {
+    const chunk = decode(
+      progressSchema,
+      await call(ctx, home, "operation", {
+        id,
+        offset,
+        failure: !!options.failure,
+        ...(end === undefined ? {} : { end }),
+      }),
+      "deployment logs",
+    );
+    if (!options.follow && end === undefined) end = chunk.size;
+    if (chunk.output) ctx.log(Buffer.from(chunk.output, "base64"));
+    offset = chunk.offset;
+    if (!options.follow && (end === undefined || offset >= end)) return;
+    if (terminal(chunk.operation) && !chunk.output) return;
+    if (!chunk.output) await sleep(200, ctx.signal);
   }
 }

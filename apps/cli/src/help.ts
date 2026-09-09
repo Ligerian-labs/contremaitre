@@ -78,9 +78,21 @@ const flags = {
   ),
   detach: flag(
     "detach",
-    Options.boolean("detach"),
+    Options.boolean("detach").pipe(Options.withAlias("d")),
     false,
     "Return the operation immediately without following it.",
+  ),
+  failure: flag(
+    "failure",
+    Options.boolean("failure"),
+    false,
+    "Print logs from failed services in the latest deployment; empty after success.",
+  ),
+  follow: flag(
+    "follow",
+    Options.boolean("follow").pipe(Options.withAlias("f")),
+    false,
+    "Follow deployment output until completion. Default: print and exit.",
   ),
   compose: flag(
     "compose",
@@ -100,7 +112,7 @@ const flags = {
 
 type FlagName = keyof typeof flags;
 type Group = "Environments" | "Inspect and connect" | "Operations" | "Hub and tools";
-interface CommandHelp {
+export interface CommandHelp {
   readonly name: string;
   readonly aliases?: readonly string[];
   readonly group: Group;
@@ -125,9 +137,14 @@ export const commands: readonly CommandHelp[] = [
     group: "Environments",
     description: "Deploy the current working files",
     details:
-      "Start the hub if needed, deploy this workspace, and follow the operation. New environments clone data from the project's designated main environment.",
+      "Deploy this workspace with compact service progress until readiness. Ctrl-C cancels deployment. Unchanged services stay running. New environments clone data from main. Use contremaitre deploy logs for full output.",
     flags: ["branch", "main", "rebuild", "detach", "port", "publicPort", "home", "json"],
-    examples: ["contremaitre deploy", "contremaitre deploy --branch main --main"],
+    examples: [
+      "contremaitre deploy",
+      "contremaitre deploy -d",
+      "contremaitre deploy logs --failure",
+      "contremaitre deploy --branch main --main",
+    ],
   },
   {
     name: "list",
@@ -279,6 +296,20 @@ export const commands: readonly CommandHelp[] = [
   },
 ];
 
+export const deployLogsHelp: CommandHelp = {
+  name: "logs",
+  group: "Operations",
+  description: "Print the latest deployment logs",
+  details:
+    "Print the latest deployment's build, migration and readiness logs for the current workspace. Use --follow to wait for new output. Container runtime logs are available through contremaitre logs SERVICE.",
+  flags: ["home", "branch", "env", "failure", "follow"],
+  examples: [
+    "contremaitre deploy logs",
+    "contremaitre deploy logs --failure",
+    "contremaitre deploy logs -f",
+  ],
+};
+
 export function optionsFor(command: Pick<CommandHelp, "flags">) {
   function option<A>(key: FlagName, spec: { parser: Options.Options<A>; fallback: A }) {
     return command.flags.includes(key)
@@ -296,6 +327,8 @@ export function optionsFor(command: Pick<CommandHelp, "flags">) {
     main: option("main", flags.main),
     rebuild: option("rebuild", flags.rebuild),
     detach: option("detach", flags.detach),
+    failure: option("failure", flags.failure),
+    follow: option("follow", flags.follow),
     compose: option("compose", flags.compose),
     offset: option("offset", flags.offset),
   };
@@ -340,6 +373,17 @@ export function normalizeArguments(input: readonly string[]) {
     index = actionIndex();
   }
   if (index >= 0) args.unshift(...args.splice(index, 1));
+  if (args[0] === "deploy") {
+    for (let i = 1; i < args.length; i++) {
+      if (valuedFlags.has(args[i])) {
+        i++;
+        continue;
+      }
+      if (args[i].startsWith("-")) continue;
+      if (args[i] === "logs") args.splice(1, 0, ...args.splice(i, 1));
+      break;
+    }
+  }
   return { args, command };
 }
 
@@ -349,10 +393,12 @@ class UsageError extends Error {
 
 // Inspect only Contremaitre's arguments. Tokens after -- belong to the child.
 export function helpRequest(args: readonly string[]): string | undefined {
-  const name = args[0]?.startsWith("-") ? undefined : args[0];
-  const command = commands.find(
-    (command) => command.name === name || command.aliases?.includes(name ?? ""),
-  );
+  const nested = args[0] === "deploy" && args[1] === "logs";
+  const name = nested ? "deploy logs" : args[0]?.startsWith("-") ? undefined : args[0];
+  const command =
+    name === "deploy logs"
+      ? deployLogsHelp
+      : commands.find((command) => command.name === name || command.aliases?.includes(name ?? ""));
   if (name && !command) throw new UsageError(`Unknown command '${name}'. Run contremaitre --help.`);
   const supported = [
     ...(command?.flags ?? (["home", "json"] as const)).map((key) => flags[key]),
@@ -360,10 +406,12 @@ export function helpRequest(args: readonly string[]): string | undefined {
     { name: "h", value: "" },
   ];
   let help = args.length === 0;
-  for (let i = name ? 1 : 0; i < args.length; i++) {
+  for (let i = nested ? 2 : name ? 1 : 0; i < args.length; i++) {
     const token = args[i];
     if (!token.startsWith("-")) continue;
-    const [key] = token.split("=", 1);
+    let [key] = token.split("=", 1);
+    if (key === "-d") key = "--detach";
+    if (key === "-f") key = "--follow";
     const spec = supported.find((flag) => (flag.name === "h" ? "-h" : `--${flag.name}`) === key);
     if (!spec)
       throw new UsageError(
@@ -417,9 +465,10 @@ export function renderHelp(name?: string) {
       lines.push(...wrap(description, width, prefix, indent));
     }
   };
-  const command = commands.find(
-    (command) => command.name === name || command.aliases?.includes(name ?? ""),
-  );
+  const command =
+    name === "deploy logs"
+      ? deployLogsHelp
+      : commands.find((command) => command.name === name || command.aliases?.includes(name ?? ""));
   if (!command) {
     paragraph("Contremaitre - isolated local application environments");
     paragraph("Usage: contremaitre <command> [flags]");
@@ -451,7 +500,10 @@ export function renderHelp(name?: string) {
         .filter((flag) => flag.shared === shared)
         .map(
           (flag) =>
-            [`--${flag.name}${flag.value ? ` ${flag.value}` : ""}`, flag.description] as const,
+            [
+              `${flag.name === "detach" ? "-d, " : flag.name === "follow" ? "-f, " : ""}--${flag.name}${flag.value ? ` ${flag.value}` : ""}`,
+              flag.description,
+            ] as const,
         );
       if (shared)
         entries.push(
