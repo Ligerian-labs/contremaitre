@@ -267,6 +267,5 @@ migration recomputes an image through Apple's existing build cache. Subsequent
 unchanged deployments reuse the stored image directly.
 
 Run `bun run check` for formatting, lint, typechecking, tests, and the standalone
-macOS ARM64 build. `make compat-check` checks the preserved Go reference under
-`compat/go`; it is not part of the new runtime. See
+macOS ARM64 build. See
 [the migration contract](docs/structure-migration.md) for acceptance criteria.

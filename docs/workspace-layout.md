@@ -63,7 +63,6 @@ ARM64 build, and compiled-executable crash/restart checks.
 - Command behavior, state version, environment identities, deployment lifecycle,
   routing, and recovery remain unchanged.
 - `make build` still writes `bin/contremaitre`; `make install` uses the same path.
-- The Go rollback reference remains under `compat/go`.
 
 The existing behavior suite verifies this refactor. No new deployment behavior is
 introduced. Package checks add structural validation; standalone packaging checks
