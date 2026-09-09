@@ -192,8 +192,11 @@ The hub runs two environment operations concurrently by default. Set
 `CONTREMAITRE_CONCURRENCY` to an integer from 1 through 16 before starting it to
 change that limit. The queue accepts up to 64 active or waiting operations. Service
 builds are scheduled concurrently; each Apple runtime admits up to four builds at
-once. A process-independent lock serializes shared builder startup only. Existing
-builder CPU and memory settings are preserved. Infrastructure starts before apps,
+once. A process-independent lock gives one deployment ownership of the shared builder
+while its builds run. Builder configuration is reconciled before launching those
+builds, even if the builder is already running. Other deployments and hubs wait
+until the active builds finish or cancellation cleanup completes. Existing builder
+CPU and memory settings are preserved. Infrastructure starts before apps,
 with independent services starting concurrently and dependencies waiting for readiness.
 Cloning locks both source and target against concurrent mutations.
 

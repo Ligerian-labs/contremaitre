@@ -15,8 +15,9 @@ Deployments belong to the hub. Every accepted deployment gets an operation ID.
 Client disconnect does not cancel it. A second deploy for the same environment
 returns its active operation. Explicit cancellation terminates owned processes
 and completes recovery before marking the operation terminal. Cross-environment
-work has a configurable concurrency limit. Shared Apple builder startup is serialized;
-independent builds can run concurrently. Ctrl-C in an attached deploy requests cancellation.
+work has a configurable concurrency limit. One deployment owns the shared Apple
+builder during configuration reconciliation and its active builds. Builds within
+that deployment run concurrently; other deployments wait for the builder lease. Ctrl-C in an attached deploy requests cancellation.
 Main-source cloning must exclude concurrent mutation of both source and target.
 
 On restart, interrupted operations are retained and reported as interrupted, not
