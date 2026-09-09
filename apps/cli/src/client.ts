@@ -64,8 +64,30 @@ export async function health(ctx: Context, home: string): Promise<boolean> {
     return false;
   }
 }
-export async function launch(ctx: Context, home: string, port: number, publicPort?: number) {
-  if (await health(ctx, home)) return;
+export async function launch(
+  ctx: Context,
+  home: string,
+  port: number,
+  publicPort?: number,
+  httpsPort?: number,
+) {
+  if (httpsPort !== undefined && (httpsPort < 1 || httpsPort > 65535)) fail("Invalid HTTPS port");
+  if (httpsPort !== undefined && (publicPort || port !== 8080))
+    fail("--http-port and --public-port require --http; use --https-port for HTTPS");
+  const running = async () => {
+    let current: { local_https?: boolean };
+    try {
+      current = (await call(ctx, home, "health", {}, 1000)) as typeof current;
+    } catch {
+      return false;
+    }
+    if (!!current.local_https !== (httpsPort !== undefined))
+      fail(
+        "The running hub uses different routing. Restart it with this Contremaitre binary and the requested HTTPS/HTTP settings.",
+      );
+    return true;
+  };
+  if (await running()) return;
   mkdirSync(home, { recursive: true, mode: 0o700 });
   const logPath = join(home, "daemon.log");
   if (existsSync(logPath) && statSync(logPath).size > 10 * 1048576)
@@ -75,6 +97,7 @@ export async function launch(ctx: Context, home: string, port: number, publicPor
   const args = [
     ...(development ? [Bun.main] : []),
     "serve",
+    ...(httpsPort === undefined ? ["--http"] : ["--https-port", String(httpsPort)]),
     "--home",
     home,
     "--http-port",
@@ -96,7 +119,7 @@ export async function launch(ctx: Context, home: string, port: number, publicPor
   const deadline = Date.now() + 180_000;
   try {
     while (Date.now() < deadline) {
-      if (await health(ctx, home)) return;
+      if (await running()) return;
       if (exited) fail(`Hub failed to start${error ? `: ${error.message}` : ""}; see ${logPath}`);
       await sleep(250, ctx.signal);
     }

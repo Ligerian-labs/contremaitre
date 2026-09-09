@@ -12,6 +12,7 @@ import { reapProcesses } from "@contremaitre/execution/process-journal";
 import { sleep } from "@contremaitre/execution/sleep";
 import { type Operation, Operations, terminal } from "@contremaitre/operations/operations";
 import { closeServer, listen, proxyServer, type Route } from "@contremaitre/routing/proxy";
+import { type LocalRoute, startTraefik } from "@contremaitre/routing/traefik";
 import { load, Settings } from "@structure-ai/config";
 import { Readiness, Shutdown } from "@structure-ai/runtime";
 import { Duration, Effect, Layer } from "effect";
@@ -36,6 +37,7 @@ export interface ServerOptions {
   home: string;
   port: number;
   publicPort?: number;
+  httpsPort?: number;
   concurrency?: number;
   runtime?: Runtime;
   skipSystemStart?: boolean;
@@ -101,11 +103,16 @@ export async function startServer(
   options: ServerOptions,
   signal: AbortSignal = new AbortController().signal,
 ) {
+  if (options.httpsPort !== undefined && (options.httpsPort < 1 || options.httpsPort > 65535))
+    fail("Invalid HTTPS port");
+  if (options.httpsPort !== undefined && (options.publicPort || options.port !== 8080))
+    fail("--http-port and --public-port require --http; use --https-port for HTTPS");
   const store = new Store(options.home),
     unlock = lockHome(store.home);
   let control: Server | undefined, publicServer: Server | undefined;
   let ops: Operations | undefined, tunnels: Tunnels | undefined;
   let closeApp: (() => Promise<void>) | undefined;
+  let stopTraefik: (() => Promise<void>) | undefined;
   let stopDevelopment: (() => Promise<void>) | undefined;
   let shutdownPromise: Promise<void> | undefined;
   let monitoring: ReturnType<typeof setInterval> | undefined;
@@ -117,6 +124,7 @@ export async function startServer(
       if (monitoring) clearInterval(monitoring);
       for (const request of requests) request.abort();
       await ops?.shutdown();
+      await stopTraefik?.();
       await stopDevelopment?.();
       await tunnels?.shutdown();
       if (control) await closeServer(control);
@@ -130,7 +138,12 @@ export async function startServer(
     const runtime = options.runtime ?? new Apple();
     if (!options.skipSystemStart)
       await runtime.startSystem(context(signal, (chunk) => process.stderr.write(chunk)));
-    const manager = new Manager(store, runtime, options.publicPort || options.port);
+    const manager = new Manager(
+      store,
+      runtime,
+      options.httpsPort === undefined ? options.publicPort || options.port : 443,
+      options.httpsPort === undefined ? "http" : "https",
+    );
     stopDevelopment = () => manager.stopDevelopment();
     ops = new Operations(store.home, options.concurrency ?? 2);
     const operations = ops;
@@ -187,6 +200,8 @@ export async function startServer(
             version: "0.2.0",
             operations: true,
             deployment_progress: 1,
+            local_https: options.httpsPort !== undefined,
+            development: 1,
           });
           return;
         }
@@ -358,8 +373,43 @@ export async function startServer(
       control?.listen(socket, () => resolve());
     });
     chmodSync(socket, 0o600);
-    publicServer = proxyServer(lookup);
-    await listen(publicServer, options.port);
+    if (options.httpsPort === undefined) {
+      publicServer = proxyServer(lookup);
+      await listen(publicServer, options.port);
+    } else {
+      const snapshot = (): LocalRoute[] => {
+        const hosts = new Set<string>();
+        for (const env of Object.values(manager.state.Environments)) {
+          for (const [name, service] of Object.entries(env.Services))
+            if (service.HTTP) hosts.add(new URL(manager.localURL(env, name)).hostname);
+          if (manager.state.Main[env.Identity.Project] === env.Identity.ID)
+            hosts.add(`main.${env.Identity.Project}.localhost`);
+        }
+        return [...hosts].sort().flatMap((host) => {
+          const route = lookup(host);
+          return route ? [{ host, upstream: route.upstream }] : [];
+        });
+      };
+      const traefik = await startTraefik(
+        {
+          ...context(signal, (chunk) => process.stderr.write(chunk)),
+          processDirectory: join(store.home, "processes"),
+        },
+        store.home,
+        options.httpsPort,
+        snapshot,
+        (error) => {
+          process.stderr.write(`${message(error)}\n`);
+          void close();
+        },
+      );
+      stopTraefik = traefik.close;
+      if (shutdownPromise) {
+        await traefik.close();
+        fail("Traefik exited during hub startup; see daemon.log");
+      }
+      manager.onSave = traefik.update;
+    }
     ready = true;
     let restoring = false;
     const restore = async () => {

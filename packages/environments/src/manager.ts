@@ -123,6 +123,7 @@ export class Manager {
     readonly store: Store,
     readonly runtime: Runtime,
     readonly httpPort = 8080,
+    readonly protocol: "http" | "https" = "http",
   ) {
     this.state = store.load();
   }
@@ -521,10 +522,14 @@ export class Manager {
     }
   }
   localURL(env: Environment, name: string) {
-    if (env.Services[name]?.url) return env.Services[name].url;
+    const driverURL = env.Services[name]?.url;
+    if (driverURL && this.protocol === "http") return driverURL;
     const first = keys(env.Services).find((n) => env.Services[n].HTTP);
-    const host = `${first === name ? "" : `${name}.`}${env.Identity.Host}`;
-    return `http://${host}${this.httpPort === 80 ? "" : `:${this.httpPort}`}`;
+    const host = driverURL
+      ? new URL(driverURL).hostname
+      : `${first === name ? "" : `${name}.`}${env.Identity.Host}`;
+    const defaultPort = this.protocol === "https" ? 443 : 80;
+    return `${this.protocol}://${host}${this.httpPort === defaultPort ? "" : `:${this.httpPort}`}`;
   }
   serviceEnv(env: Environment, s: ServiceState): Record<string, string> {
     const values = {

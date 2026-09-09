@@ -86,6 +86,7 @@ const commandNames = [
   "tunnel",
   "version",
   "forward-http",
+  "forward-https",
 ];
 
 test("root help is a compact overview of every command, also shown without arguments", async () => {

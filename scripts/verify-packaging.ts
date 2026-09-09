@@ -39,7 +39,7 @@ const port = await new Promise<number>((resolve, reject) => {
 });
 let child: ReturnType<typeof Bun.spawn> | undefined;
 async function boot() {
-  child = Bun.spawn([binary, "serve", "--home", home, "--http-port", String(port)], {
+  child = Bun.spawn([binary, "serve", "--http", "--home", home, "--http-port", String(port)], {
     env: { ...process.env, PATH: `${fakebin}:${process.env.PATH}` },
     stdout: "ignore",
     stderr: "pipe",

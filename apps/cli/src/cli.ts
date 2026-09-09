@@ -53,7 +53,12 @@ export function makeRoot(passthrough: readonly string[] = []) {
             o,
           );
         if (name === "serve")
-          return serve({ home, port: o.port, publicPort: o.publicPort }).pipe(Effect.asVoid);
+          return serve({
+            home,
+            port: o.port,
+            publicPort: o.publicPort,
+            httpsPort: o.http ? undefined : o.httpsPort,
+          }).pipe(Effect.asVoid);
         return attempt(async (signal) => {
           if (o.port < 1 || o.port > 65535 || o.publicPort < 0 || o.publicPort > 65535)
             fail("Invalid HTTP port");
@@ -83,7 +88,7 @@ export function makeRoot(passthrough: readonly string[] = []) {
               );
               return;
             case "start":
-              await launch(ctx, home, o.port, o.publicPort);
+              await launch(ctx, home, o.port, o.publicPort, o.http ? undefined : o.httpsPort);
               output(o.json, "Contremaitre is running");
               return;
             case "deploy-logs": {
@@ -203,6 +208,17 @@ export function makeRoot(passthrough: readonly string[] = []) {
               );
               return;
             }
+            case "forward-https":
+              if (o.httpsPort < 1024 || o.httpsPort > 65535)
+                fail("HTTPS forwarding target must be 1024..65535");
+              await tcpProxy(
+                ctx,
+                443,
+                o.httpsPort,
+                async () => "127.0.0.1",
+                () => output(o.json, `Forwarding 127.0.0.1:443 to 127.0.0.1:${o.httpsPort}`),
+              );
+              return;
             case "forward-http":
               await tcpProxy(
                 ctx,
