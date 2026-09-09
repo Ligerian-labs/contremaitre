@@ -24,6 +24,9 @@ Run the hub and application containers as your normal user. See
 [local HTTPS setup](docs/local-https.md) for certificate trust, upgrades and
 custom listener ports.
 
+Open [https://contremaitre.localhost](https://contremaitre.localhost) for the
+Traefik dashboard. It starts with the HTTPS hub, even before any apps are deployed.
+
 For explicit legacy HTTP, use `contremaitre start --http --http-port 8080` and
 `contremaitre deploy --http`. The control API uses a private Unix socket. A
 detached daemon owns state and connector processes, so closing the hub's starting
