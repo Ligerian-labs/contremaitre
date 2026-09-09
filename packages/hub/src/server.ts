@@ -106,6 +106,7 @@ export async function startServer(
   let control: Server | undefined, publicServer: Server | undefined;
   let ops: Operations | undefined, tunnels: Tunnels | undefined;
   let closeApp: (() => Promise<void>) | undefined;
+  let stopDevelopment: (() => Promise<void>) | undefined;
   let shutdownPromise: Promise<void> | undefined;
   let monitoring: ReturnType<typeof setInterval> | undefined;
   let ready = false;
@@ -116,6 +117,7 @@ export async function startServer(
       if (monitoring) clearInterval(monitoring);
       for (const request of requests) request.abort();
       await ops?.shutdown();
+      await stopDevelopment?.();
       await tunnels?.shutdown();
       if (control) await closeServer(control);
       if (publicServer) await closeServer(publicServer);
@@ -129,6 +131,7 @@ export async function startServer(
     if (!options.skipSystemStart)
       await runtime.startSystem(context(signal, (chunk) => process.stderr.write(chunk)));
     const manager = new Manager(store, runtime, options.publicPort || options.port);
+    stopDevelopment = () => manager.stopDevelopment();
     ops = new Operations(store.home, options.concurrency ?? 2);
     const operations = ops;
     await manager.recover({

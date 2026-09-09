@@ -1,6 +1,9 @@
+import { createReadStream } from "node:fs";
+import * as fs from "node:fs/promises";
 import { createConnection } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { Readable } from "node:stream";
 import {
   type Context,
   fail,
@@ -29,6 +32,7 @@ export interface RunSpec {
   volumes: Record<string, string>;
   envFile: string;
   task?: boolean;
+  stdin?: Readable;
 }
 export interface Runtime {
   startSystem(ctx: Context): Promise<void>;
@@ -51,6 +55,14 @@ export interface Runtime {
   remove(ctx: Context, name: string): Promise<void>;
   exec(ctx: Context, name: string, args: readonly string[], options?: RunOptions): Promise<Buffer>;
   logs(ctx: Context, name: string): Promise<void>;
+  sync(
+    ctx: Context,
+    spec: RunSpec,
+    directory: string,
+    changed: string[],
+    removed: string[],
+    initial: boolean,
+  ): Promise<void>;
 }
 export const missing = (e: unknown): boolean =>
   /notFound|not found|does not exist/.test(message(e));
@@ -155,9 +167,73 @@ export class Apple implements Runtime {
       s.task ? "--rm" : "--detach",
     ];
     if (s.envFile) args.push("--env-file", s.envFile);
+    if (s.stdin) args.push("--interactive");
+    if (s.service.working_dir) args.push("--workdir", s.service.working_dir);
     for (const source of keys(s.volumes)) args.push("--volume", `${source}:${s.volumes[source]}`);
     args.push(s.image, ...(s.service.command ?? []));
-    await this.output(ctx, args, s.task ? { stdout: ctx.log, stderr: ctx.log } : {});
+    await this.output(
+      ctx,
+      args,
+      s.task ? { stdin: s.stdin, stdout: ctx.log, stderr: ctx.log } : {},
+    );
+  }
+  async sync(
+    ctx: Context,
+    spec: RunSpec,
+    directory: string,
+    changed: string[],
+    removed: string[],
+    initial: boolean,
+  ) {
+    const target = spec.service.dev?.target;
+    if (!target) fail("Source sync requires dev.target");
+    const temp = await fs.mkdtemp(join(directory, "../archive-"));
+    try {
+      const archive = join(temp, "source.tar"),
+        list = join(temp, "files");
+      await fs.writeFile(list, changed.map((p) => `./${p}\0`).join(""));
+      await run(
+        ctx,
+        ["tar", "--no-xattrs", "-cf", archive, "-C", directory, "--null", "-T", list],
+        {
+          env: { ...process.env, COPYFILE_DISABLE: "1" },
+        },
+      );
+      const command = ["sh", "-eu", "-c", 'mkdir -p "$1"; tar -xf - -C "$1"', "sync", target];
+      if (initial) {
+        await this.remove(ctx, `${spec.name}-sync`);
+        await this.run(ctx, {
+          ...spec,
+          name: `${spec.name}-sync`,
+          task: true,
+          stdin: createReadStream(archive),
+          service: { ...spec.service, working_dir: target, command },
+        });
+      } else {
+        for (let i = 0; i < removed.length; i += 100)
+          await this.exec(ctx, spec.name, [
+            "sh",
+            "-eu",
+            "-c",
+            'for p do if [ ! -d "$p" ]; then rm -f -- "$p"; fi; done',
+            "sync",
+            ...removed.slice(i, i + 100).map((p) => join(target, p)),
+          ]);
+        for (let i = 0; i < changed.length; i += 100)
+          await this.exec(ctx, spec.name, [
+            "sh",
+            "-eu",
+            "-c",
+            'for p do if [ -d "$p" ]; then rm -rf -- "$p"; fi; d=$(dirname "$p"); while [ ! -d "$d" ]; do if [ -e "$d" ]; then rm -f -- "$d"; break; fi; d=$(dirname "$d"); done; done',
+            "sync",
+            ...changed.slice(i, i + 100).map((p) => join(target, p)),
+          ]);
+        if (changed.length)
+          await this.exec(ctx, spec.name, command, { stdin: createReadStream(archive) });
+      }
+    } finally {
+      await fs.rm(temp, { recursive: true, force: true });
+    }
   }
   exec(ctx: Context, name: string, args: readonly string[], options: RunOptions = {}) {
     return this.output(

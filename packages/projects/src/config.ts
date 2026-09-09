@@ -104,12 +104,32 @@ export function parseManifest(text: string): Manifest {
         s.init?.length ||
         s.migrate?.length ||
         s.env_file ||
+        s.working_dir ||
         keys(s.environment).length ||
         s.command?.length)
     )
       fail(
         `${name}: managed databases cannot override storage, credentials, command or initialization`,
       );
+    const containerPath = (p: string) =>
+      p.startsWith("/") && !/[,:\r\n]/.test(p) && resolve(p) === p && p !== "/";
+    if (s.working_dir && !containerPath(s.working_dir)) fail(`${name}: invalid working_dir`);
+    if (s.dev) {
+      const target = s.dev.target;
+      if (kind !== "app") fail(`${name}: dev is only supported for apps`);
+      if (
+        !s.dev.source ||
+        isAbsolute(s.dev.source) ||
+        !inside("/project", resolve("/project", s.dev.source))
+      )
+        fail(`${name}: dev.source must stay within project`);
+      if (!containerPath(s.dev.target)) fail(`${name}: invalid dev.target`);
+      if (!s.command?.length) fail(`${name}: dev requires an explicit command`);
+      if (!s.working_dir || !inside(s.dev.target, s.working_dir))
+        fail(`${name}: working_dir must be inside dev.target`);
+      if (Object.values(s.volumes ?? {}).some((p) => inside(p, target) || inside(target, p)))
+        fail(`${name}: persistent volumes cannot overlap dev.target`);
+    }
     if ((s.port ?? 0) < 0 || (s.port ?? 0) > 65535) fail(`${name}: invalid port`);
     if (s.http && (kind !== "app" || !s.port)) fail(`${name}: http requires an app port`);
     if ((s.cpus ?? 0) < 1 || (s.cpus ?? 0) > 64) fail(`${name}: cpus must be 1..64`);
@@ -124,7 +144,11 @@ export function parseManifest(text: string): Manifest {
         fail(`${name}: invalid persistent volume`);
     for (const [key, value] of Object.entries(s.environment ?? {}))
       if (!envKey.test(key) || /[\r\n]/.test(value)) fail(`${name}: invalid environment entry`);
-    for (const p of [s.build, s.dockerfile, s.env_file])
+    for (const p of [
+      s.build,
+      s.dockerfile,
+      ...(typeof s.env_file === "string" ? [s.env_file] : (s.env_file ?? [])),
+    ])
       if (p && (isAbsolute(p) || !inside("/project", resolve("/project", p))))
         fail(`${name}: paths must stay within project`);
     services[name] = s;
@@ -140,7 +164,9 @@ export function loadManifest(root: string): Manifest {
   }
   return fail(`No .contremaitre.yaml in ${root}; run contremaitre init`);
 }
-export function readEnv(root: string, file: string): Record<string, string> {
+export function readEnv(root: string, file: string | readonly string[]): Record<string, string> {
+  if (typeof file !== "string")
+    return Object.assign(Object.create(null), ...file.map((p) => readEnv(root, p)));
   const values: Record<string, string> = Object.create(null);
   for (const line of readFileSync(safePath(root, file), "utf8").split("\n")) {
     const text = line.trim();

@@ -6,7 +6,6 @@ import { context, decode, fail } from "@contremaitre/execution/context";
 import { attempt } from "@contremaitre/hub/application";
 import { serve } from "@contremaitre/hub/server";
 import { operationSchema } from "@contremaitre/operations/operations";
-import { initProject } from "@contremaitre/projects/init";
 import { tcpProxy } from "@contremaitre/routing/proxy";
 import { BunContext, BunRuntime } from "@effect/platform-bun";
 import { Args, Command, defineCommand, exitCodeFor, withSubcommands } from "@structure-ai/cli";
@@ -22,6 +21,7 @@ import {
   optionsFor,
   renderHelp,
 } from "./help.js";
+import { initialize } from "./init.js";
 
 export { normalizeArguments } from "./help.js";
 
@@ -72,7 +72,15 @@ export function makeRoot(passthrough: readonly string[] = []) {
               output(o.json, "contremaitre 0.2.0");
               return;
             case "init":
-              output(o.json, initProject(process.cwd(), o.compose || undefined));
+              output(
+                o.json,
+                await initialize(ctx, process.cwd(), home, {
+                  noAI: o.noAI,
+                  agent: o.agent || undefined,
+                  compose: o.compose || undefined,
+                  json: o.json,
+                }),
+              );
               return;
             case "start":
               await launch(ctx, home, o.port, o.publicPort);

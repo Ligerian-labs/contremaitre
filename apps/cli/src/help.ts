@@ -21,6 +21,19 @@ function flag<A>(
 }
 
 const flags = {
+  noAI: flag(
+    "no-ai",
+    Options.boolean("no-ai"),
+    false,
+    "Use conventional detection without a coding agent.",
+  ),
+  agent: flag(
+    "agent",
+    Options.text("agent"),
+    "",
+    "Coding agent: codex, claude, pi or opencode. Overrides saved selection.",
+    "NAME",
+  ),
   home: flag(
     "home",
     Options.text("home"),
@@ -98,7 +111,7 @@ const flags = {
     "compose",
     Options.text("compose"),
     "",
-    "Import services from a Compose file.",
+    "Select Compose input. With --no-ai, import the supported subset.",
     "FILE",
   ),
   offset: flag(
@@ -127,10 +140,15 @@ export const commands: readonly CommandHelp[] = [
   {
     name: "init",
     group: "Environments",
-    description: "Generate a project manifest",
-    details: "Write .contremaitre.yaml from project conventions or a Compose file.",
-    flags: ["compose", "json"],
-    examples: ["contremaitre init", "contremaitre init --compose compose.yml"],
+    description: "Create or update a project manifest",
+    details:
+      "Configure the active development stack with a coding agent, one question at a time. Only the manifest is written. --no-ai uses conventional detection and refuses existing manifests. Agent settings live in <home>/init.json.",
+    flags: ["agent", "noAI", "compose", "home", "json"],
+    examples: [
+      "contremaitre init",
+      "contremaitre init --agent pi",
+      "contremaitre init --no-ai --compose compose.yml",
+    ],
   },
   {
     name: "deploy",
@@ -317,6 +335,8 @@ export function optionsFor(command: Pick<CommandHelp, "flags">) {
       : Options.none.pipe(Options.map(() => spec.fallback));
   }
   return {
+    noAI: option("noAI", flags.noAI),
+    agent: option("agent", flags.agent),
     home: option("home", flags.home),
     env: option("env", flags.env),
     branch: option("branch", flags.branch),

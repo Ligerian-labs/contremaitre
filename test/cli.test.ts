@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -46,6 +46,25 @@ async function cli(args: string[], columns = 80) {
   ]);
   return { stdout, stderr, code };
 }
+
+test("plain init requires a terminal and explicit non-AI init works without an agent", async () => {
+  const plain = await cli(["init"]);
+  expect(plain.code).not.toBe(0);
+  expect(plain.stderr).toContain("--no-ai");
+  expect(existsSync(join(cliDirectory, ".contremaitre.yaml"))).toBe(false);
+  writeFileSync(join(cliDirectory, "Dockerfile"), "FROM scratch\n");
+  try {
+    const result = await cli(["init", "--no-ai"]);
+    expect(result.code).toBe(0);
+    expect(existsSync(join(cliDirectory, ".contremaitre.yaml"))).toBe(true);
+    const again = await cli(["init", "--no-ai"]);
+    expect(again.code).not.toBe(0);
+    expect(again.stderr).toContain("already exists");
+  } finally {
+    rmSync(join(cliDirectory, "Dockerfile"), { force: true });
+    rmSync(join(cliDirectory, ".contremaitre.yaml"), { force: true });
+  }
+});
 
 const commandNames = [
   "init",

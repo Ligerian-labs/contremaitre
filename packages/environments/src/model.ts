@@ -26,6 +26,8 @@ export interface ServiceState {
   ready?: boolean;
   url?: string;
   raw_environment?: Record<string, string>;
+  development_error?: string;
+  dependencies_changed?: boolean;
 }
 export interface Environment {
   Identity: Identity;

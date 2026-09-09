@@ -1,4 +1,5 @@
 /bin/
+/workspace/
 .DS_Store
 .env
 .env.*

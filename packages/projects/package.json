@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./assisted-init": "./src/assisted-init.ts",
     "./config": "./src/config.ts",
     "./init": "./src/init.ts",
     "./model": "./src/model.ts"
