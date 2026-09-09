@@ -1,0 +1,475 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { Options } from "@structure-ai/cli";
+
+function flag<A>(
+  name: string,
+  parser: Options.Options<A>,
+  fallback: A,
+  description: string,
+  value = "",
+  shared = false,
+) {
+  return {
+    name,
+    value,
+    description,
+    shared,
+    fallback,
+    parser: parser.pipe(Options.withDefault(fallback), Options.withDescription(description)),
+  };
+}
+
+const flags = {
+  home: flag(
+    "home",
+    Options.text("home"),
+    process.env.CONTREMAITRE_HOME || join(homedir(), ".local", "share", "contremaitre"),
+    "Hub data directory. Default: CONTREMAITRE_HOME or ~/.local/share/contremaitre.",
+    "PATH",
+    true,
+  ),
+  env: flag(
+    "env",
+    Options.text("env"),
+    "",
+    "Environment ID or name. Default: current workspace.",
+    "ENV",
+  ),
+  branch: flag(
+    "branch",
+    Options.text("branch"),
+    "",
+    "Override the detected branch or bookmark name.",
+    "NAME",
+  ),
+  port: flag(
+    "http-port",
+    Options.integer("http-port"),
+    8080,
+    "Hub HTTP port when starting it. Default: 8080.",
+    "PORT",
+  ),
+  publicPort: flag(
+    "public-port",
+    Options.integer("public-port"),
+    0,
+    "Port in public URLs. Default: 0, use the HTTP port.",
+    "PORT",
+  ),
+  json: flag("json", Options.boolean("json"), false, "Print the result as JSON.", "", true),
+  deleteData: flag(
+    "delete-data",
+    Options.boolean("delete-data"),
+    false,
+    "Also delete retained environment data. Default: false.",
+  ),
+  main: flag(
+    "main",
+    Options.boolean("main"),
+    false,
+    "Designate this environment as the initial clone source.",
+  ),
+  rebuild: flag(
+    "rebuild",
+    Options.boolean("rebuild"),
+    false,
+    "Build again instead of reusing an unchanged image.",
+  ),
+  detach: flag(
+    "detach",
+    Options.boolean("detach"),
+    false,
+    "Return the operation immediately without following it.",
+  ),
+  compose: flag(
+    "compose",
+    Options.text("compose"),
+    "",
+    "Import services from a Compose file.",
+    "FILE",
+  ),
+  offset: flag(
+    "offset",
+    Options.integer("offset"),
+    0,
+    "Resume operation logs at this byte offset. Default: 0.",
+    "BYTES",
+  ),
+};
+
+type FlagName = keyof typeof flags;
+type Group = "Environments" | "Inspect and connect" | "Operations" | "Hub and tools";
+interface CommandHelp {
+  readonly name: string;
+  readonly aliases?: readonly string[];
+  readonly group: Group;
+  readonly description: string;
+  readonly usage?: string;
+  readonly details?: string;
+  readonly flags: readonly FlagName[];
+  readonly examples: readonly string[];
+}
+
+export const commands: readonly CommandHelp[] = [
+  {
+    name: "init",
+    group: "Environments",
+    description: "Generate a project manifest",
+    details: "Write .contremaitre.yaml from project conventions or a Compose file.",
+    flags: ["compose", "json"],
+    examples: ["contremaitre init", "contremaitre init --compose compose.yml"],
+  },
+  {
+    name: "deploy",
+    group: "Environments",
+    description: "Deploy the current working files",
+    details:
+      "Start the hub if needed, deploy this workspace, and follow the operation. New environments clone data from the project's designated main environment.",
+    flags: ["branch", "main", "rebuild", "detach", "port", "publicPort", "home", "json"],
+    examples: ["contremaitre deploy", "contremaitre deploy --branch main --main"],
+  },
+  {
+    name: "list",
+    aliases: ["status"],
+    group: "Environments",
+    description: "List environments",
+    flags: ["home", "json"],
+    examples: ["contremaitre list", "contremaitre list --json"],
+  },
+  {
+    name: "main",
+    group: "Environments",
+    description: "Choose the environment to clone data from",
+    usage: "[ENV]",
+    details:
+      "Designate an existing environment as the project's data clone source. ENV overrides --env; without either, use the current workspace.",
+    flags: ["env", "branch", "home", "json"],
+    examples: ["contremaitre main", "contremaitre main --env shop/main"],
+  },
+  {
+    name: "down",
+    group: "Environments",
+    description: "Stop an environment, keeping its data",
+    usage: "[ENV]",
+    details:
+      "Stop the selected environment. ENV overrides --env; without either, use the current workspace. --delete-data also deletes databases, uploads, images, and tunnel reservations.",
+    flags: ["env", "branch", "deleteData", "home", "json"],
+    examples: ["contremaitre down", "contremaitre down --env shop/feature"],
+  },
+  {
+    name: "prune",
+    group: "Environments",
+    description: "Remove old builds",
+    details:
+      "Remove superseded build images across environments. --delete-data also deletes stopped environments that have no tunnel reservations.",
+    flags: ["deleteData", "home", "json"],
+    examples: ["contremaitre prune", "contremaitre prune --delete-data"],
+  },
+  {
+    name: "logs",
+    group: "Inspect and connect",
+    description: "Show service logs",
+    usage: "SERVICE",
+    flags: ["env", "branch", "home"],
+    examples: ["contremaitre logs api", "contremaitre logs api --env shop/main"],
+  },
+  {
+    name: "exec",
+    group: "Inspect and connect",
+    description: "Run a command inside a service",
+    usage: "SERVICE -- COMMAND [ARG...]",
+    details:
+      "Arguments after -- go to the service command, including flags such as --help. The CLI preserves the command's exit status.",
+    flags: ["env", "branch", "home"],
+    examples: ["contremaitre exec api -- node scripts/migrate.js", "contremaitre exec web -- sh"],
+  },
+  {
+    name: "proxy",
+    group: "Inspect and connect",
+    description: "Forward a local port to a service",
+    usage: "SERVICE [LOCAL:]REMOTE",
+    details:
+      "Listen on loopback and forward to the service port. Omit LOCAL or use 0 to choose a free local port.",
+    flags: ["env", "branch", "home", "json"],
+    examples: ["contremaitre proxy postgres 15432:5432", "contremaitre proxy postgres 0:5432"],
+  },
+  {
+    name: "tunnel",
+    group: "Inspect and connect",
+    description: "Manage public URLs",
+    usage: "SERVICE | status | stop [SERVICE] | release SERVICE",
+    details:
+      "Reserve a stable URL for a service. status lists reservations; stop disconnects one or all services, keeping their URLs; release deletes a service's reservation.",
+    flags: ["env", "branch", "home", "json"],
+    examples: [
+      "contremaitre tunnel web",
+      "contremaitre tunnel status",
+      "contremaitre tunnel stop web",
+      "contremaitre tunnel release web",
+    ],
+  },
+  {
+    name: "operations",
+    group: "Operations",
+    description: "List operations",
+    flags: ["home", "json"],
+    examples: ["contremaitre operations", "contremaitre operations --json"],
+  },
+  {
+    name: "attach",
+    group: "Operations",
+    description: "Follow operation progress",
+    usage: "OPERATION_ID",
+    details:
+      "Reconnect to a persisted operation and follow it until completion. --json formats the final result; progress still goes to stderr.",
+    flags: ["offset", "home", "json"],
+    examples: [
+      "contremaitre attach OPERATION_ID",
+      "contremaitre attach OPERATION_ID --offset 1024",
+    ],
+  },
+  {
+    name: "cancel",
+    group: "Operations",
+    description: "Cancel an operation",
+    usage: "OPERATION_ID",
+    details: "Cancel an operation and wait for its cleanup to finish.",
+    flags: ["home", "json"],
+    examples: ["contremaitre cancel OPERATION_ID", "contremaitre cancel OPERATION_ID --json"],
+  },
+  {
+    name: "start",
+    group: "Hub and tools",
+    description: "Start the hub in the background",
+    flags: ["port", "publicPort", "home", "json"],
+    examples: ["contremaitre start", "contremaitre start --http-port 18080"],
+  },
+  {
+    name: "stop",
+    group: "Hub and tools",
+    description: "Stop the hub and all environments",
+    details:
+      "Stop all environments and shut down the hub. Retain environment data for the next deployment.",
+    flags: ["home", "json"],
+    examples: ["contremaitre stop", "contremaitre stop --home /tmp/contremaitre"],
+  },
+  {
+    name: "serve",
+    group: "Hub and tools",
+    description: "Run the hub in the foreground",
+    flags: ["port", "publicPort", "home"],
+    examples: ["contremaitre serve", "contremaitre serve --http-port 18080"],
+  },
+  {
+    name: "forward-http",
+    group: "Hub and tools",
+    description: "Forward local port 80 to 8080",
+    details:
+      "Bridge loopback port 80 to 8080 until interrupted. Port 80 requires elevated privileges; run the hub separately without sudo.",
+    flags: ["json"],
+    examples: ["sudo contremaitre forward-http", "contremaitre start --public-port 80"],
+  },
+  {
+    name: "version",
+    group: "Hub and tools",
+    description: "Print the version",
+    flags: ["json"],
+    examples: ["contremaitre version", "contremaitre version --json"],
+  },
+];
+
+export function optionsFor(command: Pick<CommandHelp, "flags">) {
+  function option<A>(key: FlagName, spec: { parser: Options.Options<A>; fallback: A }) {
+    return command.flags.includes(key)
+      ? spec.parser
+      : Options.none.pipe(Options.map(() => spec.fallback));
+  }
+  return {
+    home: option("home", flags.home),
+    env: option("env", flags.env),
+    branch: option("branch", flags.branch),
+    port: option("port", flags.port),
+    publicPort: option("publicPort", flags.publicPort),
+    json: option("json", flags.json),
+    deleteData: option("deleteData", flags.deleteData),
+    main: option("main", flags.main),
+    rebuild: option("rebuild", flags.rebuild),
+    detach: option("detach", flags.detach),
+    compose: option("compose", flags.compose),
+    offset: option("offset", flags.offset),
+  };
+}
+
+const builtins = [
+  { name: "help", value: "", description: "Show help for this command." },
+  { name: "version", value: "", description: "Print the version." },
+  {
+    name: "completions",
+    value: "SHELL",
+    description: "Generate shell completions: sh, bash, fish, zsh.",
+  },
+  {
+    name: "log-level",
+    value: "LEVEL",
+    description: "Minimum log level: all, trace, debug, info, warning, error, fatal, none.",
+  },
+  { name: "wizard", value: "", description: "Build a command interactively." },
+];
+const valuedFlags = new Set(
+  [...Object.values(flags), ...builtins]
+    .filter((flag) => flag.value)
+    .map((flag) => `--${flag.name}`),
+);
+
+export function normalizeArguments(input: readonly string[]) {
+  const separator = input.indexOf("--");
+  const command = separator < 0 ? [] : input.slice(separator + 1);
+  const args = [...(separator < 0 ? input : input.slice(0, separator))];
+  function actionIndex() {
+    for (let i = 0; i < args.length; i++) {
+      if (valuedFlags.has(args[i])) i++;
+      else if (!args[i].startsWith("-")) return i;
+    }
+    return -1;
+  }
+  let index = actionIndex();
+  if (index >= 0 && args[index] === "help") {
+    args.splice(index, 1);
+    args.push("--help");
+    index = actionIndex();
+  }
+  if (index >= 0) args.unshift(...args.splice(index, 1));
+  return { args, command };
+}
+
+class UsageError extends Error {
+  readonly exitCode = 64;
+}
+
+// Inspect only Contremaitre's arguments. Tokens after -- belong to the child.
+export function helpRequest(args: readonly string[]): string | undefined {
+  const name = args[0]?.startsWith("-") ? undefined : args[0];
+  const command = commands.find(
+    (command) => command.name === name || command.aliases?.includes(name ?? ""),
+  );
+  if (name && !command) throw new UsageError(`Unknown command '${name}'. Run contremaitre --help.`);
+  const supported = [
+    ...(command?.flags ?? (["home", "json"] as const)).map((key) => flags[key]),
+    ...builtins,
+    { name: "h", value: "" },
+  ];
+  let help = args.length === 0;
+  for (let i = name ? 1 : 0; i < args.length; i++) {
+    const token = args[i];
+    if (!token.startsWith("-")) continue;
+    const [key] = token.split("=", 1);
+    const spec = supported.find((flag) => (flag.name === "h" ? "-h" : `--${flag.name}`) === key);
+    if (!spec)
+      throw new UsageError(
+        `Unknown flag '${key}'${name ? ` for ${name}` : ""}. Run contremaitre${name ? ` ${name}` : ""} --help.`,
+      );
+    if (spec.value && !token.includes("=")) i++;
+    if ((key === "--help" || key === "-h") && (token === key || token === `${key}=true`))
+      help = true;
+  }
+  return help ? renderHelp(name) : undefined;
+}
+
+function wrap(text: string, width: number, first = "", rest = first): string[] {
+  const lines: string[] = [];
+  let prefix = first;
+  let content = "";
+  for (let word of text.split(/\s+/)) {
+    if (prefix.length + content.length + word.length + (content ? 1 : 0) > width && content) {
+      lines.push(prefix + content);
+      prefix = rest;
+      content = "";
+    }
+    while (word.length > width - prefix.length) {
+      const count = width - prefix.length;
+      lines.push(prefix + word.slice(0, count));
+      word = word.slice(count);
+      prefix = rest;
+    }
+    if (word) content += `${content ? " " : ""}${word}`;
+  }
+  if (content) lines.push(prefix + content);
+  return lines;
+}
+
+export function renderHelp(name?: string) {
+  const columns = Number(process.env.COLUMNS);
+  const width = Math.max(
+    40,
+    Math.min(
+      80,
+      process.stdout.columns || (Number.isFinite(columns) && columns > 0 ? columns : 80),
+    ),
+  );
+  const lines: string[] = [];
+  const paragraph = (text: string) => lines.push(...wrap(text, width));
+  const rows = (items: readonly (readonly [string, string])[], minimum = 0) => {
+    const labelWidth = Math.min(24, Math.max(minimum, ...items.map(([label]) => label.length)));
+    const indent = " ".repeat(labelWidth + 4);
+    for (const [label, description] of items) {
+      const prefix = `  ${label.padEnd(labelWidth)}  `;
+      lines.push(...wrap(description, width, prefix, indent));
+    }
+  };
+  const command = commands.find(
+    (command) => command.name === name || command.aliases?.includes(name ?? ""),
+  );
+  if (!command) {
+    paragraph("Contremaitre - isolated local application environments");
+    paragraph("Usage: contremaitre <command> [flags]");
+    for (const group of new Set(commands.map((command) => command.group))) {
+      lines.push("", `${group}:`);
+      rows(
+        commands
+          .filter((command) => command.group === group)
+          .map((command) => [
+            [command.name, ...(command.aliases ?? [])].join(", "),
+            command.description,
+          ]),
+        12,
+      );
+    }
+    lines.push("");
+    paragraph('Use "contremaitre <command> --help" for flags and examples.');
+    paragraph('Use "contremaitre --completions SHELL" for shell completions.');
+  } else {
+    paragraph(`Usage: contremaitre ${name} [flags]${command.usage ? ` ${command.usage}` : ""}`);
+    lines.push("");
+    paragraph(command.details ?? command.description);
+    if (command.aliases) paragraph(`Aliases: ${[command.name, ...command.aliases].join(", ")}`);
+    lines.push("", "Examples:");
+    for (const example of command.examples) lines.push(...wrap(example, width, "  ", "    "));
+    const selected = command.flags.map((key) => flags[key]);
+    for (const shared of [false, true]) {
+      const entries: (readonly [string, string])[] = selected
+        .filter((flag) => flag.shared === shared)
+        .map(
+          (flag) =>
+            [`--${flag.name}${flag.value ? ` ${flag.value}` : ""}`, flag.description] as const,
+        );
+      if (shared)
+        entries.push(
+          ...builtins.map(
+            (flag) =>
+              [
+                flag.name === "help"
+                  ? "-h, --help"
+                  : `--${flag.name}${flag.value ? ` ${flag.value}` : ""}`,
+                flag.description,
+              ] as const,
+          ),
+        );
+      if (entries.length) {
+        lines.push("", shared ? "Shared flags:" : "Flags:");
+        rows(entries, 19);
+      }
+    }
+  }
+  return `${lines.join("\n")}\n`;
+}
