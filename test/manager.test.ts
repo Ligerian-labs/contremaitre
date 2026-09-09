@@ -142,3 +142,158 @@ test("uploaded files fork independently and cancellation resumes main", async ()
     f.clean();
   }
 });
+
+test("unchanged ready services skip restart and migration; rebuild forces both", async () => {
+  const f = fixture();
+  try {
+    const p = f.prepare();
+    p.manifest.services.web = { ...p.manifest.services.web, migrate: ["migrate"] };
+    await f.manager.deploy(context(), p);
+    f.runtime.calls = [];
+    await f.manager.deploy(context(), p);
+    expect(f.runtime.calls.filter((c) => /^(run|stop|remove network) /.test(c))).toEqual([]);
+    p.request = { rebuild: true };
+    await f.manager.deploy(context(), p);
+    expect(f.runtime.calls.some((c) => c.startsWith("run ") && c.endsWith("-task"))).toBe(true);
+  } finally {
+    f.clean();
+  }
+});
+
+test("builds overlap and all finish before a failed build can replace running services", async () => {
+  const f = fixture();
+  try {
+    const p = f.prepare();
+    await f.manager.deploy(context(), p);
+    p.manifest.services.worker = { kind: "app", build: ".", ready: ["true"] };
+    let active = 0,
+      peak = 0,
+      finished = 0;
+    f.runtime.build = async (_ctx, _root, _file, tag) => {
+      active++;
+      peak = Math.max(peak, active);
+      await Bun.sleep(tag.includes("worker") ? 40 : 10);
+      active--;
+      finished++;
+      if (tag.includes("web")) throw Error("broken web build");
+      return { digest: "new", image: tag };
+    };
+    f.runtime.calls = [];
+    await expect(f.manager.deploy(context(), p)).rejects.toThrow("broken web build");
+    expect(peak).toBe(2);
+    expect(finished).toBe(2);
+    expect(f.runtime.calls.some((c) => c.startsWith("stop "))).toBe(false);
+  } finally {
+    f.clean();
+  }
+});
+
+test("startup failure lets independent apps finish but blocks dependents", async () => {
+  const f = fixture();
+  try {
+    const p = f.prepare();
+    p.manifest.services.web = {
+      kind: "app",
+      image: "web",
+      migrate: ["migrate"],
+      depends_on: ["db"],
+    };
+    p.manifest.services.worker = { kind: "app", image: "worker", ready: ["true"] };
+    p.manifest.services.child = { kind: "app", image: "child", depends_on: ["web"] };
+    f.runtime.failTask = true;
+    await expect(f.manager.deploy(context(), p)).rejects.toThrow("task failed");
+    expect(f.runtime.calls.some((c) => c.startsWith("run ") && c.endsWith("-worker"))).toBe(true);
+    expect(f.runtime.calls.some((c) => c.startsWith("run ") && c.endsWith("-child"))).toBe(false);
+  } finally {
+    f.clean();
+  }
+});
+
+test("configuration changes replace only affected services and dependency changes restart dependents", async () => {
+  const f = fixture();
+  try {
+    const p = f.prepare();
+    p.manifest.services.worker = { kind: "app", image: "worker", ready: ["true"] };
+    await f.manager.deploy(context(), p);
+    p.manifest.services.web = {
+      ...p.manifest.services.web,
+      environment: { MODE: "new", DATABASE_URL: "{{db.url}}" },
+    };
+    f.runtime.calls = [];
+    await f.manager.deploy(context(), p);
+    const stopped = () =>
+      f.runtime.calls.filter((c) => c.startsWith("stop ")).map((c) => c.split("-").at(-1));
+    expect(stopped()).toEqual(["web"]);
+    const env = f.manager.resolve(p.identity.ID);
+    await f.runtime.stop(context(), env.Services.db.Container);
+    f.runtime.calls = [];
+    await f.manager.deploy(context(), p);
+    expect(stopped().sort()).toEqual(["db", "web"]);
+    expect(f.runtime.calls.some((c) => c.startsWith("remove network"))).toBe(false);
+  } finally {
+    f.clean();
+  }
+});
+
+test("independent apps start together after infrastructure passes readiness", async () => {
+  const f = fixture();
+  try {
+    const p = f.prepare();
+    p.manifest.services.worker = { kind: "app", image: "worker", ready: ["true"] };
+    let dbReady = false,
+      active = 0,
+      peak = 0;
+    const original = f.runtime.run.bind(f.runtime);
+    f.runtime.exec = async (_ctx, _name, args) => {
+      if (args[0] === "pg_isready") {
+        await Bun.sleep(20);
+        dbReady = true;
+      }
+      return Buffer.from("ready");
+    };
+    f.runtime.run = async (ctx, spec) => {
+      if (spec.service.kind === "app") {
+        expect(dbReady).toBe(true);
+        active++;
+        peak = Math.max(peak, active);
+        await Bun.sleep(30);
+        active--;
+      }
+      await original(ctx, spec);
+    };
+    await f.manager.deploy(context(), p);
+    expect(peak).toBe(2);
+  } finally {
+    f.clean();
+  }
+});
+
+test("cancelling a migration removes its task container with an independent cleanup signal", async () => {
+  const f = fixture();
+  try {
+    const p = f.prepare(),
+      controller = new AbortController();
+    p.manifest.services.web = { ...p.manifest.services.web, migrate: ["migrate"] };
+    const original = f.runtime.run.bind(f.runtime),
+      remove = f.runtime.remove.bind(f.runtime);
+    let cleaned = false;
+    f.runtime.run = async (ctx, spec) => {
+      if (spec.task) {
+        controller.abort();
+        ctx.signal.throwIfAborted();
+      }
+      await original(ctx, spec);
+    };
+    f.runtime.remove = async (ctx, name) => {
+      if (controller.signal.aborted && name.endsWith("-task")) {
+        expect(ctx.signal.aborted).toBe(false);
+        cleaned = true;
+      }
+      await remove(ctx, name);
+    };
+    await expect(f.manager.deploy(context(controller.signal), p)).rejects.toThrow();
+    expect(cleaned).toBe(true);
+  } finally {
+    f.clean();
+  }
+});

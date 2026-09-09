@@ -51,6 +51,7 @@ export function publicEnvironment(env: Environment): Environment {
   delete out.credentials;
   for (const s of Object.values(out.Services)) {
     delete s.raw_environment;
+    delete s.deployment;
     s.Spec = { ...s.Spec, environment: undefined, env_file: "" };
   }
   return out;

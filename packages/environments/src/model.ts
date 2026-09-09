@@ -22,6 +22,8 @@ export interface ServiceState {
   HTTP: boolean;
   Spec: Service;
   Initialized: boolean;
+  deployment?: string;
+  ready?: boolean;
   url?: string;
   raw_environment?: Record<string, string>;
 }

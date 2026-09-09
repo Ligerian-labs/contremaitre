@@ -51,3 +51,36 @@ test("Unix API owns deploy beyond caller lifetime and preserves state across hub
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+test("ready services remain routable during redeploy and after another service fails", async () => {
+  const { routes } = await import("@contremaitre/hub/server");
+  const home = mkdtempSync(join(tmpdir(), "cm-routes-")),
+    root = join(home, "project");
+  mkdirSync(root);
+  writeFileSync(
+    join(root, ".contremaitre.yaml"),
+    'version: 1\nproject: routes\nservices:\n  web: {image: web, http: true, port: 8080, ready: ["true"]}\n  worker: {image: worker, ready: ["true"]}\n',
+  );
+  const runtime = new FakeRuntime();
+  const hub = await startServer({ home, port: 0, runtime, skipSystemStart: true });
+  try {
+    const p = await hub.manager.prepare(context(), { root, branch: "main" });
+    await hub.manager.deploy(context(), p);
+    const env = hub.manager.resolve(p.identity.ID),
+      host = new URL(hub.manager.localURL(env, "web")).hostname;
+    p.manifest.services.worker = { ...p.manifest.services.worker, migrate: ["migrate"] };
+    const original = runtime.run.bind(runtime);
+    runtime.run = async (ctx, spec) => {
+      if (spec.task) {
+        expect(routes(hub.manager, host)?.upstream).toBe("http://127.0.0.1:8080");
+        throw Error("worker migration failed");
+      }
+      await original(ctx, spec);
+    };
+    await expect(hub.manager.deploy(context(), p)).rejects.toThrow("worker migration failed");
+    expect(routes(hub.manager, host)?.upstream).toBe("http://127.0.0.1:8080");
+  } finally {
+    await hub.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});

@@ -75,7 +75,7 @@ export function decodeInspection(data: unknown): Inspection {
   };
 }
 export class Apple implements Runtime {
-  private readonly builder = new Semaphore(1);
+  private readonly builder = new Semaphore(4);
   constructor(readonly binary = "container") {}
   output(ctx: Context, args: readonly string[], opts: RunOptions = {}) {
     return run(ctx, [this.binary, ...args], opts);
@@ -193,7 +193,7 @@ export class Apple implements Runtime {
           if (!missing(e)) throw e;
         }
       }
-      phase(ctx, "Waiting for the shared builder");
+      phase(ctx, "Waiting for a builder slot");
       return await this.builder.use(ctx.signal, async () => {
         const release = await sharedBuilderLock(ctx);
         try {
@@ -222,6 +222,15 @@ export class Apple implements Runtime {
           } catch (e) {
             if (!missing(e)) throw e;
           }
+          // Serialize builder bootstrap only. Running BuildKit accepts independent sessions.
+          if (!(await this.inspect(ctx, "buildkit"))?.Running) {
+            const resourceArgs = args.slice(
+              args.indexOf("--cpus") < 0 ? args.length : args.indexOf("--cpus"),
+            );
+            await this.output(ctx, ["builder", "start", ...resourceArgs]);
+          }
+          release();
+          phase(ctx, "building");
           await this.output(ctx, [...args, staged.root], {
             stdout: ctx.log,
             stderr: ctx.log,
@@ -250,7 +259,7 @@ async function sharedBuilderLock(ctx: Context): Promise<() => void> {
       return lockHome(directory);
     } catch (e) {
       if (!(e instanceof HubError) || e.classification !== "conflict") throw e;
-      await sleep(250, ctx.signal);
+      await sleep(25, ctx.signal);
     }
   }
 }

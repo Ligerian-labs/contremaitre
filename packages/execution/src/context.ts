@@ -18,16 +18,38 @@ export const keys = <T>(value: Record<string, T> | null | undefined): string[] =
 export const own = (value: object, key: string): boolean => Object.hasOwn(value, key);
 export const now = (): string => new Date().toISOString();
 export const strings = Schema.Record({ key: Schema.String, value: Schema.String });
+export const serviceProgressSchema = Schema.Struct({
+  status: Schema.Literal("waiting", "running", "ready", "failed", "blocked", "cancelled"),
+  detail: Schema.String,
+  url: Schema.optional(Schema.String),
+});
+export type ServiceProgress = Schema.Schema.Type<typeof serviceProgressSchema>;
 export interface Context {
   processDirectory?: string;
   signal: AbortSignal;
-  log: (data: Uint8Array | string) => void;
+  log: (data: Uint8Array | string, service?: string) => void;
+  service?: string;
+  progress?: (service: string, value: ServiceProgress) => void;
 }
 export const context = (
   signal = new AbortController().signal,
   log: Context["log"] = () => {},
 ): Context => ({ signal, log });
-export const phase = (ctx: Context, text: string): void => ctx.log(`[contremaitre] ${text}\n`);
+export function serviceContext(parent: Context, service: string): Context {
+  return { ...parent, service, log: (data) => parent.log(data, service) };
+}
+export function progress(
+  ctx: Context,
+  status: ServiceProgress["status"],
+  detail: string,
+  url?: string,
+) {
+  if (ctx.service) ctx.progress?.(ctx.service, { status, detail, ...(url ? { url } : {}) });
+}
+export function phase(ctx: Context, text: string): void {
+  ctx.log(`[contremaitre] ${ctx.service ? `${ctx.service}: ` : ""}${text}\n`);
+  progress(ctx, "running", text);
+}
 export function decode<A, I>(schema: Schema.Schema<A, I>, value: unknown, label: string): A {
   try {
     return Schema.decodeUnknownSync(schema, { onExcessProperty: "error" })(value);

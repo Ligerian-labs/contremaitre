@@ -15,13 +15,15 @@ Deployments belong to the hub. Every accepted deployment gets an operation ID.
 Client disconnect does not cancel it. A second deploy for the same environment
 returns its active operation. Explicit cancellation terminates owned processes
 and completes recovery before marking the operation terminal. Cross-environment
-work has a configurable concurrency limit; the shared Apple builder is serialized.
+work has a configurable concurrency limit. Shared Apple builder startup is serialized;
+independent builds can run concurrently. Ctrl-C in an attached deploy requests cancellation.
 Main-source cloning must exclude concurrent mutation of both source and target.
 
 On restart, interrupted operations are retained and reported as interrupted, not
 silently replayed. The hub reconciles resources and performs any recorded source
 writer recovery before accepting new work. A client can inspect/reconnect to
-operation progress. Logs and operation state are private and bounded.
+operation progress. Logs and operation state are private. Completed-operation retention is bounded;
+retained deployment logs are complete and read in bounded pages.
 
 Acceptance checks:
 

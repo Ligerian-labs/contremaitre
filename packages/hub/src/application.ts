@@ -55,7 +55,13 @@ export const ListOperations = Query.define("ListOperations", {
   success: Schema.Array(operationSchema),
 });
 export const ReadOperation = Query.define("ReadOperation", {
-  payload: Schema.Struct({ id: Schema.String, offset: Schema.optional(Schema.Int) }),
+  payload: Schema.Struct({
+    id: Schema.String,
+    offset: Schema.optional(Schema.Int),
+    failure: Schema.optional(Schema.Boolean),
+    end: Schema.optional(Schema.Int),
+    summary: Schema.optional(Schema.Boolean),
+  }),
   success: Schema.Unknown,
   failure: Schema.instanceOf(HubError),
 });
@@ -111,6 +117,16 @@ const registry = HandlerRegistry.layer(
               : []),
           ],
           (ctx) => m.deploy(ctx, prepared),
+          {
+            name: `${prepared.identity.Project} / ${prepared.identity.Branch}`,
+            services: prepared.manifest.driver
+              ? ["driver"]
+              : keys(prepared.manifest.services).sort(
+                  (a, b) =>
+                    Number(prepared.manifest.services[a].kind === "app") -
+                    Number(prepared.manifest.services[b].kind === "app"),
+                ),
+          },
         );
       });
     }),
@@ -172,7 +188,7 @@ const registry = HandlerRegistry.layer(
   QueryHandler.make(ReadOperation, (req) =>
     Effect.gen(function* () {
       const { operations: ops } = yield* Hub;
-      return yield* attempt(async () => ops.read(req.id, req.offset));
+      return yield* attempt(async () => ops.read(req.id, req.offset, 65536, req));
     }),
   ),
   CommandHandler.make(Cancel, (req) =>
