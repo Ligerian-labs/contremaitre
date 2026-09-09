@@ -35,7 +35,11 @@ contremaitre list
 
 The example builds a static web page and starts PostgreSQL and Redis. Its web service receives connection settings but does not query the databases. Change `index.html` and redeploy to verify working-file builds.
 
-For an existing application, `contremaitre init` generates `.contremaitre.yaml`. It checks these conventions in order:
+For an existing application, `contremaitre init` starts a short conversation with a coding agent and writes `.contremaitre.yaml`. Contremaitre asks one question at a time with numbered choices and accepts free-text answers. The agent follows the active development command, workspace scripts and Compose configuration to identify applications and supporting services. Existing manifests enter an update conversation that preserves choices you have not asked to change. Init only writes the validated manifest; it does not build or deploy.
+
+Use `--agent codex`, `--agent claude`, `--agent pi` or `--agent opencode` to override the saved agent. Otherwise init uses `<home>/init.json`, then discovers installed agents and remembers your selection. If none are available, it explains setup and the non-AI command. Agent-assisted init requires an interactive terminal. See [agent configuration and development containers](docs/assisted-init.md) for settings, limits and source-sync behavior.
+
+For scripts or conventional detection, `contremaitre init --no-ai` checks these conventions in order:
 
 1. A root `Dockerfile` creates a `web` service with port 3000 for you to review.
 2. Named `docker/<service>.Dockerfile` files create one service per file, using the repository root as the build context. For example, `docker/api.Dockerfile` and `docker/web.Dockerfile` create `api` and `web` services. A root Node `start` script is not needed. Init does not search nested workspaces.
@@ -43,9 +47,9 @@ For an existing application, `contremaitre init` generates `.contremaitre.yaml`.
 
 Named Dockerfiles use a single literal TCP port from the final stage's `EXPOSE` instructions and enable HTTP routing on it. Local stage inheritance is supported; base image metadata is not inspected. With no declared TCP port, routing stays disabled. Multiple ports, variable ports, and complex Dockerfile syntax require an explicit manifest. Review whether the service speaks HTTP before deploying.
 
-Init generates a starting configuration. Review build contexts, ports, commands, dependencies, environment variables, and persistent storage before deploying. It does not infer databases or application settings from production Compose files. For a monorepo, add managed database services and connect the applications with `depends_on` and environment references as shown below. Both `.contremaitre.yaml` and `.contremaitre.yml` are protected from replacement.
+Conventional init generates a starting configuration. Review build contexts, ports, commands, dependencies, environment variables, and persistent storage before deploying. It does not infer databases or application settings from production Compose files. Both `.contremaitre.yaml` and `.contremaitre.yml` are protected from replacement in this mode.
 
-`init --compose compose.yaml` imports a strict subset of Compose: app images/builds, argument-list commands, string environment maps, dependency lists, a single published port, and named file volumes. Host port numbers are discarded; routes use the container port. Database services, interpolation, health conditions, bind mounts, and unsupported fields fail with an explanation. Define managed databases explicitly in the resulting manifest. This is not a Compose runtime.
+`init --no-ai --compose compose.yaml` imports a strict subset of Compose: app images/builds, argument-list commands, string environment maps, dependency lists, a single published port, and named file volumes. Host port numbers are discarded; routes use the container port. Database services, interpolation, health conditions, bind mounts, and unsupported fields fail with an explanation. Define managed databases explicitly in the resulting manifest. Without `--no-ai`, `--compose` selects the file for the agent to inspect. This is not a Compose runtime.
 
 ## Manifest
 

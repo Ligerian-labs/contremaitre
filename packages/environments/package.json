@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./development": "./src/development.ts",
     "./apple": "./src/apple.ts",
     "./build-context": "./src/build-context.ts",
     "./driver": "./src/driver.ts",

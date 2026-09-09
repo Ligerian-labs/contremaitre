@@ -24,8 +24,9 @@ import {
   safePath,
 } from "@contremaitre/projects/config";
 import type { Identity, Manifest } from "@contremaitre/projects/model";
-import { type Runtime, tcpReady } from "./apple.js";
+import { type RunSpec, type Runtime, tcpReady } from "./apple.js";
 import { cloneData, cloneDriver, recoverClones } from "./clone.js";
+import { DevelopmentSource } from "./development.js";
 import { applyDriverReply, invokeDriver, snapshotDriver } from "./driver.js";
 import {
   type Environment,
@@ -47,6 +48,74 @@ export interface TunnelHooks {
   running(id: string, name: string): boolean;
 }
 export class Manager {
+  private readonly sourceWatchers = new Map<string, { stop: () => Promise<void> }>();
+  async stopDevelopment(container?: string) {
+    for (const [name, watcher] of this.sourceWatchers)
+      if (!container || name === container) {
+        this.sourceWatchers.delete(name);
+        await watcher.stop();
+      }
+  }
+  private watchDevelopment(s: ServiceState, spec: RunSpec, source: DevelopmentSource) {
+    const controller = new AbortController();
+    const ctx = {
+      ...context(controller.signal, (data) => process.stderr.write(data)),
+      processDirectory: join(this.store.home, "processes"),
+    };
+    let timer: ReturnType<typeof setTimeout> | undefined,
+      active = Promise.resolve();
+    const tick = async () => {
+      try {
+        const changes = await source.refresh(ctx);
+        if (changes.changed.length || changes.removed.length) {
+          await this.runtime.sync(
+            ctx,
+            spec,
+            source.directory,
+            changes.changed,
+            changes.removed,
+            false,
+          );
+          source.acknowledge();
+        }
+        const changed =
+          s.dependencies_changed !== changes.dependenciesChanged || !!s.development_error;
+        if (changes.dependenciesChanged && !s.dependencies_changed)
+          phase(ctx, `${s.Name}: dependencies changed; run contremaitre deploy`);
+        s.dependencies_changed = changes.dependenciesChanged;
+        s.development_error = "";
+        if (changed) this.save();
+      } catch (e) {
+        if (!controller.signal.aborted && s.development_error !== message(e)) {
+          s.development_error = message(e);
+          phase(ctx, `${s.Name}: source sync failed: ${s.development_error}`);
+          this.save();
+        }
+      } finally {
+        if (!controller.signal.aborted) {
+          timer = setTimeout(() => {
+            active = tick().catch((error) => {
+              ctx.log(`${s.Name}: cannot record source sync state: ${message(error)}\n`);
+            });
+          }, 1000);
+          timer.unref();
+        }
+      }
+    };
+    timer = setTimeout(() => {
+      active = tick().catch((error) => {
+        ctx.log(`${s.Name}: cannot record source sync state: ${message(error)}\n`);
+      });
+    }, 1000);
+    timer.unref();
+    this.sourceWatchers.set(s.Container, {
+      stop: async () => {
+        controller.abort();
+        if (timer) clearTimeout(timer);
+        await active;
+      },
+    });
+  }
   readonly state: State;
   tunnels?: TunnelHooks;
   onSave: () => void = () => {};
@@ -281,6 +350,7 @@ export class Manager {
           s = services[name];
         if (
           !old?.deployment ||
+          s.Spec.dev ||
           request.rebuild ||
           !e.CloneComplete ||
           s.Spec.depends_on?.some((dep) => !retained.has(dep))
@@ -311,9 +381,11 @@ export class Manager {
             if (scopes[name]) phase(scope, "stopping previous process");
             s.ready = false;
             this.save();
+            await this.stopDevelopment(s.Container);
             await this.runtime.stop(scope, s.Container);
             await this.runtime.remove(scope, s.Container);
             await this.runtime.remove(scope, `${s.Container}-task`);
+            await this.runtime.remove(scope, `${s.Container}-sync`);
           }),
         );
         const error = stopped.find((result) => result.status === "rejected");
@@ -524,8 +596,10 @@ export class Manager {
     return volumes;
   }
   async startService(ctx: Context, env: Environment, s: ServiceState, initialize: boolean) {
+    ctx = serviceContext(ctx, s.Name);
     const envFile = privateEnv(join(this.store.home, "tmp"), this.serviceEnv(env, s));
     try {
+      await this.stopDevelopment(s.Container);
       const volumes = await this.volumes(ctx, env, s),
         spec = {
           name: s.Container,
@@ -535,28 +609,60 @@ export class Manager {
           volumes,
           envFile,
         };
+      let source: DevelopmentSource | undefined;
+      if (s.Spec.dev) {
+        const volume = `${s.Container}-source`;
+        if (!env.Volumes.includes(volume)) {
+          env.Volumes.push(volume);
+          this.save();
+        }
+        if (initialize) await this.runtime.removeVolume(ctx, volume);
+        await this.runtime.volume(ctx, volume);
+        volumes[volume] = s.Spec.dev.target;
+        source = new DevelopmentSource(
+          env.Root,
+          join(this.store.home, "sources", env.Identity.ID, s.Name),
+          s.Spec.dev,
+        );
+        await source.load();
+        await source.refresh(ctx, initialize);
+        phase(ctx, "copying development source");
+        await this.runtime.sync(ctx, spec, source.directory, source.paths(), [], true);
+        source.acknowledge();
+      }
       if (initialize) {
         const tasks = [
+          ...(s.Spec.dev?.install?.length ? [s.Spec.dev.install] : []),
           ...(!s.Initialized && s.Spec.init?.length ? [s.Spec.init] : []),
           ...(s.Spec.migrate?.length ? [s.Spec.migrate] : []),
         ];
         for (const command of tasks) {
           await this.runtime.remove(ctx, `${s.Container}-task`);
-          phase(ctx, `${s.Name}: running initialization/migration`);
+          phase(
+            ctx,
+            command === s.Spec.dev?.install
+              ? "installing development dependencies"
+              : "running initialization/migration",
+          );
           await this.runtime.run(ctx, {
             ...spec,
             name: `${s.Container}-task`,
-            service: { ...s.Spec, command },
+            service: {
+              ...s.Spec,
+              command,
+              working_dir: command === s.Spec.dev?.install ? s.Spec.dev.target : s.Spec.working_dir,
+            },
             task: true,
           });
         }
       }
-      phase(ctx, `Starting ${s.Name}`);
+      phase(ctx, "starting");
       await this.runtime.run(ctx, spec);
       await this.waitReady(ctx, s);
-      phase(ctx, `${s.Name}: ready`);
+      phase(ctx, "ready");
       s.Initialized = true;
       this.save();
+      if (source) this.watchDevelopment(s, spec, source);
     } finally {
       removeFile(envFile);
       if (ctx.signal.aborted) {
@@ -565,6 +671,11 @@ export class Manager {
           context(AbortSignal.timeout(15_000), ctx.log),
           `${s.Container}-task`,
         );
+        if (s.Spec.dev)
+          await this.runtime.remove(
+            context(AbortSignal.timeout(15_000), ctx.log),
+            `${s.Container}-sync`,
+          );
       }
     }
   }
@@ -572,8 +683,8 @@ export class Manager {
     s.ready = false;
     const controller = new AbortController(),
       signal = AbortSignal.any([parent.signal, AbortSignal.timeout(90_000), controller.signal]),
-      ctx = { ...parent, signal };
-    phase(ctx, `${s.Name}: waiting for readiness`);
+      ctx = serviceContext({ ...parent, signal }, s.Name);
+    phase(ctx, "waiting for readiness");
     const logs = this.runtime.logs(ctx, s.Container).catch(() => {});
     try {
       while (true) {
@@ -618,6 +729,7 @@ export class Manager {
   }
   async down(ctx: Context, env: Environment, deleteData = false) {
     this.assertRecovered(env.Identity.ID);
+    for (const s of Object.values(env.Services)) await this.stopDevelopment(s.Container);
     for (const name of keys(env.tunnels)) await this.tunnels?.stop(ctx, env, name, deleteData);
     const deleting = deleteData || env.Status === "deleting";
     env.Status = deleting ? "deleting" : "stopping";
@@ -631,6 +743,7 @@ export class Manager {
         await this.runtime.stop(ctx, s.Container);
         await this.runtime.remove(ctx, s.Container);
         await this.runtime.remove(ctx, `${s.Container}-task`);
+        await this.runtime.remove(ctx, `${s.Container}-sync`);
         s.IP = "";
       }
     }
@@ -649,6 +762,7 @@ export class Manager {
           this.save();
         }
         rmSync(join(this.store.home, "data", env.Identity.ID), { recursive: true, force: true });
+        rmSync(join(this.store.home, "sources", env.Identity.ID), { recursive: true, force: true });
         await this.runtime.removeNetwork(ctx, env.Network);
         for (const image of env.Images) await this.runtime.removeImage(ctx, image);
       }
@@ -692,6 +806,25 @@ export class Manager {
           if (!v?.Running) {
             env.Status = "failed";
             env.Error = `${s.Name} is not running`;
+          } else if (s.Spec.dev) {
+            const source = new DevelopmentSource(
+              env.Root,
+              join(this.store.home, "sources", env.Identity.ID, s.Name),
+              s.Spec.dev,
+            );
+            await source.load();
+            this.watchDevelopment(
+              s,
+              {
+                name: s.Container,
+                image: s.Image,
+                network: env.Network,
+                service: s.Spec,
+                volumes: {},
+                envFile: "",
+              },
+              source,
+            );
           }
         }
       } else if (["deploying", "stopping"].includes(env.Status)) {

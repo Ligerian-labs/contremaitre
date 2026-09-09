@@ -4,6 +4,18 @@ import type { Context } from "@contremaitre/execution/context";
 import type { RunOptions } from "@contremaitre/execution/process";
 import { sleep } from "@contremaitre/execution/sleep";
 export class FakeRuntime implements Runtime {
+  async sync(
+    _ctx: Context,
+    spec: RunSpec,
+    _directory: string,
+    changed: string[],
+    removed: string[],
+    initial: boolean,
+  ) {
+    this.calls.push(
+      `sync ${spec.name} ${initial ? "initial" : "live"} ${changed.join(",")} -${removed.join(",")}`,
+    );
+  }
   containers = new Map<string, Inspection>();
   calls: string[] = [];
   failBuild = false;
