@@ -65,6 +65,8 @@ Package manifests and lockfiles are frozen until `contremaitre deploy`. Changes 
 
 The sync excludes `.git`, `.jj`, `node_modules`, common build/cache directories, `.env*`, `.pem`, and `.key` files, plus `.gitignore` and `dev.exclude` patterns. It permits confined file symlinks by copying their contents; directory symlinks and escaping symlinks fail explicitly. Sources are limited to 50000 entries, 64 MiB per file and 512 MiB total. Stop, down and hub shutdown cancel pending sync operations. Recovery resumes sync for containers still running. `down --delete-data` removes source volumes and host mirrors.
 
+Development services default to 2 GiB of memory for dependency installation and the application. Vite and similar development tools can exceed the 512 MiB default used by other services. Set `memory` on a service to override its limit, for example `memory: 3G`. Deployment logs show each service's CPU and memory allocation. Changing the default takes effect on the next deployment after restarting an updated hub.
+
 Run `bun scripts/verify-development.ts` for an opt-in test against the native Apple container runtime. It creates disposable resources and checks actual Bun hot reload, file deletion, frozen dependency manifests, checkout isolation and recovery.
 
 ## Acceptance criteria
