@@ -15,8 +15,18 @@ interface CertificateFiles {
   certFile: string;
   keyFile: string;
 }
+const dashboardHost = "contremaitre.localhost";
+
 export function traefikConfiguration(routes: LocalRoute[], certificates: CertificateFiles[]) {
-  const routers: Record<string, unknown> = {},
+  const routers: Record<string, unknown> = {
+      dashboard: {
+        rule: `Host(\`${dashboardHost}\`)`,
+        entryPoints: ["websecure"],
+        service: "api@internal",
+        middlewares: ["dashboard-redirect"],
+        tls: {},
+      },
+    },
     services: Record<string, unknown> = {};
   for (const { host, upstream } of routes) {
     const name = hash(host);
@@ -31,7 +41,19 @@ export function traefikConfiguration(routes: LocalRoute[], certificates: Certifi
     };
   }
   return {
-    ...(routes.length ? { http: { routers, services } } : {}),
+    http: {
+      routers,
+      ...(routes.length ? { services } : {}),
+      middlewares: {
+        "dashboard-redirect": {
+          redirectRegex: {
+            regex: "^(https://[^/]+)/?(\\?.*)?$",
+            replacement: "$1/dashboard/$2",
+            permanent: true,
+          },
+        },
+      },
+    },
     tls: { certificates, options: { default: { minVersion: "VersionTLS12" } } },
   };
 }
@@ -76,6 +98,7 @@ export async function startTraefik(
       if (signature === previous) continue;
       const files: CertificateFiles[] = [
         { certFile: certificates.certFile, keyFile: certificates.keyFile },
+        await certificates.certificate(dashboardHost),
       ];
       // Sequential issuance bounds mkcert processes even for a large recorded stack.
       for (const route of routes) files.push(await certificates.certificate(route.host));
@@ -92,6 +115,7 @@ export async function startTraefik(
   atomicWrite(
     configuration,
     JSON.stringify({
+      api: { dashboard: true, insecure: false },
       entryPoints: { websecure: { address: `127.0.0.1:${port}` } },
       providers: { providersThrottleDuration: "100ms", file: { directory, watch: true } },
       log: { level: "ERROR" },

@@ -49,6 +49,19 @@ The published URLs still use port 443. Only one forwarder can own that port.
 The listener binds to IPv4 loopback; clients that do not resolve `.localhost`
 can explicitly resolve their environment hostname to `127.0.0.1`.
 
+## Traefik dashboard
+
+Open [https://contremaitre.localhost](https://contremaitre.localhost). The root URL
+redirects to `/dashboard/`. The dashboard and its `/api` endpoints use this hostname
+on the same loopback HTTPS listener as applications, with a dedicated mkcert
+certificate. They are available as soon as the HTTPS hub starts, even with no
+deployed applications. The dashboard requires no login and is local to your Mac.
+
+The usual certificate trust and port-443 forwarder setup above applies. Clients
+that do not resolve `.localhost` must resolve `contremaitre.localhost` to
+`127.0.0.1`. With a custom HTTPS listener port, the forwarder still provides the
+same dashboard URL. The dashboard is unavailable in legacy `--http` mode.
+
 ## Routing and certificates
 
 The hub writes Traefik configuration under `<home>/traefik/dynamic/routes.yml`
@@ -102,6 +115,8 @@ their existing routing and certificate ownership.
 `bun run check` runs the repository checks and standalone packaging test. With
 Traefik and mkcert installed, `test/traefik.test.ts` also exercises a real Traefik
 process, verified HTTPS requests, WebSocket upgrades, certificate reuse, and
-route addition, removal and readiness changes. Its disposable CA is never
-installed in the system trust store. The test is skipped when those tools are
-unavailable. Port 443 and browser trust require the macOS setup above.
+route addition, removal and readiness changes. It also checks the dashboard
+redirect, HTML and API access, hostname isolation, and availability without apps.
+Its disposable CA is never installed in the system trust store. The test is
+skipped when those tools are unavailable. Port 443 and browser trust require the
+macOS setup above.

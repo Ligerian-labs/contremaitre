@@ -13,7 +13,7 @@ import { createSecureContext } from "node:tls";
 import { type Context, fail, hash } from "@contremaitre/execution/context";
 import { run } from "@contremaitre/execution/process";
 
-// The hub requests certificates only for its recorded local service hostnames.
+// The hub requests certificates for its dashboard and recorded local service hostnames.
 export async function localCertificates(ctx: Context, home: string) {
   if (!Bun.which("mkcert"))
     fail("Local HTTPS requires mkcert. Run brew install mkcert, then mkcert -install.");
