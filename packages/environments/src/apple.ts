@@ -86,8 +86,19 @@ export function decodeInspection(data: unknown): Inspection {
     IP: status.networks?.[0]?.ipv4Address.split("/")[0] ?? "",
   };
 }
+interface BuilderLease {
+  resources: string[];
+  release: () => void;
+}
+interface BuilderSession {
+  users: number;
+  ready: Promise<BuilderLease>;
+}
 export class Apple implements Runtime {
   private readonly builder = new Semaphore(4);
+  // Service contexts in one deployment share a cancellation signal. Keep other
+  // deployments out of the builder until every build in this session has settled.
+  private readonly buildSessions = new Map<AbortSignal, BuilderSession>();
   constructor(readonly binary = "container") {}
   output(ctx: Context, args: readonly string[], opts: RunOptions = {}) {
     return run(ctx, [this.binary, ...args], opts);
@@ -270,55 +281,92 @@ export class Apple implements Runtime {
         }
       }
       phase(ctx, "Waiting for a builder slot");
-      return await this.builder.use(ctx.signal, async () => {
-        const release = await sharedBuilderLock(ctx);
-        try {
-          const args = ["build", "--tag", tag, "--file", staged.dockerfile, "--progress", "plain"];
-          try {
-            const value: unknown = JSON.parse(
-              (await this.output(ctx, ["inspect", "buildkit"])).toString(),
-            );
-            const builders = Schema.decodeUnknownSync(
-              Schema.Array(
-                Schema.Struct({
-                  configuration: Schema.Struct({
-                    resources: Schema.Struct({ cpus: Schema.Number, memoryInBytes: Schema.Number }),
-                  }),
-                }),
-              ),
-            )(value);
-            const r = builders[0]?.configuration.resources;
-            if (r && r.cpus > 0 && r.memoryInBytes > 0) {
-              args.push("--cpus", String(r.cpus), "--memory", String(r.memoryInBytes));
-              phase(
-                ctx,
-                `Builder: ${r.cpus} CPUs, ${Math.floor(r.memoryInBytes / 1048576)} MB RAM`,
-              );
-            }
-          } catch (e) {
-            if (!missing(e)) throw e;
-          }
-          // Serialize builder bootstrap only. Running BuildKit accepts independent sessions.
-          if (!(await this.inspect(ctx, "buildkit"))?.Running) {
-            const resourceArgs = args.slice(
-              args.indexOf("--cpus") < 0 ? args.length : args.indexOf("--cpus"),
-            );
-            await this.output(ctx, ["builder", "start", ...resourceArgs]);
-          }
-          release();
+      return await this.builder.use(ctx.signal, () =>
+        this.useBuilder(ctx, async (resources) => {
           phase(ctx, "building");
-          await this.output(ctx, [...args, staged.root], {
-            stdout: ctx.log,
-            stderr: ctx.log,
-            timeout: 7_200_000,
-          });
+          await this.output(
+            ctx,
+            [
+              "build",
+              "--tag",
+              tag,
+              "--file",
+              staged.dockerfile,
+              "--progress",
+              "plain",
+              ...resources,
+              staged.root,
+            ],
+            {
+              stdout: ctx.log,
+              stderr: ctx.log,
+              timeout: 7_200_000,
+            },
+          );
           return { digest: staged.digest, image: tag };
-        } finally {
-          release();
-        }
-      });
+        }),
+      );
     } finally {
       await staged.cleanup();
+    }
+  }
+  private async useBuilder(
+    ctx: Context,
+    work: (resources: string[]) => Promise<BuildRecord>,
+  ): Promise<BuildRecord> {
+    ctx.signal.throwIfAborted();
+    let session = this.buildSessions.get(ctx.signal);
+    if (!session) {
+      session = { users: 0, ready: this.prepareBuilder(ctx) };
+      this.buildSessions.set(ctx.signal, session);
+    }
+    session.users++;
+    let lease: BuilderLease | undefined;
+    try {
+      lease = await session.ready;
+      ctx.signal.throwIfAborted();
+      return await work(lease.resources);
+    } finally {
+      if (--session.users === 0) {
+        this.buildSessions.delete(ctx.signal);
+        lease?.release();
+      }
+    }
+  }
+  private async prepareBuilder(ctx: Context): Promise<BuilderLease> {
+    const release = await sharedBuilderLock(ctx);
+    try {
+      const resources: string[] = [];
+      try {
+        const value: unknown = JSON.parse(
+          (await this.output(ctx, ["inspect", "buildkit"])).toString(),
+        );
+        const builders = Schema.decodeUnknownSync(
+          Schema.Array(
+            Schema.Struct({
+              configuration: Schema.Struct({
+                resources: Schema.Struct({ cpus: Schema.Number, memoryInBytes: Schema.Number }),
+              }),
+            }),
+          ),
+        )(value);
+        const r = builders[0]?.configuration.resources;
+        if (r && r.cpus > 0 && r.memoryInBytes > 0) {
+          resources.push("--cpus", String(r.cpus), "--memory", String(r.memoryInBytes));
+          phase(ctx, `Builder: ${r.cpus} CPUs, ${Math.floor(r.memoryInBytes / 1048576)} MB RAM`);
+        }
+      } catch (error) {
+        if (!missing(error)) throw error;
+      }
+      // "running" does not mean compatible: Apple build reconciles image, resources,
+      // managed environment, SSH and DNS, and may delete/recreate the builder.
+      // Perform that reconciliation once, before this session launches any builds.
+      phase(ctx, "Preparing shared builder");
+      await this.output(ctx, ["builder", "start", ...resources]);
+      return { resources, release };
+    } catch (error) {
+      release();
+      throw error;
     }
   }
 }
