@@ -57,6 +57,18 @@ async function boot() {
   throw Error("Hub startup timeout");
 }
 try {
+  const help = Bun.spawn([binary, "--help"], { stdout: "pipe", stderr: "pipe" });
+  const helpText = await new Response(help.stdout).text();
+  assert.equal(await help.exited, 0);
+  assert.equal(await new Response(help.stderr).text(), "");
+  assert.ok(helpText.includes("Usage: contremaitre <command> [flags]"));
+  assert.ok(helpText.includes("forward-http"));
+  const bare = Bun.spawn([binary], { stdout: "pipe", stderr: "pipe" });
+  assert.equal(await new Response(bare.stdout).text(), helpText);
+  assert.equal(await bare.exited, 0);
+  const invalid = Bun.spawn([binary, "version", "--rebuild"], { stdout: "pipe", stderr: "pipe" });
+  assert.equal(await invalid.exited, 64);
+  assert.ok((await new Response(invalid.stderr).text()).includes("Unknown flag '--rebuild'"));
   await boot();
   const op = decode(
     operationSchema,
@@ -129,9 +141,9 @@ try {
     },
   ); // Driver receives passthrough; Contremaitre must not print its own help.
   assert.equal(await cli.exited, 23);
-  assert.ok(!(await new Response(cli.stdout).text()).includes("USAGE"));
+  assert.ok(!(await new Response(cli.stdout).text()).includes("Usage:"));
   console.log(
-    "Standalone executable, Unix socket, duplicate requests, SIGKILL recovery, owned-process cleanup and SIGTERM restart passed",
+    "Standalone help, flag validation, Unix socket, duplicate requests, SIGKILL recovery, owned-process cleanup and SIGTERM restart passed",
   );
 } finally {
   child?.kill("SIGTERM");

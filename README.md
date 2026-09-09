@@ -17,6 +17,12 @@ The standalone binary includes Bun and installs to `~/.local/bin`. Go and Node a
 
 The hub listens on loopback port 8080 without administrator access; printed URLs include the port. If occupied, choose another port with `contremaitre start --http-port 18080`. macOS restricts port 80 to privileged processes. For port-free URLs, run `sudo "$HOME/.local/bin/contremaitre" forward-http` in a separate terminal, then start the ordinary hub with `contremaitre start --public-port 80`. The forwarder only bridges loopback port 80 to 8080 and exits when interrupted. Do not run the hub or application runtime with sudo. The control API uses a private Unix socket. A detached daemon owns state and connector processes, so closing the terminal does not stop applications.
 
+Run `contremaitre` or `contremaitre --help` for a compact list of all commands.
+Use `contremaitre deploy --help` or `contremaitre help deploy` for usage, examples,
+and flags. Each command accepts only the flags listed in its help. Shared flags
+can appear before or after the command; arguments after `exec SERVICE --` pass
+through to the service command.
+
 ## First environment
 
 Try the included stack:

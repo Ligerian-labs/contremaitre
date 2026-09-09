@@ -1,5 +1,4 @@
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { Apple } from "@contremaitre/environments/apple";
 import { driverProcess } from "@contremaitre/environments/driver";
 import type { Environment, Request } from "@contremaitre/environments/model";
@@ -10,69 +9,38 @@ import { operationSchema } from "@contremaitre/operations/operations";
 import { initProject } from "@contremaitre/projects/init";
 import { tcpProxy } from "@contremaitre/routing/proxy";
 import { BunContext, BunRuntime } from "@effect/platform-bun";
-import {
-  Args,
-  Command,
-  defineCommand,
-  exitCodeFor,
-  Options,
-  withSubcommands,
-} from "@structure-ai/cli";
+import { Args, Command, defineCommand, exitCodeFor, withSubcommands } from "@structure-ai/cli";
 import { Cause, Effect, Exit, Option } from "effect";
 import { attach, call, launch, projectRoot } from "./client.js";
+import {
+  commands as commandHelp,
+  helpRequest,
+  normalizeArguments,
+  optionsFor,
+  renderHelp,
+} from "./help.js";
 
-const common = {
-  home: Options.text("home").pipe(
-    Options.withDefault(
-      process.env.CONTREMAITRE_HOME || join(homedir(), ".local", "share", "contremaitre"),
-    ),
-  ),
-  env: Options.text("env").pipe(Options.withDefault("")),
-  branch: Options.text("branch").pipe(Options.withDefault("")),
-  port: Options.integer("http-port").pipe(Options.withDefault(8080)),
-  publicPort: Options.integer("public-port").pipe(Options.withDefault(0)),
-  json: Options.boolean("json"),
-  deleteData: Options.boolean("delete-data"),
-  main: Options.boolean("main"),
-  rebuild: Options.boolean("rebuild"),
-  detach: Options.boolean("detach"),
-  compose: Options.text("compose").pipe(Options.withDefault("")),
-  offset: Options.integer("offset").pipe(Options.withDefault(0)),
-};
-const positional = { args: Args.text({ name: "arguments" }).pipe(Args.repeated) };
+export { normalizeArguments } from "./help.js";
+
 function output(json: boolean, data: unknown) {
   process.stdout.write(
     `${json ? JSON.stringify({ version: 1, data }) : typeof data === "string" ? data : JSON.stringify(data, null, 2)}\n`,
   );
 }
-const descriptions: Record<string, string> = {
-  init: "Generate a manifest from project conventions or Compose",
-  start: "Start the local hub",
-  serve: "Run the hub in the foreground",
-  deploy: "Deploy working files and attach to its persisted operation",
-  attach: "Reconnect to an operation by ID",
-  operations: "List persisted operations",
-  cancel: "Cancel an operation and wait for cleanup",
-  list: "List environments",
-  status: "List environments",
-  main: "Designate the data clone source",
-  down: "Stop an environment; retain data unless --delete-data",
-  prune: "Remove old builds; optionally delete stopped environments",
-  stop: "Stop all environments and the hub",
-  exec: "Execute a command inside a service",
-  logs: "Print service logs",
-  proxy: "Forward [LOCAL:]REMOTE on loopback; 0 selects a free local port",
-  tunnel: "Reserve a stable URL, or status/stop/release",
-  version: "Print version",
-  "forward-http": "Forward loopback port 80 to 8080",
-};
 export function makeRoot(passthrough: readonly string[] = []) {
-  const commands = Object.entries(descriptions).map(([name, description]) =>
+  const definitions = commandHelp.flatMap((definition) =>
+    [definition.name, ...(definition.aliases ?? [])].map((name) => ({ ...definition, name })),
+  );
+  const commands = definitions.map(({ name, ...definition }) =>
     defineCommand({
       name,
-      description,
-      options: common,
-      args: positional,
+      description: definition.description,
+      options: optionsFor(definition),
+      args: {
+        args: definition.usage
+          ? Args.text({ name: definition.usage }).pipe(Args.repeated)
+          : Args.none.pipe(Args.map((): string[] => [])),
+      },
       handler: (o) => {
         const home = resolve(o.home);
         if (name === "serve")
@@ -257,40 +225,13 @@ export function makeRoot(passthrough: readonly string[] = []) {
       description: "Isolated local application environments",
       handler: () =>
         Effect.sync(() => {
-          process.stdout.write("Run contremaitre --help for commands.\n");
+          process.stdout.write(renderHelp());
         }),
     }),
     [commands[0], ...commands.slice(1)],
   );
 }
 export const root = makeRoot();
-export function normalizeArguments(input: readonly string[]) {
-  const separator = input.indexOf("--");
-  const command = separator < 0 ? [] : input.slice(separator + 1);
-  const args = [...(separator < 0 ? input : input.slice(0, separator))];
-  const valued = new Set([
-    "--home",
-    "--env",
-    "--branch",
-    "--http-port",
-    "--public-port",
-    "--compose",
-    "--offset",
-    "--log-level",
-  ]);
-  for (let i = 0; i < args.length; i++) {
-    if (valued.has(args[i])) {
-      i++;
-      continue;
-    }
-    if (!args[i].startsWith("-")) {
-      const action = args.splice(i, 1)[0];
-      args.unshift(action === "help" ? "--help" : action);
-      break;
-    }
-  }
-  return { args, command };
-}
 if (import.meta.main) {
   const normalized = normalizeArguments(process.argv.slice(2));
   process.argv = [...process.argv.slice(0, 2), ...normalized.args];
@@ -298,7 +239,18 @@ if (import.meta.main) {
     name: "contremaitre",
     version: "0.2.0",
   });
-  const app = execute(process.argv).pipe(
+  const app = Effect.suspend(() => {
+    try {
+      const help = helpRequest(normalized.args);
+      return help === undefined
+        ? execute(process.argv)
+        : Effect.sync(() => {
+            process.stdout.write(help);
+          });
+    } catch (error) {
+      return Effect.fail(error);
+    }
+  }).pipe(
     Effect.tapErrorCause((cause) =>
       Effect.sync(() => {
         const code = exitCodeFor(cause);
