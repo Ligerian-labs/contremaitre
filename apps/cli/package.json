@@ -6,7 +6,8 @@
   "exports": {
     "./init": "./src/init.ts",
     "./cli": "./src/cli.ts",
-    "./client": "./src/client.ts"
+    "./client": "./src/client.ts",
+    "./https-service": "./src/https-service.ts"
   },
   "dependencies": {
     "@contremaitre/environments": "workspace:*",

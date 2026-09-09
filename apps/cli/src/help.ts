@@ -325,9 +325,23 @@ export const commands: readonly CommandHelp[] = [
     group: "Hub and tools",
     description: "Forward local port 443 to the TLS hub",
     details:
-      "Bridge loopback port 443 to 8443 until interrupted. Run this forwarder with sudo; run the hub as your normal user.",
+      "Bridge loopback port 443 to 8443 until interrupted. For permanent forwarding use https-service install. Run this foreground forwarder with sudo; run the hub as your normal user.",
     flags: ["httpsPort", "json"],
     examples: ["sudo contremaitre forward-https", "contremaitre start"],
+  },
+  {
+    name: "https-service",
+    group: "Hub and tools",
+    description: "Manage background HTTPS forwarding",
+    usage: "install|status|uninstall",
+    details:
+      "Install or update the macOS service that forwards port 443 to the TLS hub. Installation and removal request administrator authentication once. Status needs no privileges. The service starts at boot and remains available across hub restarts. Use the compiled CLI.",
+    flags: ["httpsPort", "json"],
+    examples: [
+      "contremaitre https-service install",
+      "contremaitre https-service status",
+      "contremaitre https-service uninstall",
+    ],
   },
   {
     name: "forward-http",

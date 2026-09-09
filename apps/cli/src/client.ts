@@ -2,10 +2,11 @@ import { spawn } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, renameSync, statSync } from "node:fs";
 import { request } from "node:http";
 import { dirname, join, resolve } from "node:path";
-import { type Context, decode, fail } from "@contremaitre/execution/context";
+import { type Context, context, decode, fail } from "@contremaitre/execution/context";
 import { sleep } from "@contremaitre/execution/sleep";
 import { type Operation, operationSchema, terminal } from "@contremaitre/operations/operations";
 import { Schema } from "effect";
+import { forwardingWarning, HttpsService } from "./https-service.js";
 
 const replySchema = Schema.Struct({
   version: Schema.Literal(1),
@@ -85,6 +86,17 @@ export async function launch(
       fail(
         "The running hub uses different routing. Restart it with this Contremaitre binary and the requested HTTPS/HTTP settings.",
       );
+    if (httpsPort !== undefined && process.platform === "darwin") {
+      try {
+        const check = context(AbortSignal.any([ctx.signal, AbortSignal.timeout(2000)]));
+        const warning = forwardingWarning(await new HttpsService().status(check), httpsPort);
+        if (warning) ctx.log(`[contremaitre] ${warning}\n`);
+      } catch {
+        ctx.log(
+          "[contremaitre] Could not check HTTPS forwarding. Run contremaitre https-service status.\n",
+        );
+      }
+    }
     return true;
   };
   if (await running()) return;
