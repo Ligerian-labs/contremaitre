@@ -123,6 +123,16 @@ export function makeRoot(passthrough: readonly string[] = []) {
               if (args.length !== 1) fail("cancel requires an operation ID");
               output(o.json, await call(ctx, home, "cancel", { id: args[0] }));
               return;
+            case "show": {
+              const urls = (await call(ctx, home, "show", req)) as Record<string, string>;
+              if (o.json) output(true, urls);
+              else if (!Object.keys(urls).length)
+                output(false, "No HTTP service URLs for this environment.");
+              else
+                for (const [service, url] of Object.entries(urls))
+                  output(false, `${service}\t${url}`);
+              return;
+            }
             case "list":
             case "status": {
               const envs = (await call(ctx, home, "list", req)) as Environment[];

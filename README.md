@@ -46,6 +46,7 @@ Try the included stack:
 ```sh
 cd examples/stack
 contremaitre deploy --branch main --main
+contremaitre show --branch main
 contremaitre list
 ```
 
@@ -139,6 +140,8 @@ Git uses the current branch, or a detached commit label. Jujutsu uses its neares
 URLs include a workspace suffix and hash, avoiding collisions after branch-name normalization. The alphabetically first HTTP service gets the environment URL; other HTTP services get an extra service prefix. Adding a service that sorts earlier changes that default assignment, so use service-specific configuration deliberately.
 
 The first deployed `main` branch becomes the project's clone source. Use `deploy --main` to designate a source initially, or `contremaitre main --env ENV` to change it explicitly. Only one environment per project is designated main. It also gets `main.PROJECT.localhost`.
+
+Run `contremaitre show` from the project directory or a subdirectory to print each HTTP service's local URL for the current workspace and branch. Use `--branch NAME` or `--env ENV` to select another environment. `contremaitre show --json` returns `{ "version": 1, "data": { "SERVICE": "URL" } }`. These are configured URLs, including for stopped or failed services; the command does not check readiness. An environment with no HTTP services returns an empty map.
 
 Use environment IDs or names printed by `list` with `--env`. `PROJECT/main` selects the designated source. A project name alone works only when unambiguous.
 

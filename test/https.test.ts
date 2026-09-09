@@ -6,9 +6,12 @@ import { launch } from "@contremaitre/cli/client";
 import { Manager } from "@contremaitre/environments/manager";
 import { Store } from "@contremaitre/environments/store";
 import { context } from "@contremaitre/execution/context";
+import { application, QueryBus, Show } from "@contremaitre/hub/application";
 import { startServer } from "@contremaitre/hub/server";
+import { Operations } from "@contremaitre/operations/operations";
 import { parseManifest } from "@contremaitre/projects/config";
 import { newIdentity } from "@contremaitre/projects/model";
+import { Effect } from "effect";
 import { FakeRuntime } from "./fake-runtime.js";
 
 test("HTTPS URLs omit port 443 for every service and environment reference", async () => {
@@ -40,6 +43,23 @@ services:
 `),
     });
     const env = manager.resolve(identity.ID);
+    const app = application({
+      manager,
+      operations: new Operations(home, 1),
+      share: async () => {},
+    });
+    try {
+      expect(
+        await app.runPromise(
+          Effect.flatMap(QueryBus, (bus) => bus.dispatch(Show, { env: identity.ID })),
+        ),
+      ).toEqual({
+        dashboard: `https://${identity.Host}`,
+        server: `https://server.${identity.Host}`,
+      });
+    } finally {
+      await app.dispose();
+    }
     expect(manager.localURL(env, "dashboard")).toBe(`https://${identity.Host}`);
     expect(manager.localURL(env, "server")).toBe(`https://server.${identity.Host}`);
     expect(manager.serviceEnv(env, env.Services.server).PUBLIC_BASE_URL).toBe(

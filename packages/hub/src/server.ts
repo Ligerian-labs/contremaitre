@@ -31,6 +31,7 @@ import {
   ReadOperation,
   Resolve,
   Share,
+  Show,
   StopShare,
 } from "./application.js";
 export interface ServerOptions {
@@ -325,6 +326,9 @@ export async function startServer(
           }
           case "list":
             json(res, await command(Effect.flatMap(QueryBus, (b) => b.dispatch(List, {}))));
+            return;
+          case "show":
+            json(res, await command(Effect.flatMap(QueryBus, (b) => b.dispatch(Show, payload))));
             return;
           case "resolve":
             json(res, await command(Effect.flatMap(QueryBus, (b) => b.dispatch(Resolve, payload))));

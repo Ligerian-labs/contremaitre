@@ -50,6 +50,11 @@ export const Resolve = Query.define("ResolveEnvironment", {
   success: Schema.Unknown,
   failure: Schema.instanceOf(HubError),
 });
+export const Show = Query.define("ShowEnvironmentURLs", {
+  payload: requestSchema,
+  success: Schema.Record({ key: Schema.String, value: Schema.String }),
+  failure: Schema.instanceOf(HubError),
+});
 export const ListOperations = Query.define("ListOperations", {
   payload: Schema.Struct({}),
   success: Schema.Array(operationSchema),
@@ -178,6 +183,19 @@ const registry = HandlerRegistry.layer(
       return yield* attempt(async (signal) =>
         m.view(await resolveRequest(m, context(signal), req)),
       );
+    }),
+  ),
+  QueryHandler.make(Show, (req) =>
+    Effect.gen(function* () {
+      const { manager: m } = yield* Hub;
+      return yield* attempt(async (signal) => {
+        const env = await resolveRequest(m, context(signal), req);
+        return Object.fromEntries(
+          keys(env.Services)
+            .filter((name) => env.Services[name].HTTP)
+            .map((name) => [name, m.localURL(env, name)]),
+        );
+      });
     }),
   ),
   QueryHandler.make(ListOperations, () =>
