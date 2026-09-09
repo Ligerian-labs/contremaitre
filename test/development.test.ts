@@ -33,6 +33,25 @@ services:
 `);
   expect(manifest.services.api.dev?.source).toBe(".");
   expect(manifest.services.api.working_dir).toBe("/app/apps/server");
+  expect(manifest.services.api.memory).toBe("2G");
+});
+
+test("memory defaults preserve explicit limits and lightweight non-development services", () => {
+  const manifest = parseManifest(`version: 1
+project: resources
+services:
+  web:
+    image: oven/bun:1.3.14
+    memory: 3G
+    working_dir: /app
+    command: [bun, --watch, main.ts]
+    dev: {source: '.', target: /app}
+  mail: {image: axllent/mailpit}
+  db: {kind: postgres}
+`);
+  expect(manifest.services.web.memory).toBe("3G");
+  expect(manifest.services.mail.memory).toBe("512M");
+  expect(manifest.services.db.memory).toBe("512M");
 });
 
 test("source sync propagates edits and deletes, freezes dependencies, and retains pending changes across restart", async () => {
@@ -86,8 +105,15 @@ test("development deployment installs before startup, resumes sync and stops it 
     `version: 1\nproject: dev\nservices:\n  api:\n    image: oven/bun:1.3.14\n    working_dir: /app\n    command: [bun, --watch, main.ts]\n    dev: {source: '.', target: /app, install: [bun, install]}\n`,
   );
   const identity = newIdentity("dev", root, "main");
+  const allocations: string[] = [];
+  const run = runtime.run.bind(runtime);
+  runtime.run = async (ctx, spec) => {
+    allocations.push(spec.service.memory ?? "missing");
+    await run(ctx, spec);
+  };
   try {
     await manager.deploy(context(), { root, identity, manifest, request: {} });
+    expect(allocations).toEqual(["2G", "2G"]);
     const env = manager.resolve(identity.ID);
     expect(runtime.calls.some((c) => c.includes("initial main.ts"))).toBe(true);
     expect(runtime.calls.indexOf(`run ${env.Services.api.Container}-task`)).toBeLessThan(

@@ -93,7 +93,7 @@ export function parseManifest(text: string): Manifest {
         (kind === "postgres" ? "postgres:17" : kind === "redis" ? "redis:7-alpine" : ""),
       port: original.port || (kind === "postgres" ? 5432 : kind === "redis" ? 6379 : 0),
       cpus: original.cpus || 1,
-      memory: original.memory || "512M",
+      memory: original.memory || (original.dev ? "2G" : "512M"),
     };
     if (Boolean(s.image) === Boolean(s.build))
       fail(`${name}: specify exactly one of image or build`);

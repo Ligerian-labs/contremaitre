@@ -602,6 +602,7 @@ export class Manager {
   }
   async startService(ctx: Context, env: Environment, s: ServiceState, initialize: boolean) {
     ctx = serviceContext(ctx, s.Name);
+    phase(ctx, `resources: ${s.Spec.cpus ?? 1} CPU, ${s.Spec.memory ?? "512M"} memory`);
     const envFile = privateEnv(join(this.store.home, "tmp"), this.serviceEnv(env, s));
     try {
       await this.stopDevelopment(s.Container);
