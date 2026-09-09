@@ -19,15 +19,21 @@ user so the hub and mkcert use the same certificate authority. See
 [mkcert's trust-store documentation](https://github.com/FiloSottile/mkcert#supported-root-stores)
 for Firefox and other clients.
 
-macOS requires elevated privileges to bind port 443. In a separate terminal, run:
+macOS requires elevated privileges to bind port 443. Install background forwarding
+once using the compiled CLI:
 
 ```sh
-sudo "$HOME/.local/bin/contremaitre" forward-https
+contremaitre https-service install
 ```
 
-Leave that terminal running. The forwarder carries encrypted TCP traffic from
-`127.0.0.1:443` to `127.0.0.1:8443`. It holds no certificates and does not run the
-hub or containers. Ctrl-C stops forwarding.
+Approve the macOS administrator prompt. The command returns after the service
+owns port 443. No terminal needs to remain open. For a terminal-only installation,
+use `sudo "$HOME/.local/bin/contremaitre" https-service install` instead.
+
+The service carries encrypted TCP traffic from `127.0.0.1:443` to
+`127.0.0.1:8443`. It holds no certificates and does not start the hub or containers.
+launchd starts it at boot and restarts it after an exit. Normal hub starts need
+no administrator authentication. Hub shutdown leaves the forwarder running.
 
 Run the hub and applications as your normal user:
 
@@ -41,13 +47,41 @@ Traefik service on the same port. If 8443 is occupied, use the same custom targe
 in both commands:
 
 ```sh
-sudo "$HOME/.local/bin/contremaitre" forward-https --https-port 18443
+contremaitre https-service install --https-port 18443
 contremaitre start --https-port 18443
 ```
 
 The published URLs still use port 443. Only one forwarder can own that port.
 The listener binds to IPv4 loopback; clients that do not resolve `.localhost`
 can explicitly resolve their environment hostname to `127.0.0.1`.
+
+## Managing the background service
+
+```sh
+contremaitre https-service status
+contremaitre https-service status --json
+contremaitre https-service uninstall
+```
+
+Status reports the installed target, launchd registration, process ID, port-443
+listener, and log path without elevation. Uninstall requests administrator
+authentication and removes only this service and its executable. It retains
+logs, certificates, hub state and application data.
+
+The installer copies the compiled CLI to the root-owned path
+`/Library/PrivilegedHelperTools/dev.contremaitre.https` and registers
+`/Library/LaunchDaemons/dev.contremaitre.https.plist`. launchd runs only its
+`forward-https` command, with an empty inherited environment, a fixed system PATH
+and working directory `/`. Updates to the user's CLI do not replace the privileged
+copy. Run `https-service install` again after a forwarder update or to change its
+target port. Failed updates restore the previous executable and configuration.
+
+Logs are in `/Library/Logs/Contremaitre/https-forwarder.log`. The installer rejects
+unsafe ownership, writable service paths, symlinks, and an unrelated listener on
+port 443. Stop a manually started `forward-https` process before installing.
+The foreground command remains available for temporary use.
+
+The service uses Apple's [launchd lifecycle](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html).
 
 ## Traefik dashboard
 
@@ -86,7 +120,9 @@ The hub supervises Traefik and records its child process for crash recovery. A
 Traefik exit or configuration-publication failure closes the hub rather than
 leaving it reporting healthy HTTPS routing. Application containers remain intact.
 Diagnostics go to `<home>/daemon.log`. Port-443 forwarding is a separate process;
-the hub does not report its availability through the control API.
+the hub does not report its availability through the control API. `start` and
+`deploy` check the local forwarder separately and warn if it is missing or its
+configured target differs from the requested HTTPS port.
 
 ## Upgrading and troubleshooting
 
@@ -95,7 +131,8 @@ to the hub preserves running application containers; `contremaitre stop` also
 stops the applications. Redeploy to update app origins, cookies and HMR settings.
 The CLI rejects a routing-mode mismatch with a restart message.
 
-If the browser cannot connect, check that the port-443 forwarder is running. If
+If the browser cannot connect, run `contremaitre https-service status`. Reinstall
+the service if it is missing or stopped. If
 it reports an untrusted certificate, run `mkcert -install` as the same user that
 runs the hub and restart the browser. A 503 means the service is not ready; inspect
 `contremaitre logs SERVICE` and `contremaitre deploy logs --failure`.

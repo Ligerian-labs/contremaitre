@@ -18,8 +18,9 @@ The standalone binary includes Bun and installs to `~/.local/bin`. Go and Node a
 
 Services use HTTPS URLs without an explicit port. Contremaitre runs Traefik as
 its local HTTPS router and uses mkcert for trusted development certificates.
-On macOS, leave `sudo "$HOME/.local/bin/contremaitre" forward-https` running in a
-separate terminal to forward port 443 to the unprivileged TLS listener on 8443.
+On macOS, run `contremaitre https-service install` once and approve the administrator
+prompt. The background service forwards port 443 to the TLS listener on 8443,
+starts at boot, and survives terminal closure and hub restarts.
 Run the hub and application containers as your normal user. See
 [local HTTPS setup](docs/local-https.md) for certificate trust, upgrades and
 custom listener ports.

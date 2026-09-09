@@ -21,6 +21,7 @@ import {
   optionsFor,
   renderHelp,
 } from "./help.js";
+import { manageHttpsService } from "./https-service.js";
 import { initialize } from "./init.js";
 
 export { normalizeArguments } from "./help.js";
@@ -73,6 +74,10 @@ export function makeRoot(passthrough: readonly string[] = []) {
               rebuild: o.rebuild,
             };
           switch (action) {
+            case "https-service":
+              if (args.length !== 1) fail("https-service requires install, status or uninstall");
+              output(o.json, await manageHttpsService(ctx, args[0], o.httpsPort));
+              return;
             case "version":
               output(o.json, "contremaitre 0.2.0");
               return;

@@ -87,7 +87,19 @@ const commandNames = [
   "version",
   "forward-http",
   "forward-https",
+  "https-service",
 ];
+
+test("HTTPS service commands validate actions and require a compiled installer before elevation", async () => {
+  expect((await cli(["https-service"])).stderr).toContain("requires install, status or uninstall");
+  expect((await cli(["https-service", "unknown"])).stderr).toContain(
+    "requires install, status or uninstall",
+  );
+  expect((await cli(["https-service", "install"])).stderr).toContain("compiled CLI");
+  expect((await cli(["https-service", "install", "--https-port", "443"])).stderr).toContain(
+    "1024..65535",
+  );
+});
 
 test("root help is a compact overview of every command, also shown without arguments", async () => {
   const help = await cli(["--help"]);
