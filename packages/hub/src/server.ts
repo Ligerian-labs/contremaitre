@@ -123,16 +123,32 @@ export async function startServer(
       ready = false;
       if (monitoring) clearInterval(monitoring);
       for (const request of requests) request.abort();
-      await ops?.shutdown();
-      await stopTraefik?.();
-      await stopDevelopment?.();
-      await tunnels?.shutdown();
-      if (control) await closeServer(control);
-      if (publicServer) await closeServer(publicServer);
-      await closeApp?.();
-      if (existsSync(join(store.home, "hub.sock"))) unlinkSync(join(store.home, "hub.sock"));
-      unlock();
+      const errors: unknown[] = [];
+      for (const cleanup of [
+        () => ops?.shutdown(),
+        () => stopTraefik?.(),
+        () => stopDevelopment?.(),
+        () => tunnels?.shutdown(),
+        () => control && closeServer(control),
+        () => publicServer && closeServer(publicServer),
+        () => closeApp?.(),
+        () => {
+          if (existsSync(join(store.home, "hub.sock"))) unlinkSync(join(store.home, "hub.sock"));
+        },
+        unlock,
+      ]) {
+        try {
+          await cleanup();
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      if (errors.length)
+        throw new AggregateError(errors, `Hub cleanup failed: ${errors.map(message).join("; ")}`);
     })());
+  const closeInBackground = () => {
+    void close().catch((error) => process.stderr.write(`${message(error)}\n`));
+  };
   try {
     await reapProcesses(context(signal), join(store.home, "processes"));
     const runtime = options.runtime ?? new Apple();
@@ -347,11 +363,22 @@ export async function startServer(
             return;
           case "stop": {
             ready = false;
-            await operations.shutdown();
-            for (const env of Object.values(manager.state.Environments))
-              await manager.down(context(AbortSignal.timeout(180_000)), env, false);
-            json(res);
-            setTimeout(() => void close(), 20);
+            try {
+              await operations.shutdown();
+              const errors: string[] = [];
+              for (const env of Object.values(manager.state.Environments)) {
+                try {
+                  await manager.down(context(AbortSignal.timeout(180_000)), env, false);
+                } catch (error) {
+                  errors.push(`${env.Identity.Project}/${env.Identity.ID}: ${message(error)}`);
+                }
+              }
+              if (errors.length) fail(`Could not stop all environments: ${errors.join("; ")}`);
+              json(res);
+            } finally {
+              // Let the control response flush, including errors, before closing its socket.
+              setTimeout(closeInBackground, 20);
+            }
             return;
           }
           default:
@@ -400,7 +427,7 @@ export async function startServer(
         snapshot,
         (error) => {
           process.stderr.write(`${message(error)}\n`);
-          void close();
+          closeInBackground();
         },
       );
       stopTraefik = traefik.close;
