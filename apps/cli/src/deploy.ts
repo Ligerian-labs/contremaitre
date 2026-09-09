@@ -67,7 +67,14 @@ class DeploymentDisplay {
 export function deploy(
   home: string,
   req: Request,
-  options: { port: number; publicPort: number; detach: boolean; json: boolean },
+  options: {
+    port: number;
+    publicPort: number;
+    detach: boolean;
+    json: boolean;
+    http?: boolean;
+    httpsPort?: number;
+  },
 ) {
   let display: DeploymentDisplay | undefined;
   // Acquisition is uninterruptible: an accepted operation always has an ID for cancellation.
@@ -80,9 +87,18 @@ export function deploy(
     )
       fail("Invalid HTTP port");
     const ctx = context(signal);
-    await launch(ctx, home, options.port, options.publicPort);
-    const health = (await call(ctx, home, "health")) as { deployment_progress?: number };
-    if (health.deployment_progress !== 1)
+    await launch(
+      ctx,
+      home,
+      options.port,
+      options.publicPort,
+      options.http ? undefined : (options.httpsPort ?? 8443),
+    );
+    const health = (await call(ctx, home, "health")) as {
+      deployment_progress?: number;
+      development?: number;
+    };
+    if (health.deployment_progress !== 1 || health.development !== 1)
       fail(
         "The running hub needs an update; restart it with this Contremaitre binary before deploying",
       );

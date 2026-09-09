@@ -7,7 +7,8 @@ Run isolated local application stacks for Git branches and Jujutsu workspaces on
 Requires Apple silicon, macOS 26, Bun 1.4.2 for building, and Apple `container`. Tested with `container` 1.3.1 on an M2 Max.
 
 ```sh
-brew install container
+brew install container traefik mkcert
+mkcert -install
 bun install --frozen-lockfile
 make install
 contremaitre start
@@ -15,7 +16,18 @@ contremaitre start
 
 The standalone binary includes Bun and installs to `~/.local/bin`. Go and Node are not required to run it. Add that directory to your PATH if needed. Starting the hub starts Apple container and installs its recommended kernel if missing. No Kubernetes cluster is required.
 
-The hub listens on loopback port 8080 without administrator access; printed URLs include the port. If occupied, choose another port with `contremaitre start --http-port 18080`. macOS restricts port 80 to privileged processes. For port-free URLs, run `sudo "$HOME/.local/bin/contremaitre" forward-http` in a separate terminal, then start the ordinary hub with `contremaitre start --public-port 80`. The forwarder only bridges loopback port 80 to 8080 and exits when interrupted. Do not run the hub or application runtime with sudo. The control API uses a private Unix socket. A detached daemon owns state and connector processes, so closing the terminal does not stop applications.
+Services use HTTPS URLs without an explicit port. Contremaitre runs Traefik as
+its local HTTPS router and uses mkcert for trusted development certificates.
+On macOS, leave `sudo "$HOME/.local/bin/contremaitre" forward-https` running in a
+separate terminal to forward port 443 to the unprivileged TLS listener on 8443.
+Run the hub and application containers as your normal user. See
+[local HTTPS setup](docs/local-https.md) for certificate trust, upgrades and
+custom listener ports.
+
+For explicit legacy HTTP, use `contremaitre start --http --http-port 8080` and
+`contremaitre deploy --http`. The control API uses a private Unix socket. A
+detached daemon owns state and connector processes, so closing the hub's starting
+terminal does not stop applications.
 
 Run `contremaitre` or `contremaitre --help` for a compact list of all commands.
 Use `contremaitre deploy --help` or `contremaitre help deploy` for usage, examples,
@@ -281,7 +293,7 @@ make check   # lint, typecheck, tests, standalone build and crash/restart checks
 make build
 ```
 
-See [docs/acceptance.md](docs/acceptance.md) and [docs/verification.md](docs/verification.md) for scope and verification results. The HTTP router supports WebSocket upgrades and streaming through the Bun/Node HTTP adapter. Local TLS and automatic hot reload are outside this release.
+See [docs/acceptance.md](docs/acceptance.md) and [docs/verification.md](docs/verification.md) for scope and verification results. The HTTP router supports WebSocket upgrades and streaming through the Bun/Node HTTP adapter. Local TLS uses Traefik; development source synchronization supports native hot reload.
 
 ## Existing Kubernetes projects
 

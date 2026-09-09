@@ -23,11 +23,21 @@ async function fixture() {
   const runtime = new FakeRuntime();
   const hub = await startServer({ home, port: 0, runtime, skipSystemStart: true });
   const spawn = (...args: string[]) =>
-    Bun.spawn([process.execPath, cli, ...args, "--home", home], {
-      cwd: root,
-      stdout: "pipe",
-      stderr: "pipe",
-    });
+    Bun.spawn(
+      [
+        process.execPath,
+        cli,
+        ...args,
+        ...(args[0] === "deploy" && args[1] !== "logs" ? ["--http"] : []),
+        "--home",
+        home,
+      ],
+      {
+        cwd: root,
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
   const run = async (...args: string[]) => {
     const child = spawn(...args);
     const [stdout, stderr, code] = await Promise.all([
