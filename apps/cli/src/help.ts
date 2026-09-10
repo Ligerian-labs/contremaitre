@@ -21,6 +21,28 @@ function flag<A>(
 }
 
 const flags = {
+  global: flag(
+    "global",
+    Options.boolean("global"),
+    false,
+    "Install agent integration in your home directory.",
+  ),
+  profile: flag(
+    "profile",
+    Options.text("profile"),
+    "smoke",
+    "Verification profile. Default: smoke.",
+    "NAME",
+  ),
+  run: flag("run", Options.text("run"), "", "Verification or deployment operation ID.", "ID"),
+  check: flag("check", Options.text("check"), "", "Read diagnostics for this check.", "NAME"),
+  timeout: flag(
+    "timeout",
+    Options.integer("timeout"),
+    1800,
+    "Wait deadline in seconds, 1..7200. Timeout leaves the operation running.",
+    "SECONDS",
+  ),
   workspace: flag(
     "workspace",
     Options.text("workspace"),
@@ -158,6 +180,82 @@ export interface CommandHelp {
 
 export const commands: readonly CommandHelp[] = [
   {
+    name: "agents",
+    group: "Hub and tools",
+    description: "Install shared skills and native agent adapters",
+    usage: "install",
+    details:
+      "Defaults to this directory. Existing files with different contents are preserved. --agent all supports Claude Code, Codex, OpenCode and Pi.",
+    flags: ["agent", "global", "json"],
+    examples: [
+      "contremaitre agents install --agent all",
+      "contremaitre agents install --agent codex --global",
+    ],
+  },
+  {
+    name: "ensure",
+    group: "Environments",
+    description: "Reuse or deploy the current workspace for testing",
+    details:
+      "Wait quietly for readiness and return a compact result. No model is invoked. Source changes during deployment require a retry. --detach returns an operation ID.",
+    flags: [
+      "branch",
+      "main",
+      "rebuild",
+      "detach",
+      "timeout",
+      "port",
+      "publicPort",
+      "http",
+      "httpsPort",
+      "home",
+      "json",
+    ],
+    examples: ["contremaitre ensure --json"],
+  },
+  {
+    name: "verify",
+    group: "Environments",
+    description: "Run configured checks and collect evidence",
+    details:
+      "Requires a current environment prepared by ensure. Missing profiles and failed checks exit nonzero. Results and artifacts persist outside the checkout.",
+    flags: ["env", "branch", "profile", "detach", "timeout", "home", "json"],
+    examples: ["contremaitre verify --profile smoke --json"],
+  },
+  {
+    name: "report",
+    group: "Environments",
+    description: "Show preview, evidence and source freshness",
+    flags: ["env", "branch", "home", "json"],
+    examples: ["contremaitre report --json"],
+  },
+  {
+    name: "status",
+    group: "Environments",
+    description: "Show compact status for the current workspace",
+    details:
+      "Includes readiness, verification and freshness. Use list to inspect every environment.",
+    flags: ["env", "branch", "home", "json"],
+    examples: ["contremaitre status --json"],
+  },
+  {
+    name: "diagnose",
+    group: "Operations",
+    description: "Read bounded failure details",
+    details:
+      "Returns up to 3000 bytes and a cursor. --offset resumes without repeating output. Full logs are available on the review page.",
+    flags: ["run", "check", "offset", "home", "json"],
+    examples: ["contremaitre diagnose --run OPERATION_ID --json"],
+  },
+  {
+    name: "wait",
+    group: "Operations",
+    description: "Wait for an operation without streaming logs",
+    usage: "OPERATION_ID",
+    flags: ["timeout", "home", "json"],
+    examples: ["contremaitre wait OPERATION_ID --json"],
+  },
+  {
     name: "init",
     group: "Environments",
     description: "Create or update a project manifest",
@@ -206,7 +304,6 @@ export const commands: readonly CommandHelp[] = [
   },
   {
     name: "list",
-    aliases: ["status"],
     group: "Environments",
     description: "List environments",
     flags: ["home", "json"],
@@ -419,6 +516,11 @@ export function optionsFor(command: Pick<CommandHelp, "flags">) {
     follow: option("follow", flags.follow),
     compose: option("compose", flags.compose),
     offset: option("offset", flags.offset),
+    global: option("global", flags.global),
+    profile: option("profile", flags.profile),
+    run: option("run", flags.run),
+    check: option("check", flags.check),
+    timeout: option("timeout", flags.timeout),
   };
 }
 
@@ -558,13 +660,13 @@ export function renderHelp(name?: string) {
       ? deployLogsHelp
       : commands.find((command) => command.name === name || command.aliases?.includes(name ?? ""));
   if (!command) {
-    paragraph("Contremaitre - isolated local application environments");
     paragraph("Usage: contremaitre <command> [flags]");
-    for (const group of new Set(commands.map((command) => command.group))) {
-      lines.push("", `${group}:`);
+    for (const group of ["Environments", "Inspect and connect", "Operations", "Hub and tools"]) {
+      lines.push(`${group}:`);
       rows(
         commands
           .filter((command) => command.group === group)
+          .sort((a, b) => Number(b.name === "init") - Number(a.name === "init"))
           .map((command) => [
             [command.name, ...(command.aliases ?? [])].join(", "),
             command.description,
@@ -572,7 +674,6 @@ export function renderHelp(name?: string) {
         12,
       );
     }
-    lines.push("");
     paragraph('Use "contremaitre <command> --help" for flags and examples.');
     paragraph('Use "contremaitre --completions SHELL" for shell completions.');
   } else {

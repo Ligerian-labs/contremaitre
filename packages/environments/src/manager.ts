@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
@@ -235,6 +235,9 @@ export class Manager {
         env.Root = root;
       }
       const driver = serviceContext(ctx, "driver");
+      delete env.source;
+      env.generation = randomUUID();
+      this.save();
       try {
         await this.deployDriver(driver, env, request, p.sourceId);
         progress(driver, "ready", "ready");
@@ -251,6 +254,8 @@ export class Manager {
     }
     if (request.main || (identity.Branch === "main" && !this.state.Main[identity.Project]))
       this.state.Main[identity.Project] = identity.ID;
+    delete env.source;
+    env.generation = randomUUID();
     this.save();
     const e = env,
       previousStatus = e.Status;

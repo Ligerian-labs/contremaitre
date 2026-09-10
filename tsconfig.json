@@ -15,6 +15,7 @@
     "apps",
     "packages",
     "test",
-    "scripts"
+    "scripts",
+    "integrations"
   ]
 }

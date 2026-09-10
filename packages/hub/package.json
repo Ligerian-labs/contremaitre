@@ -16,6 +16,7 @@
     "@structure-ai/cqrs": "0.1.1",
     "@structure-ai/observability": "0.1.1",
     "@structure-ai/runtime": "0.1.1",
-    "effect": "3.22.1"
+    "effect": "3.22.1",
+    "@contremaitre/verification": "workspace:*"
   }
 }

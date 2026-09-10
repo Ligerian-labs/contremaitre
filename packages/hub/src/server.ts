@@ -13,6 +13,8 @@ import { sleep } from "@contremaitre/execution/sleep";
 import { type Operation, Operations, terminal } from "@contremaitre/operations/operations";
 import { closeServer, listen, proxyServer, type Route } from "@contremaitre/routing/proxy";
 import { type LocalRoute, startTraefik } from "@contremaitre/routing/traefik";
+import { startReview } from "@contremaitre/verification/review";
+import { AgentWorkflow } from "@contremaitre/verification/workflow";
 import { load, Settings } from "@structure-ai/config";
 import { Readiness, Shutdown } from "@structure-ai/runtime";
 import { Duration, Effect, Layer } from "effect";
@@ -23,17 +25,21 @@ import {
   CommandBus,
   Deploy,
   DesignateMain,
+  Diagnose,
   Down,
+  Ensure,
   List,
   ListOperations,
   Prune,
   QueryBus,
   ReadOperation,
   RenewShare,
+  Report,
   Resolve,
   Share,
   Show,
   StopShare,
+  Verify,
 } from "./application.js";
 export interface ServerOptions {
   home: string;
@@ -113,6 +119,7 @@ export async function startServer(
     unlock = lockHome(store.home);
   let control: Server | undefined, publicServer: Server | undefined;
   let ops: Operations | undefined, tunnels: TunnelSessions | undefined;
+  let closeReview: (() => Promise<void>) | undefined;
   let closeApp: (() => Promise<void>) | undefined;
   let stopTraefik: (() => Promise<void>) | undefined;
   let stopDevelopment: (() => Promise<void>) | undefined;
@@ -131,6 +138,7 @@ export async function startServer(
         () => stopTraefik?.(),
         () => control && closeServer(control),
         () => publicServer && closeServer(publicServer),
+        () => closeReview?.(),
         () => closeApp?.(),
         () => {
           if (existsSync(join(store.home, "hub.sock"))) unlinkSync(join(store.home, "hub.sock"));
@@ -171,7 +179,11 @@ export async function startServer(
     tunnels = new TunnelSessions(manager, lookup, operations.locks);
     manager.tunnels = tunnels;
     const sharing = tunnels;
+    const agents = new AgentWorkflow(manager, operations);
+    const review = await startReview(agents);
+    closeReview = review.close;
     const app = application({
+      agents,
       manager,
       operations,
       share: (ctx, e, id, provider) =>
@@ -221,6 +233,7 @@ export async function startServer(
             deployment_progress: 1,
             local_https: options.httpsPort !== undefined,
             development: 1,
+            agent_workflow: 1,
             foreground_tunnels: 1,
             saas_onboarding: 1,
           });
@@ -252,6 +265,45 @@ export async function startServer(
               ),
             ),
           );
+          return;
+        }
+        if (
+          action === "ensure" ||
+          action === "verify" ||
+          action === "report" ||
+          action === "diagnose"
+        ) {
+          const data =
+            action === "ensure"
+              ? await command(
+                  Effect.flatMap(CommandBus, (b) =>
+                    b.dispatch(Ensure, decode(Ensure.payload, value, "ensure request")),
+                  ),
+                )
+              : action === "verify"
+                ? await command(
+                    Effect.flatMap(CommandBus, (b) =>
+                      b.dispatch(Verify, decode(Verify.payload, value, "verify request")),
+                    ),
+                  )
+                : action === "report"
+                  ? await command(
+                      Effect.flatMap(QueryBus, (b) =>
+                        b.dispatch(Report, decode(Report.payload, value, "report request")),
+                      ),
+                    )
+                  : await command(
+                      Effect.flatMap(QueryBus, (b) =>
+                        b.dispatch(Diagnose, decode(Diagnose.payload, value, "diagnose request")),
+                      ),
+                    );
+          json(res, data);
+          return;
+        }
+        if (action === "agent-result") {
+          const { id } = decode(Cancel.payload, value, "operation result request");
+          const op = operations.get(id);
+          json(res, op.kind === "ensure" ? agents.ensureResult(id) : agents.result(id));
           return;
         }
         const payload = decode(requestSchema, value, "request");
@@ -462,6 +514,7 @@ export async function startServer(
     return {
       manager,
       operations,
+      agents,
       close,
       get closed() {
         return !!shutdownPromise;

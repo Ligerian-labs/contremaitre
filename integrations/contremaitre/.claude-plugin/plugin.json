@@ -1,0 +1,7 @@
+{
+  "name": "contremaitre",
+  "version": "0.2.0",
+  "author": { "name": "Ligerian Labs" },
+  "description": "Isolated runtime verification and local previews for coding agents",
+  "skills": "./skills/"
+}

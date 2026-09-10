@@ -1,0 +1,18 @@
+{
+  "name": "contremaitre",
+  "version": "0.2.0",
+  "description": "Isolated runtime verification and local previews for coding agents",
+  "author": {
+    "name": "Ligerian Labs"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Contremaitre",
+    "shortDescription": "Test applications and review local previews.",
+    "longDescription": "Reuse isolated environments, run project checks, and review evidence with compact agent output.",
+    "developerName": "Ligerian Labs",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": "Use $contremaitre to test this application and give me its preview and verification report."
+  }
+}

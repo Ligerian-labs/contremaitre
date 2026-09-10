@@ -103,7 +103,7 @@ export class Operations {
   private trim(): void {
     const completed = this.list().filter(terminal);
     for (const op of completed.slice(this.retention)) {
-      for (const suffix of ["json", "log"]) {
+      for (const suffix of ["json", "log", "result.json"]) {
         try {
           unlinkSync(join(this.directory, `${op.id}.${suffix}`));
         } catch (e) {

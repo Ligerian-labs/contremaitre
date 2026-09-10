@@ -1,0 +1,17 @@
+{
+  "name": "contremaitre-agents",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "keywords": [
+    "pi-package"
+  ],
+  "pi": {
+    "skills": [
+      "./skills"
+    ],
+    "extensions": [
+      "./extensions/pi.ts"
+    ]
+  }
+}

@@ -11,6 +11,7 @@ import {
   newIdentity,
   type Service,
   serviceSchema,
+  verificationSchema,
 } from "./model.js";
 export const validName = /^[a-z][a-z0-9-]{0,39}$/;
 export const envKey = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -19,6 +20,7 @@ const manifestSchema = Schema.Struct({
   project: Schema.String,
   services: Schema.optional(Schema.Record({ key: Schema.String, value: serviceSchema })),
   driver: Schema.optional(driverSchema),
+  verification: Schema.optional(verificationSchema),
 });
 export const inside = (root: string, path: string): boolean => {
   const r = relative(root, path);
@@ -63,6 +65,38 @@ export function parseManifest(text: string): Manifest {
   if (!validName.test(parsed.project))
     fail("Project must be a lowercase DNS label, at most 40 characters");
   const services: Record<string, Service> = Object.create(null);
+  const verification = parsed.verification;
+  if (verification) {
+    if (Object.keys(verification.profiles).length > 20)
+      fail("At most 20 verification profiles are allowed");
+    for (const [profile, checks] of Object.entries(verification.profiles)) {
+      if (!validName.test(profile) || checks.length > 32)
+        fail("Invalid verification profile; use at most 32 checks");
+      const names = new Set<string>();
+      for (const check of checks) {
+        if (!validName.test(check.name) || names.has(check.name))
+          fail("Check names must be unique DNS labels within a profile");
+        names.add(check.name);
+        if (!check.command.length || check.command.some((arg) => !arg || arg.includes("\0")))
+          fail(`${check.name}: command requires nonempty arguments`);
+        if (check.service && !parsed.driver && !Object.hasOwn(parsed.services ?? {}, check.service))
+          fail(`${check.name}: unknown verification service`);
+        if (check.service && !validName.test(check.service)) fail(`${check.name}: invalid service`);
+        if ((check.timeout_seconds ?? 300) < 1 || (check.timeout_seconds ?? 300) > 1800)
+          fail(`${check.name}: timeout_seconds must be 1..1800`);
+        if ((check.artifacts?.length ?? 0) > 32)
+          fail(`${check.name}: at most 32 artifact paths are allowed`);
+        for (const path of check.artifacts ?? [])
+          if (
+            !path ||
+            isAbsolute(path) ||
+            path.split(/[\\/]/).some((part) => part === ".." || part === "." || !part) ||
+            /[\0\r\n]/.test(path)
+          )
+            fail(`${check.name}: artifact paths must be relative to CONTREMAITRE_ARTIFACTS`);
+      }
+    }
+  }
   if (parsed.driver) {
     const d = parsed.driver;
     const timeout = d.timeout_seconds || 1800;
@@ -79,6 +113,7 @@ export function parseManifest(text: string): Manifest {
       project: parsed.project,
       services,
       driver: { ...d, timeout_seconds: timeout },
+      verification,
     };
   }
   for (const [name, original] of Object.entries(parsed.services ?? {})) {
@@ -155,7 +190,7 @@ export function parseManifest(text: string): Manifest {
   }
   if (!keys(services).length) fail("At least one service is required");
   order(services);
-  return { version: 1, project: parsed.project, services };
+  return { version: 1, project: parsed.project, services, verification };
 }
 export function loadManifest(root: string): Manifest {
   for (const file of [".contremaitre.yaml", ".contremaitre.yml"]) {
