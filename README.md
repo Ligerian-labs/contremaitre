@@ -258,12 +258,16 @@ Redeploy preserves data and does not recopy main. Upload directory names are sco
 
 ```sh
 contremaitre tunnel
+contremaitre tunnel login
+contremaitre tunnel --workspace TEAM_ID
 contremaitre tunnel status
 contremaitre tunnel stop
 contremaitre tunnel release web
 ```
 
-Configure an installed provider executable in `~/.local/share/contremaitre/tunnels.json`:
+Without a custom provider, `tunnel` uses `https://contremaitre.ligerianlabs.fr`. It opens browser authorization when needed, asks for a workspace when none is selected, saves the device credential in macOS Keychain and prepares the provider automatically. Later commands reuse that login. `tunnel login` signs in without starting a preview. `--workspace ID` selects a workspace for new reservations. The SaaS endpoint and download APIs are still being implemented; see [SaaS onboarding](docs/saas-onboarding.md) for the integration contract.
+
+To use a custom provider, configure its installed executable in `~/.local/share/contremaitre/tunnels.json`. This explicit choice takes precedence; invalid custom configuration never falls back to the SaaS:
 
 ```json
 {

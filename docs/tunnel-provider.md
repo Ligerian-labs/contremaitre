@@ -2,7 +2,7 @@
 
 The runtime shares all HTTP services in one terminal-owned session. Reservations persist; permission to forward does not. There is no detached mode. Providers must advertise `stable_urls`, `https`, and `foreground_sessions`; the runtime rejects older adapters before changing application configuration.
 
-Providers are trusted installed executables with an absolute path in `tunnels.json`. They own authentication, device credentials, remote control calls, and the relay transport. Credentials must stay out of arguments, stdout, and diagnostic logs. The first-party adapter is not bundled with this change; see the sibling SaaS repository's `tunnel-spec.md` for that implementation.
+Providers are trusted installed executables with an absolute path in `tunnels.json`. They own authentication, device credentials, remote control calls, and the relay transport. Credentials must stay out of arguments, stdout, and diagnostic logs. The first-party path adds CLI-owned device authorization and automatic installation of a compatible adapter from the SaaS origin. See [SaaS onboarding](saas-onboarding.md) for its authentication, workspace, Keychain and artifact contract. Those SaaS endpoints and adapter changes must ship before the default path can work against the public service.
 
 ## Identity and control operations
 

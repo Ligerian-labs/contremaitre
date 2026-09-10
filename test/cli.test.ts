@@ -91,6 +91,17 @@ const commandNames = [
   "https-service",
 ];
 
+test("tunnel documents SaaS login and explicit workspace selection", async () => {
+  const result = await cli(["tunnel", "--help"]);
+  expect(result.code).toBe(0);
+  expect(result.stdout).toContain("login");
+  expect(result.stdout).toContain("--workspace");
+  const login = await cli(["tunnel", "login", "--json"]);
+  expect(login.code).not.toBe(0);
+  expect(JSON.parse(login.stdout).error).toContain("tunnel login interactively");
+  expect(login.stderr).toBe("");
+});
+
 test("HTTPS service commands validate actions and require a compiled installer before elevation", async () => {
   expect((await cli(["https-service"])).stderr).toContain("requires install, status or uninstall");
   expect((await cli(["https-service", "unknown"])).stderr).toContain(
