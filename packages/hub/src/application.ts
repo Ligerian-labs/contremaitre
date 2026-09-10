@@ -80,6 +80,11 @@ export const Share = Command.define("ShareService", {
   success: Schema.Unknown,
   failure: Schema.instanceOf(HubError),
 });
+export const RenewShare = Command.define("RenewSharingSession", {
+  payload: requestSchema,
+  success: Schema.Unknown,
+  failure: Schema.instanceOf(HubError),
+});
 export const StopShare = Command.define("StopSharingService", {
   payload: requestSchema,
   success: Schema.Unknown,
@@ -90,7 +95,9 @@ export class Hub extends EffectContext.Tag("contremaitre/Hub")<
   {
     manager: Manager;
     operations: Operations;
-    share: (ctx: Context, e: Environment, name: string) => Promise<unknown>;
+    share: (ctx: Context, e: Environment, id: string) => Promise<unknown>;
+    renewShare?: (id: string) => unknown;
+    endShare?: (e: Environment, id?: string) => Promise<void>;
   }
 >() {}
 export const attempt = <A>(work: (signal: AbortSignal) => Promise<A>) =>
@@ -138,9 +145,11 @@ const registry = HandlerRegistry.layer(
   ),
   CommandHandler.make(Down, (req) =>
     Effect.gen(function* () {
-      const { manager: m, operations: ops } = yield* Hub;
+      const hub = yield* Hub;
+      const { manager: m, operations: ops } = hub;
       return yield* attempt(async (signal) => {
         const env = await resolveRequest(m, context(signal), req);
+        await hub.endShare?.(env);
         return ops.submit(env.Identity.ID, "down", [env.Identity.ID], (ctx) =>
           m.down(ctx, env, req.delete_data),
         );
@@ -221,19 +230,30 @@ const registry = HandlerRegistry.layer(
       return yield* attempt(async (signal) => {
         const ctx = context(signal),
           env = await resolveRequest(hub.manager, ctx, req);
-        if (!req.service) fail("Tunnel requires a service");
-        return hub.operations.locks.use([env.Identity.ID], signal, () =>
-          hub.share(ctx, env, req.service ?? ""),
-        );
+        if (!req.session_id || req.service)
+          fail("Tunnel requires a foreground session for all HTTP services");
+        return hub.share(ctx, env, req.session_id);
+      });
+    }),
+  ),
+  CommandHandler.make(RenewShare, (req) =>
+    Effect.gen(function* () {
+      const hub = yield* Hub;
+      return yield* attempt(async () => {
+        if (!req.session_id || !hub.renewShare) fail("Missing tunnel session");
+        return hub.renewShare(req.session_id);
       });
     }),
   ),
   CommandHandler.make(StopShare, (req) =>
     Effect.gen(function* () {
-      const { manager: m, operations: ops } = yield* Hub;
+      const hub = yield* Hub;
+      const { manager: m, operations: ops } = hub;
       return yield* attempt(async (signal) => {
         const ctx = context(signal),
           env = await resolveRequest(m, ctx, req);
+        await hub.endShare?.(env, req.session_id);
+        if (req.session_id) return "Tunnel stopped";
         return ops.locks.use([env.Identity.ID], signal, async () => {
           for (const name of req.service ? [req.service] : keys(env.tunnels))
             await m.tunnels?.stop(ctx, env, name, !!req.delete_data);

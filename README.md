@@ -106,7 +106,7 @@ Dependencies start first. Managed databases use readiness commands; applications
 
 `init` runs once on clean initialization. Forked services inherit matching initialization state from main. `migrate` runs when its app is replaced; unchanged apps skip it. These commands run in temporary containers with the service's network, environment, and volumes, before its normal process starts. Failed migrations leave a failed environment for inspection and retry; database changes are not rolled back automatically.
 
-Use `{{contremaitre.url}}` to map the external application origin into a framework variable. It resolves to the reserved public URL when available and otherwise to the local URL. `{{contremaitre.local_url}}` always selects the local URL. Redeploy after reserving a tunnel to update application configuration.
+Use `{{contremaitre.url}}` for the current service's browser URL. It resolves to its public URL only during an active sharing session and otherwise to its local URL. `{{contremaitre.local_url}}` always selects the local URL. `{{service.browser_url}}` works for cross-service browser endpoints, without a startup dependency. Internal `{{service.url}}` references keep their existing meaning.
 
 Managed Postgres defaults to `postgres:17`, database/user `app`, and a generated password per environment. It stores data in an Apple named volume, under a subdirectory of the mount. This managed layout supports Postgres 17; changing an existing database image requires an explicit migration. Managed Redis defaults to `redis:7-alpine` and has no persistent volume, so it starts empty when replaced or restarted. An unchanged Redis process retains its in-memory data.
 
@@ -257,7 +257,7 @@ Redeploy preserves data and does not recopy main. Upload directory names are sco
 ## Tunnel providers
 
 ```sh
-contremaitre tunnel web
+contremaitre tunnel
 contremaitre tunnel status
 contremaitre tunnel stop
 contremaitre tunnel release web
@@ -277,7 +277,28 @@ Configure an installed provider executable in `~/.local/share/contremaitre/tunne
 }
 ```
 
-Provider credentials belong in the provider's credential store. The protocol is documented in [docs/tunnel-provider.md](docs/tunnel-provider.md). The local interface and process supervision are implemented and contract-tested. A production SaaS provider executable is not bundled: the sibling tunnel project had no implementation or API contract at development time.
+`tunnel` stays in the foreground and shares every `http: true` service together. The command renews a 15-second ownership lease every three seconds. Ctrl-C, SIGHUP, lease expiry, hub shutdown, or a detected branch/bookmark change closes sharing and restores local application configuration. Branch checks run once per second; they are not atomic with a VCS checkout. Short connector interruptions retry while the foreground owner renews the lease. A stopped session never restarts automatically. URLs remain reserved for a later explicit session. `tunnel stop` ends the whole session; `tunnel release SERVICE` also retires that service's reservation.
+
+Services may restart when URLs change. No image builds, migrations, or data deletion run for the switch. The hub journals the configuration transition and restores local settings after a crash. Failed restoration leaves the environment failed, with a recovery message; restart the hub to retry. Finish sharing before redeploying; live source edits continue while sharing. Native services are supported; project drivers must first gain a URL-reconfiguration contract.
+
+Declare browser endpoints and allowed origins in the application variables your framework reads:
+
+```yaml
+services:
+  api:
+    # image, port, command, etc.
+    http: true
+    environment:
+      ALLOWED_ORIGINS: '{{web.browser_origins}}'
+  web:
+    http: true
+    environment:
+      API_URL: '{{api.browser_url}}'
+```
+
+`browser_origins` is a JSON array containing the local origin and, during sharing, the public origin. Configure the application to parse that array for CORS/origin checks. This lets local tabs continue working while browser API requests may use the public route. `CONTREMAITRE_URL` and `CONTREMAITRE_ORIGINS` provide the equivalent values for the current service. `CONTREMAITRE_LOCAL_URL` stays local; `CONTREMAITRE_PUBLIC_URL` is injected only while sharing. A retained reservation does not select public configuration. Hardcoded URLs and URLs compiled into static assets cannot be rewritten automatically; use a development server or application-supported runtime configuration.
+
+Provider credentials belong in the provider's credential store. The protocol is documented in [docs/tunnel-provider.md](docs/tunnel-provider.md). Adapters must advertise `foreground_sessions` and implement protocol-v2 lease frames; legacy detached providers fail before application configuration changes. This repository implements and tests the local side with an executable fixture. The first-party SaaS adapter and remote group leases are separate work described in the sibling tunnel repository's `tunnel-spec.md`.
 
 Each reservation retains its provider and URL across stop/start and redeploy. A different configured default only affects new reservations. The daemon supervises active provider processes, retrying failed connections with a bounded delay. Providers own authentication renewal, remote session fencing, and transport reconnection. Explicit stop disables reconnect. Closing the hub through `stop` disables exposure.
 

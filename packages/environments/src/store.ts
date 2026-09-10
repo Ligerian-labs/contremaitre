@@ -49,6 +49,7 @@ export class Store {
 export function publicEnvironment(env: Environment): Environment {
   const out: Environment = structuredClone(env);
   delete out.credentials;
+  delete out.tunnel_configuration;
   for (const s of Object.values(out.Services)) {
     delete s.raw_environment;
     delete s.deployment;

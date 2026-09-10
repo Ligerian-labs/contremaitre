@@ -1,37 +1,85 @@
-# Executable tunnel provider protocol v1
+# Foreground tunnel provider contract
 
-A provider is a trusted, explicitly installed executable with an absolute path. Contremaitre invokes it without a shell. The single positional argument is the operation. Each invocation receives one JSON request on stdin, followed by EOF. Credentials are never supplied through arguments.
+The runtime shares all HTTP services in one terminal-owned session. Reservations persist; permission to forward does not. There is no detached mode. Providers must advertise `stable_urls`, `https`, and `foreground_sessions`; the runtime rejects older adapters before changing application configuration.
 
-Every request has `version: 1`. Fields are:
+Providers are trusted installed executables with an absolute path in `tunnels.json`. They own authentication, device credentials, remote control calls, and the relay transport. Credentials must stay out of arguments, stdout, and diagnostic logs. The first-party adapter is not bundled with this change; see the sibling SaaS repository's `tunnel-spec.md` for that implementation.
+
+## Identity and control operations
+
+The single command-line argument is `capabilities`, `reserve`, `start`, `stop`, or `release`. Except for `start`, stdin contains one JSON document followed by EOF:
 
 ```json
 {
   "version": 1,
   "config": {"endpoint": "https://api.example.com"},
-  "environment_id": "opaque-local-environment-id",
+  "environment_id": "opaque-machine-scoped-environment-id",
+  "machine_id": "persistent-installation-uuid",
+  "workspace_id": "workspace-path-hash",
+  "project": "shop",
+  "branch": "feature",
   "service_id": "web",
   "display_name": "shop/feature-workspace-hash",
-  "reservation_id": "provider-assigned-id",
-  "upstream": "http://127.0.0.1:43123"
+  "reservation_id": "provider-assigned-id"
 }
 ```
 
-Fields not relevant to the operation are omitted. Providers must scope environment identities to the authenticated SaaS tenant. Display names are not identities. Control operations must be idempotent.
+The runtime persists a random installation ID in `CONTREMAITRE_HOME/tunnel-machine-id`. `environment_id` is the first 32 hexadecimal characters of SHA-256 over `machine_id + NUL + local environment ID`. This separates identical workspace paths on different computers. `workspace_id` is a path hash, not an absolute path. Do not copy installation state between machines. The server scopes these identifiers to the authenticated tenant and validates the authenticated device; metadata never authenticates a caller.
 
-| Operation | Behavior | JSON response |
-|---|---|---|
-| `capabilities` | Report supported behavior | `{"version":1,"capabilities":{"stable_urls":true,"https":true,"websockets":true,"streaming":true}}` |
-| `reserve` | Return the existing or new reservation for this environment/service | `{"version":1,"reservation_id":"id","url":"https://name.example.com"}` |
-| `start` | Attach the reservation to the supplied loopback upstream and keep running | First stdout line: `{"version":1,"ready":true}` |
-| `stop` | Disable forwarding but preserve the reservation | `{"version":1}` |
-| `release` | Disable forwarding and retire the reservation | `{"version":1}` |
+`reserve` is idempotent for tenant/environment/service and returns the same HTTPS origin after stop or reconnect. Display metadata must not determine identity. URLs must have no userinfo, non-root path, query, or fragment. Removed services' reservations stay stopped until explicitly released. Existing installations changing identity schemes must explicitly migrate or retire older reservations; the runtime does not claim URL preservation across an installation reset.
 
-Non-start operations must finish within 30 seconds. Their stdout contains one JSON response of at most 1 MiB. `start` must emit a newline-terminated ready event within 30 seconds, and continue running until SIGTERM. Extra stdout after readiness is discarded. Diagnostic stderr is private to the local hub. Do not log credentials, request payloads, cookies, or authorization headers.
+| Operation | Response and behavior |
+|---|---|
+| `capabilities` | `{"version":1,"capabilities":{"stable_urls":true,"https":true,"foreground_sessions":true,"websockets":true,"streaming":true}}` |
+| `reserve` | `{"version":1,"reservation_id":"id","url":"https://web.example.com"}`. Reserve without forwarding. |
+| `stop` | `{"version":1}`. End this adapter's current fenced session; preserve the URL. |
+| `release` | `{"version":1}`. End forwarding and retire the reservation. |
 
-The provider process and child process group receive SIGTERM on stop, followed by SIGKILL if they do not exit within five seconds. The provider must clean up remote sessions on disconnect. Contremaitre also invokes `stop`; failure is surfaced to the caller. Retrying start after a hub crash uses the same reservation. The provider must fence stale sessions server-side.
+Control operations have a 30-second timeout and a 1 MiB stdout limit. Nonzero exit or malformed response fails the operation. Errors must not expose secrets. The adapter must persist enough private session/generation metadata to make stop safe and idempotent across process death. A stale stop must never end a newer session.
 
-Providers must support stable URLs and HTTPS. The initial adapter does not translate provider-specific capabilities. A nonzero exit or invalid response fails the operation. Contremaitre retries desired disconnected start processes with a delay capped at one minute. Providers must avoid leaking secrets in diagnostic messages and implement their own bounded transport reconnection and credential refresh.
+## Streaming start, protocol version 2
 
-The upstream exists only on the developer's loopback interface. It follows service redeployments, and the hub supplies the reserved public Host and `X-Forwarded-Proto: https` to the application. The provider must preserve HTTP methods, paths, queries, request bytes, relevant headers, repeated response headers, WebSockets, and streams. Do not replay application requests after uncertain failures.
+`start` uses newline-delimited JSON on stdin and keeps stdin open. The first line is:
 
-The first-party SaaS connector should implement these commands as an adapter around its actual control API and session transport. No API endpoint or session credential shape is assumed by the local runtime.
+```json
+{
+  "version": 2,
+  "config": {"endpoint": "https://api.example.com"},
+  "environment_id": "opaque-machine-scoped-environment-id",
+  "machine_id": "persistent-installation-uuid",
+  "workspace_id": "workspace-path-hash",
+  "project": "shop",
+  "branch": "feature",
+  "service_id": "web",
+  "service_ids": ["api", "web"],
+  "display_name": "shop/feature-workspace-hash",
+  "reservation_id": "provider-assigned-id",
+  "upstream": "http://127.0.0.1:43123",
+  "session_id": "foreground-session-uuid",
+  "expires_at": 1789000015000,
+  "enabled": false
+}
+```
+
+`service_ids` is the complete sorted set of public services in the group. All connectors share `session_id`. The upstream is a runtime-owned loopback proxy; it cannot be selected by visitors or by the remote API. Startup is disabled. The provider prepares its remote session and transport, then prints `{"version":2,"ready":true}` followed by a newline. Readiness must arrive within 30 seconds and be at most 64 KiB. It means the connector is prepared for activation, not that the group is already public. The process remains alive; diagnostics go to stderr. Further stdout is ignored.
+
+The runtime then sends lease frames:
+
+```json
+{"version":2,"operation":"renew","session_id":"foreground-session-uuid","expires_at":1789000018000,"enabled":true}
+```
+
+The CLI renews hub ownership every three seconds. The hub grants a 15-second lease, including during preparation. The provider must process renewals while preparing and while connected. `expires_at` is an absolute UTC Unix-millisecond deadline; a delayed frame must not create a fresh full-duration lease. The adapter must cap remote validity at this deadline and the remote server must enforce its own maximum TTL. Frames must match the current session and cannot revive a stopped/expired generation.
+
+The hub sets `enabled:true` only after all applications and connectors are ready. Before then, its local proxies return 503. The remote implementation must also gate the complete group until every declared member is prepared and enabled. The server must preserve HTTP methods, bodies, paths, query strings, headers, repeated response headers, WebSockets and streams. The runtime sets the public Host and authoritative HTTPS forwarding headers.
+
+## Expiry, disconnect, and cleanup
+
+EOF, SIGTERM, process exit, expired lease, or explicit stop ends exposure. Expiry and revocation must close existing HTTP streams and WebSockets as well as reject new requests. A reservation without a valid enabled lease returns an offline 503. The provider cannot extend the foreground deadline using its own keepalive. Do not replay application requests after uncertain failures.
+
+The runtime polls workspace identity once per second and ends the session on a branch/bookmark change or inability to verify identity. This check is not atomic with source-file changes. It gates new local requests at lease expiry even if cleanup is delayed. Providers receive SIGTERM and then SIGKILL after five seconds if needed. Closing their runtime proxies destroys open connections.
+
+Exit codes 77 and 78 mean permanent authorization/configuration failure and end the whole session. Other connector exits can be retried while the owner lease remains valid. Malformed readiness/capability responses are permanent failures.
+
+A dead connector is restarted with bounded backoff while foreground ownership remains valid. Short network interruptions may reconnect inside the provider under the same deadline. Reconnect only control/transport operations. Reject permanent authorization errors; never use reconnection to undo stop or takeover. On hub restart, desired flags are cleared and local configuration is recovered; connectors do not resume automatically.
+
+The server must independently enforce leases when the entire laptop or hub disappears. Advertising `foreground_sessions` without remote enforcement violates this contract.

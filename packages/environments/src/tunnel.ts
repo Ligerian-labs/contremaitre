@@ -1,7 +1,16 @@
-import { appendFileSync, readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import type { Server } from "node:http";
 import { isAbsolute, join } from "node:path";
-import { type Context, context, decode, fail } from "@contremaitre/execution/context";
+import { PassThrough } from "node:stream";
+import {
+  type Context,
+  context,
+  decode,
+  fail,
+  HubError,
+  hash,
+} from "@contremaitre/execution/context";
 import { atomicWrite } from "@contremaitre/execution/files";
 import { EnvironmentLocks } from "@contremaitre/execution/locks";
 import { run } from "@contremaitre/execution/process";
@@ -10,6 +19,7 @@ import { Schema } from "effect";
 import type { Manager } from "./manager.js";
 import type { Environment, TunnelReservation } from "./model.js";
 
+const readinessSchema = Schema.Struct({ version: Schema.Literal(2), ready: Schema.Boolean });
 const configSchema = Schema.Struct({
   default: Schema.String,
   providers: Schema.Record({
@@ -28,17 +38,42 @@ interface Connector {
   controller: AbortController;
   done: Promise<void>;
   server: Server;
+  input: PassThrough;
+  ready: boolean;
 }
 export class Tunnels {
+  private readonly failures = new Map<string, HubError>();
+  failure(id: string, name: string) {
+    return this.failures.get(`${id}/${name}`);
+  }
+  reset(env: Environment) {
+    for (const name of Object.keys(env.Services))
+      this.failures.delete(`${env.Identity.ID}/${name}`);
+  }
   private readonly active = new Map<string, Connector>();
   private readonly locks = new EnvironmentLocks();
   private closing = false;
+  private readonly machine: string;
   constructor(
     readonly manager: Manager,
     readonly lookup: Lookup,
-  ) {}
+  ) {
+    const path = join(manager.store.home, "tunnel-machine-id");
+    if (!existsSync(path)) atomicWrite(path, randomUUID());
+    this.machine = readFileSync(path, "utf8").trim();
+    if (!/^[a-f0-9-]{36}$/.test(this.machine)) fail("Invalid tunnel machine identity");
+  }
+  private identity(env: Environment) {
+    return {
+      environment_id: hash(`${this.machine}\0${env.Identity.ID}`).slice(0, 32),
+      machine_id: this.machine,
+      project: env.Identity.Project,
+      branch: env.Identity.Branch,
+      workspace_id: hash(env.Identity.Workspace).slice(0, 32),
+    };
+  }
   running(id: string, name: string) {
-    return this.active.has(`${id}/${name}`);
+    return this.active.get(`${id}/${name}`)?.ready ?? false;
   }
   private config(provider?: string) {
     const all = decode(
@@ -71,7 +106,7 @@ export class Tunnels {
                 JSON.stringify({
                   version: 1,
                   config: cfg.config,
-                  environment_id: env.Identity.ID,
+                  ...this.identity(env),
                   service_id: name,
                   display_name: env.Identity.Name,
                   reservation_id: reservation?.ID,
@@ -86,23 +121,30 @@ export class Tunnels {
         ),
         "tunnel provider response",
       );
-    } catch {
-      fail(`Tunnel provider ${operation} failed`);
+    } catch (error) {
+      const permanent =
+        error instanceof HubError &&
+        ([77, 78].includes(error.exitCode ?? 0) ||
+          (!error.exitCode && error.classification === "permanent"));
+      fail(`Tunnel provider ${operation} failed`, permanent ? "permanent" : "transient");
     }
   }
-  async start(ctx: Context, env: Environment, name: string): Promise<TunnelReservation> {
+  async reserve(ctx: Context, env: Environment, name: string): Promise<TunnelReservation> {
     return this.locks.use([`${env.Identity.ID}/${name}`], ctx.signal, async () => {
       if (this.closing) fail("Hub is shutting down");
-      if (env.Status !== "running") fail("Deploy the environment before sharing it");
       if (!env.Services[name]?.HTTP) fail(`Service ${name} is not HTTP`);
-      const key = `${env.Identity.ID}/${name}`;
       env.tunnels ??= {};
       let reservation = env.tunnels[name];
-      if (this.active.has(key) && reservation) return reservation;
       const cfg = this.config(reservation?.Provider);
       const caps = await this.call(ctx, env, name, "capabilities", cfg.name);
-      if (!caps.capabilities?.stable_urls || !caps.capabilities.https)
-        fail("Provider must support stable_urls and https");
+      if (
+        !caps.capabilities?.stable_urls ||
+        !caps.capabilities.https ||
+        !caps.capabilities.foreground_sessions
+      )
+        fail(
+          "Provider must support stable_urls, https and foreground_sessions; upgrade the tunnel adapter",
+        );
       if (!reservation) {
         const reserved = await this.call(ctx, env, name, "reserve", cfg.name);
         let url: URL;
@@ -123,13 +165,31 @@ export class Tunnels {
         env.tunnels[name] = reservation;
         this.manager.save();
       }
+      return reservation;
+    });
+  }
+  async start(
+    ctx: Context,
+    env: Environment,
+    name: string,
+    lease: { id: string; expires: number; enabled: () => boolean },
+  ): Promise<TunnelReservation> {
+    const reservation = await this.reserve(ctx, env, name);
+    return this.locks.use([`${env.Identity.ID}/${name}`], ctx.signal, async () => {
+      if (this.closing) fail("Hub is shutting down");
+      const key = `${env.Identity.ID}/${name}`;
+      if (this.active.has(key)) fail("Connector already running");
+      const cfg = this.config(reservation.Provider);
       const publicHost = new URL(reservation.URL).host;
       const server = proxyServer(this.lookup, () => {
         const route = this.lookup(key);
-        return route ? { ...route, publicHost } : undefined;
+        return route
+          ? { ...route, upstream: lease.enabled() ? route.upstream : "", publicHost }
+          : undefined;
       });
       const port = await listen(server, 0);
       const controller = new AbortController();
+      const input = new PassThrough();
       const log = join(this.manager.store.home, `tunnel-${env.Identity.ID}-${name}.log`);
       atomicWrite(log, "");
       let logged = 0,
@@ -149,17 +209,8 @@ export class Tunnels {
         },
         [cfg.executable, "start"],
         {
-          stdin: Buffer.from(
-            JSON.stringify({
-              version: 1,
-              config: cfg.config,
-              environment_id: env.Identity.ID,
-              service_id: name,
-              display_name: env.Identity.Name,
-              reservation_id: reservation.ID,
-              upstream: `http://127.0.0.1:${port}`,
-            }),
-          ),
+          stdin: input,
+          /* initial request is written below, followed by lease renewals */
           timeout: 2_147_483_647,
           stdout: (chunk) => {
             if (reported) return;
@@ -175,14 +226,19 @@ export class Tunnels {
               reported = true;
               try {
                 const response = decode(
-                  responseSchema,
+                  readinessSchema,
                   JSON.parse(line.toString()),
                   "provider readiness",
                 );
                 if (!response.ready) fail("Provider did not report ready");
                 readyResolve();
               } catch {
-                readyReject(Error("Provider did not report ready"));
+                readyReject(
+                  new HubError({
+                    message: "Provider did not report ready",
+                    classification: "permanent",
+                  }),
+                );
               }
             }
           },
@@ -196,18 +252,44 @@ export class Tunnels {
         },
       )
         .then(
-          () => {
-            readyReject(Error("Tunnel connector exited"));
-          },
-          () => {
-            readyReject(Error("Tunnel connector failed"));
+          () => readyReject(Error("Tunnel connector exited")),
+          (error) => {
+            const permanent = error instanceof HubError && [77, 78].includes(error.exitCode ?? 0);
+            const failure = new HubError({
+              message: permanent
+                ? "Tunnel provider refused authorization or configuration"
+                : "Tunnel connector failed",
+              classification: permanent ? "permanent" : "transient",
+            });
+            if (permanent) this.failures.set(key, failure);
+            readyReject(failure);
           },
         )
         .finally(() => {
           exited = true;
+          input.destroy();
           this.active.delete(key);
-          void closeServer(server);
+          return closeServer(server);
         });
+      const connector: Connector = { controller, done, server, input, ready: false };
+      this.active.set(key, connector);
+      input.write(
+        `${JSON.stringify({
+          version: 2,
+          config: cfg.config,
+          ...this.identity(env),
+          service_id: name,
+          display_name: env.Identity.Name,
+          reservation_id: reservation.ID,
+          upstream: `http://127.0.0.1:${port}`,
+          session_id: lease.id,
+          service_ids: Object.keys(env.Services)
+            .filter((n) => env.Services[n].HTTP)
+            .sort(),
+          expires_at: lease.expires,
+          enabled: false,
+        })}\n`,
+      );
       const timeout = setTimeout(() => readyReject(Error("Provider readiness timed out")), 30_000);
       const abort = () => readyReject(Error("Tunnel start cancelled"));
       ctx.signal.addEventListener("abort", abort, { once: true });
@@ -216,7 +298,7 @@ export class Tunnels {
         await ready;
         if (exited) fail("Tunnel connector exited before readiness completed");
         controller.signal.throwIfAborted();
-        this.active.set(key, { controller, done, server });
+        connector.ready = true;
         reservation.Desired = true;
         reservation.Connected = true;
         this.manager.save();
@@ -240,6 +322,7 @@ export class Tunnels {
       this.manager.save();
       const active = this.active.get(`${env.Identity.ID}/${name}`);
       if (active) {
+        await closeServer(active.server);
         active.controller.abort();
         await active.done;
       }
@@ -248,16 +331,17 @@ export class Tunnels {
       this.manager.save();
     });
   }
-  async restore(ctx: Context) {
-    for (const env of Object.values(this.manager.state.Environments))
-      if (env.Status === "running")
-        for (const [name, t] of Object.entries(env.tunnels ?? {}))
-          if (t.Desired && !this.running(env.Identity.ID, name))
-            try {
-              await this.start(ctx, env, name);
-            } catch {
-              ctx.log(`[contremaitre] Tunnel ${env.Identity.ID}/${name} could not reconnect\n`);
-            }
+  renew(env: Environment, id: string, expires: number, enabled: boolean) {
+    for (const name of Object.keys(env.tunnels ?? {})) {
+      const connector = this.active.get(`${env.Identity.ID}/${name}`);
+      if (!connector) continue;
+      if (
+        !connector.input.write(
+          `${JSON.stringify({ version: 2, operation: "renew", session_id: id, expires_at: expires, enabled })}\n`,
+        )
+      )
+        connector.controller.abort();
+    }
   }
   async shutdown() {
     this.closing = true;

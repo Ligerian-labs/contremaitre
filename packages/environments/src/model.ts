@@ -43,6 +43,7 @@ export interface Environment {
   CreatedAt: string;
   UpdatedAt: string;
   tunnels?: Record<string, TunnelReservation>;
+  tunnel_configuration?: { urls: Record<string, string>; pending: string[] };
   driver?: Driver;
   driver_directory?: string;
   builds?: Record<string, BuildRecord>;
@@ -57,6 +58,7 @@ export const requestSchema = Schema.Struct({
   branch: Schema.optional(Schema.String),
   env: Schema.optional(Schema.String),
   service: Schema.optional(Schema.String),
+  session_id: Schema.optional(Schema.String),
   delete_data: Schema.optional(Schema.Boolean),
   main: Schema.optional(Schema.Boolean),
   rebuild: Schema.optional(Schema.Boolean),
