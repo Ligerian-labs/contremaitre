@@ -6,6 +6,7 @@ const sockets = new WeakMap<Server, Set<Socket>>();
 export interface Route {
   upstream: string;
   publicHost?: string;
+  localHost?: string;
 }
 export type Lookup = (host: string) => Route | undefined;
 const hopHeaders = [
@@ -25,8 +26,11 @@ export function forwardedHeaders(req: IncomingMessage, route: Route, upgrade = f
   for (const token of String(req.headers.connection ?? "").split(","))
     delete headers[token.trim().toLowerCase()];
   for (const key of hopHeaders) delete headers[key];
-  headers.host = route.publicHost || req.headers.host;
-  headers["x-forwarded-host"] = headers.host;
+  // Dev servers accept their local address; the public origin belongs in forwarding headers.
+  headers.host = route.publicHost
+    ? route.localHost || new URL(route.upstream).host
+    : req.headers.host;
+  headers["x-forwarded-host"] = route.publicHost || headers.host;
   headers["x-forwarded-proto"] = route.publicHost ? "https" : "http";
   headers["x-forwarded-for"] = req.socket.remoteAddress ?? "127.0.0.1";
   if (upgrade) {

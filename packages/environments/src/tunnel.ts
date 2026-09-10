@@ -176,10 +176,11 @@ export class Tunnels {
       if (this.active.has(key)) fail("Connector already running");
       const cfg = this.config(reservation.Provider);
       const publicHost = new URL(reservation.URL).host;
+      const localHost = new URL(this.manager.localURL(env, name)).host;
       const server = proxyServer(this.lookup, () => {
         const route = this.lookup(key);
         return route
-          ? { ...route, upstream: lease.enabled() ? route.upstream : "", publicHost }
+          ? { ...route, upstream: lease.enabled() ? route.upstream : "", publicHost, localHost }
           : undefined;
       });
       const port = await listen(server, 0);
