@@ -25,8 +25,15 @@ const flowSchema = Schema.Struct({
   device_code: Schema.NonEmptyString,
   user_code: Schema.String.pipe(Schema.pattern(/^[A-Z0-9-]{4,16}$/)),
   verification_uri: Schema.String,
+  verification_uri_complete: Schema.optional(Schema.String),
   expires_in: Schema.Int.pipe(Schema.between(1, 900)),
   interval: Schema.Int.pipe(Schema.between(1, 60)),
+});
+const accessSchema = Schema.Struct({
+  workspace_id: id,
+  can_share: Schema.Boolean,
+  reason: Schema.NullOr(Schema.Literal("subscription_required")),
+  subscription_url: Schema.String,
 });
 const tokenSchema = Schema.Struct({
   access_token: Schema.optional(Schema.NonEmptyString),
@@ -209,9 +216,13 @@ export async function onboard(
     );
     const verification = sameOrigin(flow.verification_uri);
     deps.ui.note(`Open ${verification} and enter ${flow.user_code}`);
+    const complete = new URL(sameOrigin(flow.verification_uri_complete ?? verification));
+    if (complete.pathname !== new URL(verification).pathname)
+      fail("Invalid SaaS device authorization URL");
+    complete.searchParams.set("user_code", flow.user_code);
     const expires = deps.now() + flow.expires_in * 1000;
     try {
-      await deps.ui.open(verification, signal);
+      await deps.ui.open(complete.href, signal);
     } catch {
       signal.throwIfAborted();
     }
@@ -262,6 +273,24 @@ export async function onboard(
   atomicWrite(join(home, "saas-login.json"), JSON.stringify({ workspace_id: workspace }));
   const name = `saas:${workspace}`;
   if (options.login) return name;
+  const access = read(accessSchema, await call("/v1/cli/access", credential.credential));
+  if (access.workspace_id !== workspace || access.can_share !== (access.reason === null))
+    fail("Invalid SaaS workspace access response");
+  if (!access.can_share) {
+    const billing = new URL(sameOrigin(access.subscription_url));
+    if (billing.pathname !== "/billing" || billing.searchParams.get("workspace") !== workspace)
+      fail("Invalid SaaS subscription URL");
+    const message = `This workspace needs an active subscription before creating tunnels. Subscribe at ${billing.href}, then run contremaitre tunnel again.`;
+    if (deps.ui.interactive) {
+      deps.ui.note("Opening the subscription page for this workspace.");
+      try {
+        await deps.ui.open(billing.href, signal);
+      } catch {
+        signal.throwIfAborted();
+      }
+    }
+    fail(message);
+  }
   const installed = await deps.install(home, signal, deps.fetcher);
   signal.throwIfAborted();
   const { executable, ...transport } = installed;
