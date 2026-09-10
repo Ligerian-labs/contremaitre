@@ -4,7 +4,7 @@
 
 The CLI validates the local environment, completes authentication, selects a workspace and installs the provider before it asks the hub to start sharing. Login cannot restart services or reserve public URLs. `contremaitre tunnel login` authenticates without requiring a project, a running hub or installed transport. The next `tunnel` command continues with the saved credentials.
 
-This contract targets the SaaS implementation in progress. The public endpoint, workspace APIs and downloadable provider manifest are not deployed yet. Local fixture tests verify the CLI contract; they do not establish compatibility with a deployed SaaS service.
+The subscription preflight requires the matching SaaS API change. Deploy that change before releasing this CLI. Local fixture tests verify the contract; they do not establish compatibility with a deployed SaaS service.
 
 ## User flow
 
@@ -14,7 +14,8 @@ This contract targets the SaaS implementation in progress. The public endpoint, 
 4. If credentials are missing, open device authorization in the browser. Print the verification URL and code even if the browser cannot open. Existing website login still requires an explicit authorization of this computer. The page shows the account and computer name. Signup and verification can complete while the original command waits.
 5. After approval, request the available workspaces. Ask the user if there is no explicit or saved selection, including when only one workspace exists. Validate explicit and saved choices against current membership.
 6. Enroll a device scoped to the chosen workspace and save its credential in macOS Keychain. Save the workspace choice before installing binaries, so a failed download does not require another login.
-7. Prepare the managed provider and create the foreground preview. Pass the selected provider ID to the hub so a concurrent change of default workspace cannot redirect the new session.
+7. Query `GET /v1/cli/access` with the device credential before downloading a provider, reserving URLs or changing services. If a subscription is required, print an actionable message and open the returned subscription page in interactive terminals. Noninteractive commands print the URL without opening a browser. Keep the saved login so subscribing and retrying does not require another authorization.
+8. Prepare the managed provider and create the foreground preview. Pass the selected provider ID to the hub so a concurrent change of default workspace cannot redirect the new session.
 
 Noninteractive commands, including `--json`, reuse valid authentication and a saved or explicit workspace. They fail with an instruction to run `contremaitre tunnel login` in a terminal when approval is required. All interactive output goes to stderr. Cancellation stops polling and cannot create a preview. Device polling observes `interval`, adds five seconds for `slow_down` and stops at the server's expiry, capped at 15 minutes. Requests have ten-second deadlines and bounded response bodies; redirects are refused.
 
@@ -36,7 +37,7 @@ These endpoints return direct JSON objects, without the generic control envelope
 }
 ```
 
-The verification URL must use the exact configured HTTPS origin and cannot contain credentials or a fragment. The CLI opens that URL and displays the code; `verification_uri_complete` is optional and unused.
+The verification URLs must use the exact configured HTTPS origin and cannot contain credentials or a fragment. The CLI opens `verification_uri_complete` when supplied, or adds `user_code` to `verification_uri`. Both URLs must use the same path. The CLI prints the base URL and code as a manual fallback. The page fills in the code and loads the named computer for approval, including after sign-in. Opening the link does not approve the device.
 
 `POST /oauth/device/token` accepts `grant_type=urn:ietf:params:oauth:grant-type:device_code`, `client_id=contremaitre-cli` and `device_code` as form fields. Pending responses use HTTP 400 and `error` values `authorization_pending` or `slow_down`. Denial uses `access_denied`; expiry uses `expired_token`. Success returns `access_token`, an enrollment grant. This grant never leaves CLI memory and is never the lasting tunnel credential.
 
@@ -68,6 +69,23 @@ List only memberships the approved account can use for tunnels. Browser approval
 The account must match the approved grant; the workspace must match the CLI choice. The credential authorizes only that workspace. Enrollment must be idempotent for a consumed grant and the same selection, and must reject attempts to reuse a grant for another workspace. The CLI does not automatically retry enrollment after an uncertain response. The current short enrollment lifetime can expire while the user chooses a workspace; return 401 and require a fresh approval rather than extending authorization implicitly.
 
 `GET /v1/cli/session`, with the stored device credential, validates device expiry, revocation and current membership. Return `account_id`, `workspace_id` and `workspaces` in the shapes above. Return 401 or 403 for expired, revoked or unusable credentials. Switching to a workspace with no saved credential requires fresh browser approval; do not let a tenant-scoped credential grant itself another tenant.
+
+## Subscription access
+
+`GET /v1/cli/access` authenticates the workspace device and returns:
+
+```json
+{
+  "workspace_id": "team-456",
+  "can_share": false,
+  "reason": "subscription_required",
+  "subscription_url": "https://contremaitre.ligerianlabs.fr/billing?workspace=team-456"
+}
+```
+
+An entitled workspace returns `can_share: true` and `reason: null`. The CLI rejects missing or inconsistent fields and mismatched workspaces. A subscription URL must use the configured origin, `/billing`, and the selected workspace query. Authentication failures and service outages remain errors, not subscription redirects. `tunnel login` can still authenticate without a subscription.
+
+The SaaS checks entitlement again before writing reservations or preview metadata. Rejected requests return HTTP 403 with code `SUBSCRIPTION_REQUIRED` and leave no new tunnel or preview. Existing reservations are retained. Deploy the SaaS access endpoint and reservation check before releasing this CLI. Older servers without the endpoint fail closed before sharing.
 
 ## Credential and adapter contract
 

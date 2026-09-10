@@ -265,7 +265,7 @@ contremaitre tunnel stop
 contremaitre tunnel release web
 ```
 
-Without a custom provider, `tunnel` uses `https://contremaitre.ligerianlabs.fr`. It opens browser authorization when needed, asks for a workspace when none is selected, saves the device credential in macOS Keychain and prepares the provider automatically. Later commands reuse that login. `tunnel login` signs in without starting a preview. `--workspace ID` selects a workspace for new reservations. The SaaS endpoint and download APIs are still being implemented; see [SaaS onboarding](docs/saas-onboarding.md) for the integration contract.
+Without a custom provider, `tunnel` uses `https://contremaitre.ligerianlabs.fr`. It opens browser authorization when needed, asks for a workspace when none is selected, saves the device credential in macOS Keychain and prepares the provider automatically. Later commands reuse that login. `tunnel login` signs in without starting a preview. `--workspace ID` selects a workspace for new reservations. Device links fill in the authorization code. Before creating tunnels, the CLI checks subscription access and opens the selected workspace's billing page if a subscription is required. No provider is installed or tunnel reserved in that case. See [SaaS onboarding](docs/saas-onboarding.md) for the integration contract.
 
 To use a custom provider, configure its installed executable in `~/.local/share/contremaitre/tunnels.json`. This explicit choice takes precedence; invalid custom configuration never falls back to the SaaS:
 

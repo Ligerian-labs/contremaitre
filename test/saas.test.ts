@@ -21,6 +21,7 @@ function fixture() {
   let workspace = "team-b";
   let tokenResponses: unknown[] = [{ access_token: "enrollment-secret" }];
   let sessionStatus = 200;
+  let canShare = true;
   const workspaces = [
     { id: "team-a", name: "Personal" },
     { id: "team-b", name: "Team" },
@@ -81,6 +82,16 @@ function fixture() {
             workspace_id: workspace,
             account_id: "user-a",
           });
+        case "/v1/cli/access":
+          expect((init.headers as Record<string, string>).authorization).toBe(
+            `Bearer secret-${workspace}`,
+          );
+          return Response.json({
+            workspace_id: workspace,
+            can_share: canShare,
+            reason: canShare ? null : "subscription_required",
+            subscription_url: `${saasEndpoint}/billing?workspace=${workspace}`,
+          });
         case "/v1/cli/session":
           return Response.json(
             { account_id: "user-a", workspace_id: workspace, workspaces },
@@ -107,6 +118,9 @@ function fixture() {
     credentials,
     tokens: (values: unknown[]) => {
       tokenResponses = values;
+    },
+    access: (value: boolean) => {
+      canShare = value;
     },
     status: (value: number) => {
       sessionStatus = value;
@@ -136,7 +150,7 @@ test("first tunnel logs in, asks for workspace, enrolls and installs automatical
   f.events.length = 0;
   f.deps.ui.interactive = false;
   await onboard(f.home, signal(), {}, f.deps);
-  expect(f.events).toEqual(["/v1/cli/session", "install"]);
+  expect(f.events).toEqual(["/v1/cli/session", "/v1/cli/access", "install"]);
 });
 
 test("explicit workspace overrides saved choice; existing URLs stay pinned to their workspace", async () => {
@@ -150,7 +164,7 @@ test("explicit workspace overrides saved choice; existing URLs stay pinned to th
   f.workspace("team-a");
   f.events.length = 0;
   await onboard(f.home, signal(), { providers: ["saas:team-a"] }, f.deps);
-  expect(f.events).toEqual(["/v1/cli/session", "install"]);
+  expect(f.events).toEqual(["/v1/cli/session", "/v1/cli/access", "install"]);
   await expect(
     onboard(f.home, signal(), { workspace: "team-b", providers: ["saas:team-a"] }, f.deps),
   ).rejects.toThrow("release those reservations");
@@ -226,7 +240,7 @@ test("login alone saves selection without needing a provider installation", asyn
   expect(existsSync(join(f.home, "saas-provider.json"))).toBe(false);
   f.events.length = 0;
   await onboard(f.home, signal(), {}, f.deps);
-  expect(f.events).toEqual(["/v1/cli/session", "install"]);
+  expect(f.events).toEqual(["/v1/cli/session", "/v1/cli/access", "install"]);
 });
 
 test("a failed install preserves login and retries without browser approval", async () => {
@@ -241,7 +255,7 @@ test("a failed install preserves login and retries without browser approval", as
   f.deps.ui.interactive = false;
   f.events.length = 0;
   await onboard(f.home, signal(), {}, f.deps);
-  expect(f.events).toEqual(["/v1/cli/session", "install"]);
+  expect(f.events).toEqual(["/v1/cli/session", "/v1/cli/access", "install"]);
 });
 
 test("enrollment cannot substitute an account or workspace and inaccessible choices fail", async () => {
@@ -329,4 +343,112 @@ test("provider bootstrap verifies artifacts, uses a cache, repairs corruption an
   artifacts.provider.sha256 = "0".repeat(64);
   await expect(installProvider(f.home, signal(), fetcher)).rejects.toThrow("checksum mismatch");
   expect(existsSync(join(f.home, "saas", "manifest.json"))).toBe(false);
+});
+
+test("device link carries the displayed user code without the polling secret", async () => {
+  const f = fixture();
+  await onboard(f.home, signal(), { login: true }, f.deps);
+  expect(f.events).toContain(`open:${saasEndpoint}/device?user_code=ABCD-EFGH`);
+  expect(f.events.filter((e) => e.startsWith("open:")).join("\n")).not.toContain("device-secret");
+});
+
+test("unpaid workspaces keep login but stop before provider installation and open scoped billing", async () => {
+  const f = fixture();
+  f.access(false);
+  await expect(onboard(f.home, signal(), {}, f.deps)).rejects.toThrow("active subscription");
+  expect(f.events).toContain(`open:${saasEndpoint}/billing?workspace=team-b`);
+  expect(f.events).not.toContain("install");
+  expect(existsSync(join(f.home, "saas-provider.json"))).toBe(false);
+  expect(f.credentials.size).toBe(1);
+  f.events.length = 0;
+  f.deps.ui.interactive = false;
+  await expect(onboard(f.home, signal(), {}, f.deps)).rejects.toThrow(
+    `${saasEndpoint}/billing?workspace=team-b`,
+  );
+  expect(f.events.some((e) => e.startsWith("open:"))).toBe(false);
+  expect(f.events).not.toContain("/oauth/device/code");
+  f.access(true);
+  await onboard(f.home, signal(), {}, f.deps);
+  expect(f.events).toContain("install");
+  expect(f.events).not.toContain("/oauth/device/code");
+});
+
+test("billing browser failure keeps the actionable subscription error", async () => {
+  const f = fixture();
+  await onboard(f.home, signal(), { login: true }, f.deps);
+  f.access(false);
+  f.deps.ui.open = async () => {
+    throw Error("No browser");
+  };
+  await expect(onboard(f.home, signal(), {}, f.deps)).rejects.toThrow("/billing?workspace=team-b");
+  expect(f.events).not.toContain("install");
+});
+
+test("invalid access responses fail before installation or opening billing", async () => {
+  for (const response of [
+    {
+      workspace_id: "other",
+      can_share: false,
+      reason: "subscription_required",
+      subscription_url: `${saasEndpoint}/billing?workspace=other`,
+    },
+    {
+      workspace_id: "team-b",
+      can_share: false,
+      reason: "subscription_required",
+      subscription_url: "https://evil.example/billing",
+    },
+    { workspace_id: "team-b", can_share: true },
+  ]) {
+    const f = fixture();
+    await onboard(f.home, signal(), { login: true }, f.deps);
+    f.events.length = 0;
+    const fetcher = f.deps.fetcher;
+    f.deps.fetcher = async (url, init) =>
+      url.endsWith("/v1/cli/access") ? Response.json(response) : fetcher(url, init);
+    await expect(onboard(f.home, signal(), {}, f.deps)).rejects.toThrow();
+    expect(f.events).not.toContain("install");
+    expect(f.events.some((e) => e.startsWith("open:"))).toBe(false);
+  }
+});
+
+test("access outages and authorization loss never open billing or restart device login", async () => {
+  for (const status of [401, 403, 503]) {
+    const f = fixture();
+    await onboard(f.home, signal(), { login: true }, f.deps);
+    f.events.length = 0;
+    const fetcher = f.deps.fetcher;
+    f.deps.fetcher = async (url, init) =>
+      url.endsWith("/v1/cli/access") ? Response.json({}, { status }) : fetcher(url, init);
+    await expect(onboard(f.home, signal(), {}, f.deps)).rejects.toThrow();
+    expect(f.events).not.toContain("install");
+    expect(f.events).not.toContain("/oauth/device/code");
+    expect(f.events.some((e) => e.startsWith("open:"))).toBe(false);
+    expect(f.credentials.size).toBe(1);
+  }
+});
+
+test("complete verification links stay on the authorization origin and path", async () => {
+  for (const complete of [
+    `${saasEndpoint}/device?user_code=ABCD-EFGH`,
+    "https://evil.example/device?user_code=ABCD-EFGH",
+    `${saasEndpoint}/elsewhere?user_code=ABCD-EFGH`,
+  ]) {
+    const f = fixture();
+    const fetcher = f.deps.fetcher;
+    f.deps.fetcher = async (url, init) => {
+      const response = await fetcher(url, init);
+      return url.endsWith("/oauth/device/code")
+        ? Response.json({ ...(await response.json()), verification_uri_complete: complete })
+        : response;
+    };
+    if (complete.startsWith(`${saasEndpoint}/device?`)) {
+      await onboard(f.home, signal(), { login: true }, f.deps);
+      expect(f.events).toContain(`open:${complete}`);
+    } else {
+      await expect(onboard(f.home, signal(), { login: true }, f.deps)).rejects.toThrow();
+      expect(f.events.some((e) => e.startsWith("open:"))).toBe(false);
+      expect(f.credentials.size).toBe(0);
+    }
+  }
 });
