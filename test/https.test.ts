@@ -11,6 +11,7 @@ import { startServer } from "@contremaitre/hub/server";
 import { Operations } from "@contremaitre/operations/operations";
 import { parseManifest } from "@contremaitre/projects/config";
 import { newIdentity } from "@contremaitre/projects/model";
+import { AgentWorkflow } from "@contremaitre/verification/workflow";
 import { Effect } from "effect";
 import { FakeRuntime } from "./fake-runtime.js";
 
@@ -43,9 +44,11 @@ services:
 `),
     });
     const env = manager.resolve(identity.ID);
+    const operations = new Operations(home, 1);
     const app = application({
+      agents: new AgentWorkflow(manager, operations),
       manager,
-      operations: new Operations(home, 1),
+      operations,
       share: async () => {},
     });
     try {

@@ -6,13 +6,13 @@
   "packageManager": "bun@1.4.2",
   "scripts": {
     "check": "bun run lint && bun run check:boundaries && bun run typecheck && bun test && bun run build && bun run test:packaging",
-    "lint": "biome check apps packages test scripts",
-    "format": "biome check --write apps packages test scripts",
+    "lint": "biome check apps packages test scripts integrations",
+    "format": "biome check --write apps packages test scripts integrations",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
-    "build": "bun build apps/cli/src/cli.ts --compile --target=bun-darwin-arm64 --no-compile-autoload-dotenv --no-compile-autoload-bunfig --outfile bin/contremaitre",
+    "build": "bun scripts/package-agents.ts && bun build apps/cli/src/cli.ts --compile --target=bun-darwin-arm64 --no-compile-autoload-dotenv --no-compile-autoload-bunfig --outfile bin/contremaitre",
     "test:packaging": "bun scripts/verify-packaging.ts",
-    "check:boundaries": "bun scripts/verify-boundaries.ts"
+    "check:boundaries": "bun scripts/verify-boundaries.ts && bun scripts/package-agents.ts --check"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.12",
@@ -27,7 +27,8 @@
     "@contremaitre/hub": "workspace:*",
     "effect": "3.22.1",
     "@effect/platform-bun": "0.91.2",
-    "@structure-ai/cli": "0.1.1"
+    "@structure-ai/cli": "0.1.1",
+    "@contremaitre/verification": "workspace:*"
   },
   "workspaces": [
     "apps/*",

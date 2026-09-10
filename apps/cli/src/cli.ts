@@ -10,6 +10,7 @@ import { tcpProxy } from "@contremaitre/routing/proxy";
 import { BunContext, BunRuntime } from "@effect/platform-bun";
 import { Args, Command, defineCommand, exitCodeFor, withSubcommands } from "@structure-ai/cli";
 import { Cause, Effect, Exit, Option } from "effect";
+import { AgentResultError, agentCommand } from "./agents.js";
 import { attach, call, deploymentLogs, launch, projectRoot } from "./client.js";
 import { deploy } from "./deploy.js";
 import {
@@ -23,6 +24,7 @@ import {
 } from "./help.js";
 import { manageHttpsService } from "./https-service.js";
 import { initialize } from "./init.js";
+import { installAgents } from "./install-agents.js";
 import { onboard, terminalOnboarding } from "./saas.js";
 import { tunnel } from "./tunnel.js";
 
@@ -97,7 +99,18 @@ export function makeRoot(passthrough: readonly string[] = []) {
               main: o.main,
               rebuild: o.rebuild,
             };
+          if (["ensure", "verify", "report", "status", "diagnose", "wait"].includes(action)) {
+            const result = await agentCommand(ctx, home, action, req, o, args);
+            output(o.json, result.data);
+            if (result.failed) throw new AgentResultError();
+            return;
+          }
           switch (action) {
+            case "agents":
+              if (args.length !== 1 || args[0] !== "install")
+                fail("Use contremaitre agents install --agent NAME");
+              output(o.json, installAgents(process.cwd(), o.agent || "all", o.global));
+              return;
             case "https-service":
               if (args.length !== 1) fail("https-service requires install, status or uninstall");
               output(o.json, await manageHttpsService(ctx, args[0], o.httpsPort));
@@ -157,8 +170,7 @@ export function makeRoot(passthrough: readonly string[] = []) {
                   output(false, `${service}\t${url}`);
               return;
             }
-            case "list":
-            case "status": {
+            case "list": {
               const envs = (await call(ctx, home, "list", req)) as Environment[];
               if (o.json) output(true, envs);
               else
@@ -319,6 +331,7 @@ if (import.meta.main) {
         const code = exitCodeFor(cause);
         if (code === 64) return;
         const failure = Cause.failureOption(cause);
+        if (Option.isSome(failure) && failure.value instanceof AgentResultError) return;
         const text =
           Option.isSome(failure) && failure.value instanceof Error
             ? failure.value.message

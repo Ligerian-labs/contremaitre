@@ -39,6 +39,21 @@ and flags. Each command accepts only the flags listed in its help. Shared flags
 can appear before or after the command; arguments after `exec SERVICE --` pass
 through to the service command.
 
+## Agent testing and previews
+
+Install the shared skill for Claude Code, Codex, OpenCode and Pi from an application project:
+
+```sh
+contremaitre agents install --agent all
+contremaitre ensure --json
+contremaitre verify --profile smoke --json
+contremaitre report --json
+```
+
+Define the `smoke` profile using the project's existing test commands. Contremaitre reuses isolated environments, captures logs and artifacts outside the checkout, and returns a local review page with preview links and source freshness. Missing checks are unverified. Use `diagnose --run ID --json` for bounded failure output and `wait ID --json` for quiet operation waiting. `status` now shows the current workspace; `list` shows all environments.
+
+See [agent setup, verification profiles and evidence limits](docs/agent-workflow.md).
+
 ## First environment
 
 Try the included stack:

@@ -9,6 +9,7 @@ import {
   message,
 } from "@contremaitre/execution/context";
 import { type Operations, operationSchema } from "@contremaitre/operations/operations";
+import type { AgentWorkflow } from "@contremaitre/verification/workflow";
 import {
   Command,
   CommandBus,
@@ -90,10 +91,35 @@ export const StopShare = Command.define("StopSharingService", {
   success: Schema.Unknown,
   failure: Schema.instanceOf(HubError),
 });
+export const Ensure = Command.define("EnsureEnvironment", {
+  payload: requestSchema,
+  success: Schema.Unknown,
+  failure: Schema.instanceOf(HubError),
+});
+export const Verify = Command.define("VerifyEnvironment", {
+  payload: Schema.Struct({ ...requestSchema.fields, profile: Schema.optional(Schema.String) }),
+  success: Schema.Unknown,
+  failure: Schema.instanceOf(HubError),
+});
+export const Report = Query.define("EnvironmentReport", {
+  payload: requestSchema,
+  success: Schema.Unknown,
+  failure: Schema.instanceOf(HubError),
+});
+export const Diagnose = Query.define("DiagnoseVerification", {
+  payload: Schema.Struct({
+    id: Schema.String,
+    offset: Schema.optional(Schema.Int),
+    check: Schema.optional(Schema.String),
+  }),
+  success: Schema.Unknown,
+  failure: Schema.instanceOf(HubError),
+});
 export class Hub extends EffectContext.Tag("contremaitre/Hub")<
   Hub,
   {
     manager: Manager;
+    agents: AgentWorkflow;
     operations: Operations;
     share: (ctx: Context, e: Environment, id: string, provider?: string) => Promise<unknown>;
     renewShare?: (id: string) => unknown;
@@ -112,6 +138,30 @@ async function resolveRequest(m: Manager, ctx: Context, req: Request) {
   return m.resolve(req.env || (await m.current(ctx, req.root ?? process.cwd(), req.branch)).ID);
 }
 const registry = HandlerRegistry.layer(
+  CommandHandler.make(Ensure, (req) =>
+    Effect.gen(function* () {
+      const { agents } = yield* Hub;
+      return yield* attempt((signal) => agents.ensure(context(signal), req));
+    }),
+  ),
+  CommandHandler.make(Verify, (req) =>
+    Effect.gen(function* () {
+      const { agents } = yield* Hub;
+      return yield* attempt((signal) => agents.verify(context(signal), req, req.profile));
+    }),
+  ),
+  QueryHandler.make(Report, (req) =>
+    Effect.gen(function* () {
+      const { agents } = yield* Hub;
+      return yield* attempt((signal) => agents.report(context(signal), req));
+    }),
+  ),
+  QueryHandler.make(Diagnose, (req) =>
+    Effect.gen(function* () {
+      const { agents } = yield* Hub;
+      return yield* attempt(async () => agents.diagnose(req.id, req.offset, req.check));
+    }),
+  ),
   CommandHandler.make(Deploy, (req) =>
     Effect.gen(function* () {
       const { manager: m, operations: ops } = yield* Hub;

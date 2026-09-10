@@ -67,6 +67,12 @@ test("plain init requires a terminal and explicit non-AI init works without an a
 });
 
 const commandNames = [
+  "agents",
+  "ensure",
+  "verify",
+  "report",
+  "diagnose",
+  "wait",
   "init",
   "start",
   "serve",

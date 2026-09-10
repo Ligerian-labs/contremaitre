@@ -30,6 +30,8 @@ export interface ServiceState {
   dependencies_changed?: boolean;
 }
 export interface Environment {
+  source?: { fingerprint: string; revision?: string };
+  generation?: string;
   Identity: Identity;
   Root: string;
   Status: string;

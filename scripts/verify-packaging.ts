@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -69,6 +69,26 @@ try {
   const invalid = Bun.spawn([binary, "version", "--rebuild"], { stdout: "pipe", stderr: "pipe" });
   assert.equal(await invalid.exited, 64);
   assert.ok((await new Response(invalid.stderr).text()).includes("Unknown flag '--rebuild'"));
+  const install = Bun.spawn([binary, "agents", "install", "--agent", "all", "--json"], {
+    cwd: project,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  assert.equal(await install.exited, 0, await new Response(install.stderr).text());
+  JSON.parse(await new Response(install.stdout).text());
+  const skill = join(project, ".agents/skills/contremaitre");
+  assert.ok((await readFile(join(skill, "SKILL.md"), "utf8")).includes("contremaitre ensure"));
+  assert.equal(await realpath(join(project, ".claude/skills/contremaitre")), await realpath(skill));
+  assert.ok(
+    (await readFile(join(project, ".opencode/plugins/contremaitre.ts"), "utf8")).includes(
+      "session.idle",
+    ),
+  );
+  assert.ok(
+    (await readFile(join(project, ".pi/extensions/contremaitre/index.ts"), "utf8")).includes(
+      "agent_end",
+    ),
+  );
   await boot();
   const op = decode(
     operationSchema,
@@ -143,7 +163,7 @@ try {
   assert.equal(await cli.exited, 23);
   assert.ok(!(await new Response(cli.stdout).text()).includes("Usage:"));
   console.log(
-    "Standalone help, flag validation, Unix socket, duplicate requests, SIGKILL recovery, owned-process cleanup and SIGTERM restart passed",
+    "Standalone help, agent installation, flag validation, Unix socket, duplicate requests, SIGKILL recovery, owned-process cleanup and SIGTERM restart passed",
   );
 } finally {
   child?.kill("SIGTERM");

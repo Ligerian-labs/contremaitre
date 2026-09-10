@@ -34,11 +34,28 @@ export const driverSchema = Schema.Struct({
   timeout_seconds: Schema.optional(Schema.Int),
 });
 export type Driver = Schema.Schema.Type<typeof driverSchema>;
+export const verificationSchema = Schema.Struct({
+  profiles: Schema.Record({
+    key: Schema.String,
+    value: Schema.Array(
+      Schema.Struct({
+        name: Schema.String,
+        command: Schema.Array(Schema.String),
+        service: Schema.optional(Schema.String),
+        timeout_seconds: Schema.optional(Schema.Int),
+        artifacts: Schema.optional(Schema.Array(Schema.String)),
+      }),
+    ),
+  }),
+  exclude: Schema.optional(Schema.Array(Schema.String)),
+});
+export type VerificationConfig = Schema.Schema.Type<typeof verificationSchema>;
 export interface Manifest {
   version: 1;
   project: string;
   services: Record<string, Service>;
   driver?: Driver;
+  verification?: VerificationConfig;
 }
 export interface Identity {
   Project: string;

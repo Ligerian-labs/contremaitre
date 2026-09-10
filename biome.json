@@ -21,7 +21,9 @@
       "apps/**",
       "packages/**",
       "test/**",
-      "scripts/**"
+      "scripts/**",
+      "!apps/cli/src/agent-assets.ts",
+      "integrations/**"
     ]
   }
 }
