@@ -23,7 +23,14 @@ async function until(check: () => boolean, timeout = 5000) {
 async function fixture() {
   const home = mkdtempSync(join(tmpdir(), "cm-session-"));
   const provider = join(home, "provider");
-  const upstream = Bun.serve({ port: 0, fetch: () => new Response("local app") });
+  const requests: Headers[] = [];
+  const upstream = Bun.serve({
+    port: 0,
+    fetch: (request) => {
+      requests.push(request.headers);
+      return new Response("local app");
+    },
+  });
   writeFileSync(
     provider,
     `#!${process.execPath}
@@ -104,6 +111,7 @@ services:
     env,
     sessions,
     runtime,
+    requests,
     events: () =>
       existsSync(join(home, "calls"))
         ? readFileSync(join(home, "calls"), "utf8")
@@ -145,6 +153,10 @@ test("foreground group gates startup, configures browser URLs, restores local co
     expect(starts[0].service_ids).toEqual(["api", "web"]);
     expect(starts.map((e) => e.service_id)).toEqual(["api", "web"]);
     expect(await (await fetch(starts[0].upstream)).text()).toBe("local app");
+    const headers = f.requests.at(-1);
+    expect(headers?.get("host")).toBe(new URL(f.manager.localURL(f.env, "api")).host);
+    expect(headers?.get("x-forwarded-host")).toBe("api.example.test");
+    expect(headers?.get("x-forwarded-proto")).toBe("https");
     const recovery = new Manager(new Store(f.home), f.runtime, 9080);
     await expect(f.sessions.open(context(), f.env, randomUUID())).rejects.toThrow("already owns");
     await f.sessions.end(f.env, id);
