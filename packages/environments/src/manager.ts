@@ -46,6 +46,7 @@ export interface PreparedDeploy {
 export interface TunnelHooks {
   stop(ctx: Context, env: Environment, name: string, release: boolean): Promise<void>;
   running(id: string, name: string): boolean;
+  sharing?(id: string): boolean;
 }
 export class Manager {
   private readonly sourceWatchers = new Map<string, { stop: () => Promise<void> }>();
@@ -209,6 +210,8 @@ export class Manager {
     phase(ctx, "Reading project configuration");
     const { root, identity, manifest, request } = p;
     let env = this.state.Environments[identity.ID];
+    if (this.tunnels?.sharing?.(identity.ID) || env?.tunnel_configuration)
+      fail("Stop the tunnel session before redeploying this environment", "conflict");
     if (env && (!!env.driver !== !!manifest.driver || env.Status === "deleting"))
       fail(
         "Explicitly delete this environment before changing runtime or redeploying an incomplete deletion",
@@ -531,6 +534,51 @@ export class Manager {
     const defaultPort = this.protocol === "https" ? 443 : 80;
     return `${this.protocol}://${host}${this.httpPort === defaultPort ? "" : `:${this.httpPort}`}`;
   }
+  browserURL(env: Environment, name: string) {
+    return env.tunnel_configuration?.urls[name] ?? this.localURL(env, name);
+  }
+  async configureTunnel(ctx: Context, env: Environment, urls: Record<string, string>) {
+    if (env.driver)
+      fail("Foreground sharing requires native services; drivers cannot apply URL configuration");
+    const before = new Map(
+      keys(env.Services).map((name) => [name, this.deploymentFingerprint(env, env.Services[name])]),
+    );
+    const pending = new Set(env.tunnel_configuration?.pending ?? []);
+    env.tunnel_configuration = { urls, pending: [...pending] };
+    for (const name of keys(env.Services)) {
+      const service = env.Services[name];
+      if (
+        service.Spec.kind === "app" &&
+        before.get(name) !== this.deploymentFingerprint(env, service)
+      )
+        pending.add(name);
+    }
+    env.tunnel_configuration.pending = [...pending];
+    this.save();
+    // Persist restart intent before replacing any process, including on rollback.
+    for (const name of order(
+      Object.fromEntries(keys(env.Services).map((n) => [n, env.Services[n].Spec])),
+    )) {
+      const service = env.Services[name];
+      if (service.Spec.kind !== "app") continue;
+      if (!pending.has(name) && before.get(name) === this.deploymentFingerprint(env, service))
+        continue;
+      pending.add(name);
+      env.tunnel_configuration.pending = [...pending];
+      service.ready = false;
+      this.save();
+      await this.stopDevelopment(service.Container);
+      await this.runtime.stop(ctx, service.Container);
+      await this.runtime.remove(ctx, service.Container);
+      await this.startService(ctx, env, service, false);
+      service.deployment = this.deploymentFingerprint(env, service);
+      pending.delete(name);
+      env.tunnel_configuration.pending = [...pending];
+      this.save();
+    }
+    if (!keys(urls).length) delete env.tunnel_configuration;
+    this.save();
+  }
   serviceEnv(env: Environment, s: ServiceState): Record<string, string> {
     const values = {
       ...(s.raw_environment ?? (s.Spec.env_file ? readEnv(env.Root, s.Spec.env_file) : {})),
@@ -555,15 +603,26 @@ export class Manager {
     }
     for (const [key, value] of Object.entries(values)) {
       values[key] = value
-        .replaceAll(
-          "{{contremaitre.url}}",
-          env.tunnels?.[s.Name]?.URL ?? this.localURL(env, s.Name),
-        )
+        .replaceAll("{{contremaitre.url}}", this.browserURL(env, s.Name))
         .replaceAll("{{contremaitre.local_url}}", this.localURL(env, s.Name))
         .replace(
-          /\{\{([a-z][a-z0-9-]*)\.(host|port|url|local_url)\}\}/g,
+          /\{\{([a-z][a-z0-9-]*)\.(host|port|url|local_url|browser_url|browser_origins)\}\}/g,
           (_token, name: string, property: string) => {
             const dep = env.Services[name];
+            if (property === "browser_origins") {
+              if (!dep?.HTTP) fail(`${s.Name}: browser_origins requires HTTP service ${name}`);
+              return JSON.stringify([
+                ...new Set(
+                  [this.localURL(env, name), this.browserURL(env, name)].map(
+                    (url) => new URL(url).origin,
+                  ),
+                ),
+              ]);
+            }
+            if (property === "browser_url") {
+              if (!dep?.HTTP) fail(`${s.Name}: browser_url requires HTTP service ${name}`);
+              return this.browserURL(env, name);
+            }
             if (dep && property === "local_url") return this.localURL(env, name);
             if (!dep?.IP) fail(`${s.Name}: ${name} is not ready; declare depends_on`);
             if (property === "host") return dep.IP;
@@ -579,7 +638,16 @@ export class Manager {
     }
     values.CONTREMAITRE_ENVIRONMENT = env.Identity.ID;
     values.CONTREMAITRE_LOCAL_URL = this.localURL(env, s.Name);
-    if (env.tunnels?.[s.Name]) values.CONTREMAITRE_PUBLIC_URL = env.tunnels[s.Name].URL;
+    values.CONTREMAITRE_URL = this.browserURL(env, s.Name);
+    values.CONTREMAITRE_ORIGINS = JSON.stringify([
+      ...new Set(
+        [this.localURL(env, s.Name), this.browserURL(env, s.Name)].map(
+          (url) => new URL(url).origin,
+        ),
+      ),
+    ]);
+    if (env.tunnel_configuration?.urls[s.Name])
+      values.CONTREMAITRE_PUBLIC_URL = env.tunnel_configuration.urls[s.Name];
     return values;
   }
   async volumes(ctx: Context, env: Environment, s: ServiceState) {
@@ -735,11 +803,13 @@ export class Manager {
   }
   async down(ctx: Context, env: Environment, deleteData = false) {
     this.assertRecovered(env.Identity.ID);
-    for (const s of Object.values(env.Services)) await this.stopDevelopment(s.Container);
-    for (const name of keys(env.tunnels)) await this.tunnels?.stop(ctx, env, name, deleteData);
+    if (this.tunnels?.sharing?.(env.Identity.ID))
+      fail("Stop the tunnel session before stopping this environment", "conflict");
     const deleting = deleteData || env.Status === "deleting";
     env.Status = deleting ? "deleting" : "stopping";
     this.save();
+    for (const s of Object.values(env.Services)) await this.stopDevelopment(s.Container);
+    for (const name of keys(env.tunnels)) await this.tunnels?.stop(ctx, env, name, deleteData);
     if (env.driver) {
       const reply = await invokeDriver(ctx, env, deleteData ? "delete" : "stop");
       if (reply.status !== "stopped") fail("Driver did not confirm stopped resources");
@@ -797,6 +867,25 @@ export class Manager {
   async recover(ctx: Context) {
     await recoverClones(this, ctx);
     for (const env of Object.values(this.state.Environments)) {
+      for (const reservation of Object.values(env.tunnels ?? {})) {
+        reservation.Desired = false;
+        reservation.Connected = false;
+      }
+      if (env.tunnel_configuration) {
+        try {
+          await this.configureTunnel(ctx, env, {});
+          if (env.Error.startsWith("Tunnel ")) {
+            env.Status = "running";
+            env.Error = "";
+          }
+        } catch (error) {
+          env.Status = "failed";
+          env.Error = `Tunnel configuration recovery failed: ${message(error)}`;
+        }
+      }
+    }
+
+    for (const env of Object.values(this.state.Environments)) {
       if (env.driver) {
         if (env.Status === "running" || env.Status === "deploying")
           try {
@@ -813,6 +902,7 @@ export class Manager {
             env.Status = "failed";
             env.Error = `${s.Name} is not running`;
           } else if (s.Spec.dev) {
+            await this.stopDevelopment(s.Container);
             const source = new DevelopmentSource(
               env.Root,
               join(this.store.home, "sources", env.Identity.ID, s.Name),

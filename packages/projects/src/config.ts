@@ -196,12 +196,18 @@ export function prepareManifest(root: string, manifest: Manifest): Manifest {
         const [dep, property, ...rest] = match[1].split(".");
         if (
           rest.length ||
-          !["host", "port", "url", "local_url"].includes(property) ||
+          !["host", "port", "url", "local_url", "browser_url", "browser_origins"].includes(
+            property,
+          ) ||
           !own(services, dep)
         )
           fail(`${name}: unsupported or unknown environment reference ${match[1]}`);
-        if (property === "local_url") {
-          if (!services[dep].http) fail(`${name}: local_url requires HTTP service ${dep}`);
+        if (
+          property === "local_url" ||
+          property === "browser_url" ||
+          property === "browser_origins"
+        ) {
+          if (!services[dep].http) fail(`${name}: ${property} requires HTTP service ${dep}`);
           continue;
         }
         const seen = new Set<string>();

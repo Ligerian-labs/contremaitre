@@ -5,7 +5,7 @@ import { Apple, type Runtime } from "@contremaitre/environments/apple";
 import { Manager } from "@contremaitre/environments/manager";
 import { requestSchema } from "@contremaitre/environments/model";
 import { Store } from "@contremaitre/environments/store";
-import { Tunnels } from "@contremaitre/environments/tunnel";
+import { TunnelSessions } from "@contremaitre/environments/tunnel-session";
 import { context, decode, fail, keys, message } from "@contremaitre/execution/context";
 import { lockHome } from "@contremaitre/execution/files";
 import { reapProcesses } from "@contremaitre/execution/process-journal";
@@ -29,6 +29,7 @@ import {
   Prune,
   QueryBus,
   ReadOperation,
+  RenewShare,
   Resolve,
   Share,
   Show,
@@ -111,25 +112,23 @@ export async function startServer(
   const store = new Store(options.home),
     unlock = lockHome(store.home);
   let control: Server | undefined, publicServer: Server | undefined;
-  let ops: Operations | undefined, tunnels: Tunnels | undefined;
+  let ops: Operations | undefined, tunnels: TunnelSessions | undefined;
   let closeApp: (() => Promise<void>) | undefined;
   let stopTraefik: (() => Promise<void>) | undefined;
   let stopDevelopment: (() => Promise<void>) | undefined;
   let shutdownPromise: Promise<void> | undefined;
-  let monitoring: ReturnType<typeof setInterval> | undefined;
   let ready = false;
   const requests = new Set<AbortController>();
   const close = () =>
     (shutdownPromise ??= (async () => {
       ready = false;
-      if (monitoring) clearInterval(monitoring);
       for (const request of requests) request.abort();
       const errors: unknown[] = [];
       for (const cleanup of [
         () => ops?.shutdown(),
-        () => stopTraefik?.(),
-        () => stopDevelopment?.(),
         () => tunnels?.shutdown(),
+        () => stopDevelopment?.(),
+        () => stopTraefik?.(),
         () => control && closeServer(control),
         () => publicServer && closeServer(publicServer),
         () => closeApp?.(),
@@ -169,13 +168,16 @@ export async function startServer(
       processDirectory: join(store.home, "processes"),
     });
     const lookup = (host: string) => routes(manager, host);
-    tunnels = new Tunnels(manager, lookup);
+    tunnels = new TunnelSessions(manager, lookup, operations.locks);
     manager.tunnels = tunnels;
     const sharing = tunnels;
     const app = application({
       manager,
       operations,
-      share: (ctx, e, name) => sharing.start(ctx, e, name),
+      share: (ctx, e, id) =>
+        sharing.open({ ...ctx, log: (data) => process.stderr.write(data) }, e, id),
+      renewShare: (id) => sharing.renew(id),
+      endShare: (e, id) => sharing.end(e, id),
     });
     closeApp = () => app.dispose();
     operations.onTransition = (op) => {
@@ -219,6 +221,7 @@ export async function startServer(
             deployment_progress: 1,
             local_https: options.httpsPort !== undefined,
             development: 1,
+            foreground_tunnels: 1,
           });
           return;
         }
@@ -352,7 +355,19 @@ export async function startServer(
             return;
           }
           case "tunnel":
-            json(res, await command(Effect.flatMap(CommandBus, (b) => b.dispatch(Share, payload))));
+            json(
+              res,
+              await app.runPromise(
+                Effect.flatMap(CommandBus, (b) => b.dispatch(Share, payload)),
+                { signal: controller.signal },
+              ),
+            );
+            return;
+          case "tunnel-renew":
+            json(
+              res,
+              await command(Effect.flatMap(CommandBus, (b) => b.dispatch(RenewShare, payload))),
+            );
             return;
           case "tunnel-stop":
           case "tunnel-release":
@@ -367,6 +382,7 @@ export async function startServer(
             return;
           case "stop": {
             ready = false;
+            await sharing.shutdown();
             try {
               await operations.shutdown();
               const errors: string[] = [];
@@ -442,20 +458,6 @@ export async function startServer(
       manager.onSave = traefik.update;
     }
     ready = true;
-    let restoring = false;
-    const restore = async () => {
-      if (restoring || !ready) return;
-      restoring = true;
-      try {
-        await sharing.restore(
-          context(AbortSignal.timeout(30_000), (chunk) => process.stderr.write(chunk)),
-        );
-      } finally {
-        restoring = false;
-      }
-    };
-    monitoring = setInterval(() => void restore(), 15_000);
-    void restore();
     return {
       manager,
       operations,

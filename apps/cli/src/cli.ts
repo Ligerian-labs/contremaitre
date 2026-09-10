@@ -23,6 +23,7 @@ import {
 } from "./help.js";
 import { manageHttpsService } from "./https-service.js";
 import { initialize } from "./init.js";
+import { tunnel } from "./tunnel.js";
 
 export { normalizeArguments } from "./help.js";
 
@@ -53,6 +54,8 @@ export function makeRoot(passthrough: readonly string[] = []) {
             { root: projectRoot(), branch: o.branch, main: o.main, rebuild: o.rebuild },
             o,
           );
+        if (action === "tunnel" && !o.args.length && !passthrough.length)
+          return tunnel(home, { root: projectRoot(), branch: o.branch, env: o.env }, o.json);
         if (name === "serve")
           return serve({
             home,
@@ -153,7 +156,13 @@ export function makeRoot(passthrough: readonly string[] = []) {
               );
               return;
             case "tunnel": {
-              if (!args[0]) fail("tunnel requires a service, status, stop or release");
+              if (
+                !["status", "stop", "release"].includes(args[0]) ||
+                args.length > (args[0] === "release" ? 2 : 1)
+              )
+                fail(
+                  "Use contremaitre tunnel to share all HTTP services, or tunnel status, stop, release SERVICE",
+                );
               if (args[0] === "status") {
                 const env = (await call(ctx, home, "resolve", req)) as Environment;
                 output(o.json, env.tunnels);

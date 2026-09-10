@@ -11,7 +11,8 @@
     "./manager": "./src/manager.ts",
     "./model": "./src/model.ts",
     "./store": "./src/store.ts",
-    "./tunnel": "./src/tunnel.ts"
+    "./tunnel": "./src/tunnel.ts",
+    "./tunnel-session": "./src/tunnel-session.ts"
   },
   "dependencies": {
     "@balena/dockerignore": "1.0.2",

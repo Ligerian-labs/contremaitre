@@ -265,15 +265,15 @@ export const commands: readonly CommandHelp[] = [
   {
     name: "tunnel",
     group: "Inspect and connect",
-    description: "Manage public URLs",
-    usage: "SERVICE | status | stop [SERVICE] | release SERVICE",
+    description: "Share a live preview until this command exits",
+    usage: "[status | stop | release SERVICE]",
     details:
-      "Reserve a stable URL for a service. status lists reservations; stop disconnects one or all services, keeping their URLs; release deletes a service's reservation.",
+      "Share all HTTP services in the current environment. Keep this command open; Ctrl-C ends sharing and restores local URL configuration. Branch changes also stop sharing. Services may restart. status lists reservations; stop ends the session; release retires a service URL.",
     flags: ["env", "branch", "home", "json"],
     examples: [
-      "contremaitre tunnel web",
+      "contremaitre tunnel",
       "contremaitre tunnel status",
-      "contremaitre tunnel stop web",
+      "contremaitre tunnel stop",
       "contremaitre tunnel release web",
     ],
   },
