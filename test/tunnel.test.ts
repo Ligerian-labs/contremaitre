@@ -169,6 +169,33 @@ test("foreground group gates startup, configures browser URLs, restores local co
   }
 }, 20000);
 
+test("hub uses the CLI-selected provider even when another command changes the default", async () => {
+  const f = await fixture();
+  try {
+    const path = join(f.home, "tunnels.json");
+    const settings = JSON.parse(readFileSync(path, "utf8"));
+    settings.default = "unavailable";
+    settings.providers.unavailable = { executable: "/unavailable/provider" };
+    writeFileSync(path, JSON.stringify(settings));
+    const id = randomUUID();
+    await call(context(), f.home, "tunnel", {
+      env: f.env.Identity.ID,
+      session_id: id,
+      provider: "fake",
+    });
+    expect(f.env.tunnels?.web.Provider).toBe("fake");
+    await f.sessions.end(f.env, id);
+    const calls = f.events().filter((event) => event.op === "reserve").length;
+    await expect(f.sessions.open(context(), f.env, randomUUID(), "unavailable")).rejects.toThrow(
+      "another provider",
+    );
+    expect(f.events().filter((event) => event.op === "reserve")).toHaveLength(calls);
+    expect(f.env.tunnel_configuration).toBeUndefined();
+  } finally {
+    await f.close();
+  }
+});
+
 test("failed connector startup rolls back the entire group and refuses legacy unleased providers", async () => {
   const f = await fixture();
   try {

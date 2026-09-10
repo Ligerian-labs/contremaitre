@@ -95,7 +95,7 @@ export class Hub extends EffectContext.Tag("contremaitre/Hub")<
   {
     manager: Manager;
     operations: Operations;
-    share: (ctx: Context, e: Environment, id: string) => Promise<unknown>;
+    share: (ctx: Context, e: Environment, id: string, provider?: string) => Promise<unknown>;
     renewShare?: (id: string) => unknown;
     endShare?: (e: Environment, id?: string) => Promise<void>;
   }
@@ -232,7 +232,7 @@ const registry = HandlerRegistry.layer(
           env = await resolveRequest(hub.manager, ctx, req);
         if (!req.session_id || req.service)
           fail("Tunnel requires a foreground session for all HTTP services");
-        return hub.share(ctx, env, req.session_id);
+        return hub.share(ctx, env, req.session_id, req.provider);
       });
     }),
   ),

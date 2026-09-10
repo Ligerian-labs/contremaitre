@@ -7,7 +7,9 @@
     "./init": "./src/init.ts",
     "./cli": "./src/cli.ts",
     "./client": "./src/client.ts",
-    "./https-service": "./src/https-service.ts"
+    "./https-service": "./src/https-service.ts",
+    "./saas": "./src/saas.ts",
+    "./saas-install": "./src/saas-install.ts"
   },
   "dependencies": {
     "@contremaitre/environments": "workspace:*",

@@ -174,8 +174,8 @@ export async function startServer(
     const app = application({
       manager,
       operations,
-      share: (ctx, e, id) =>
-        sharing.open({ ...ctx, log: (data) => process.stderr.write(data) }, e, id),
+      share: (ctx, e, id, provider) =>
+        sharing.open({ ...ctx, log: (data) => process.stderr.write(data) }, e, id, provider),
       renewShare: (id) => sharing.renew(id),
       endShare: (e, id) => sharing.end(e, id),
     });
@@ -222,6 +222,7 @@ export async function startServer(
             local_https: options.httpsPort !== undefined,
             development: 1,
             foreground_tunnels: 1,
+            saas_onboarding: 1,
           });
           return;
         }

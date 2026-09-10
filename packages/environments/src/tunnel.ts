@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import type { Server } from "node:http";
-import { isAbsolute, join } from "node:path";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import {
   type Context,
@@ -18,15 +18,9 @@ import { closeServer, type Lookup, listen, proxyServer } from "@contremaitre/rou
 import { Schema } from "effect";
 import type { Manager } from "./manager.js";
 import type { Environment, TunnelReservation } from "./model.js";
+import { providerConfig } from "./tunnel-provider.js";
 
 const readinessSchema = Schema.Struct({ version: Schema.Literal(2), ready: Schema.Boolean });
-const configSchema = Schema.Struct({
-  default: Schema.String,
-  providers: Schema.Record({
-    key: Schema.String,
-    value: Schema.Struct({ executable: Schema.String, config: Schema.optional(Schema.Unknown) }),
-  }),
-});
 const responseSchema = Schema.Struct({
   version: Schema.Literal(1),
   reservation_id: Schema.optional(Schema.String),
@@ -76,16 +70,10 @@ export class Tunnels {
     return this.active.get(`${id}/${name}`)?.ready ?? false;
   }
   private config(provider?: string) {
-    const all = decode(
-      configSchema,
-      JSON.parse(readFileSync(join(this.manager.store.home, "tunnels.json"), "utf8")),
-      "tunnel provider configuration",
+    return (
+      providerConfig(this.manager.store.home, provider) ??
+      fail("Run contremaitre tunnel to set up the SaaS provider first")
     );
-    const name = provider || all.default,
-      cfg = all.providers[name];
-    if (!cfg || !isAbsolute(cfg.executable))
-      fail(`Tunnel provider ${name} needs an absolute executable path`);
-    return { name, ...cfg };
   }
   private async call(
     ctx: Context,
@@ -129,13 +117,20 @@ export class Tunnels {
       fail(`Tunnel provider ${operation} failed`, permanent ? "permanent" : "transient");
     }
   }
-  async reserve(ctx: Context, env: Environment, name: string): Promise<TunnelReservation> {
+  async reserve(
+    ctx: Context,
+    env: Environment,
+    name: string,
+    provider?: string,
+  ): Promise<TunnelReservation> {
     return this.locks.use([`${env.Identity.ID}/${name}`], ctx.signal, async () => {
       if (this.closing) fail("Hub is shutting down");
       if (!env.Services[name]?.HTTP) fail(`Service ${name} is not HTTP`);
       env.tunnels ??= {};
       let reservation = env.tunnels[name];
-      const cfg = this.config(reservation?.Provider);
+      if (reservation && provider && reservation.Provider !== provider)
+        fail("Tunnel reservation belongs to another provider; release it before switching");
+      const cfg = this.config(reservation?.Provider ?? provider);
       const caps = await this.call(ctx, env, name, "capabilities", cfg.name);
       if (
         !caps.capabilities?.stable_urls ||

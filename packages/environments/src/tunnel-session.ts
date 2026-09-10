@@ -51,7 +51,12 @@ export class TunnelSessions implements TunnelHooks {
     this.transport.renew(session.env, id, session.expires, session.enabled);
     return { expires_at: session.expires };
   }
-  async open(ctx: Context, env: Environment, id: string): Promise<Record<string, string>> {
+  async open(
+    ctx: Context,
+    env: Environment,
+    id: string,
+    provider?: string,
+  ): Promise<Record<string, string>> {
     if (!/^[a-f0-9-]{36}$/.test(id)) fail("Tunnel requires a unique foreground session ID");
     if ([...this.sessions.values()].some((session) => session.id === id))
       fail("Tunnel session ID is already in use", "conflict");
@@ -96,7 +101,7 @@ export class TunnelSessions implements TunnelHooks {
         await this.locks.use([env.Identity.ID], scope.signal, async () => {
           if (env.Status !== "running") fail("Environment changed before tunnel startup");
           for (const name of names)
-            urls[name] = (await this.transport.reserve(scope, env, name)).URL;
+            urls[name] = (await this.transport.reserve(scope, env, name, provider)).URL;
           if (new Set(names.map((name) => env.tunnels?.[name].Provider)).size !== 1)
             fail(
               "All services in a foreground session must use the same provider; release or migrate older reservations first",

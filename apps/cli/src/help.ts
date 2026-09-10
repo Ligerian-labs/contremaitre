@@ -21,6 +21,13 @@ function flag<A>(
 }
 
 const flags = {
+  workspace: flag(
+    "workspace",
+    Options.text("workspace"),
+    "",
+    "SaaS workspace ID. Overrides the saved selection.",
+    "ID",
+  ),
   noAI: flag(
     "no-ai",
     Options.boolean("no-ai"),
@@ -266,12 +273,14 @@ export const commands: readonly CommandHelp[] = [
     name: "tunnel",
     group: "Inspect and connect",
     description: "Share a live preview until this command exits",
-    usage: "[status | stop | release SERVICE]",
+    usage: "[login | status | stop | release SERVICE]",
     details:
-      "Share all HTTP services in the current environment. Keep this command open; Ctrl-C ends sharing and restores local URL configuration. Branch changes also stop sharing. Services may restart. status lists reservations; stop ends the session; release retires a service URL.",
-    flags: ["env", "branch", "home", "json"],
+      "Share all HTTP services in the current environment. Keep this command open; Ctrl-C ends sharing and restores local URL configuration. Branch changes also stop sharing. Services may restart. With no custom provider, use contremaitre.ligerianlabs.fr and sign in through your browser. login authenticates without starting a preview. status lists reservations; stop ends the session; release retires a service URL.",
+    flags: ["workspace", "env", "branch", "home", "json"],
     examples: [
       "contremaitre tunnel",
+      "contremaitre tunnel login",
+      "contremaitre tunnel --workspace my-team",
       "contremaitre tunnel status",
       "contremaitre tunnel stop",
       "contremaitre tunnel release web",
@@ -391,6 +400,7 @@ export function optionsFor(command: Pick<CommandHelp, "flags">) {
       : Options.none.pipe(Options.map(() => spec.fallback));
   }
   return {
+    workspace: option("workspace", flags.workspace),
     noAI: option("noAI", flags.noAI),
     agent: option("agent", flags.agent),
     home: option("home", flags.home),

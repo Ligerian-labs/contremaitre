@@ -59,6 +59,7 @@ export const requestSchema = Schema.Struct({
   env: Schema.optional(Schema.String),
   service: Schema.optional(Schema.String),
   session_id: Schema.optional(Schema.String),
+  provider: Schema.optional(Schema.String),
   delete_data: Schema.optional(Schema.Boolean),
   main: Schema.optional(Schema.Boolean),
   rebuild: Schema.optional(Schema.Boolean),

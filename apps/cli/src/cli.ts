@@ -23,6 +23,7 @@ import {
 } from "./help.js";
 import { manageHttpsService } from "./https-service.js";
 import { initialize } from "./init.js";
+import { onboard, terminalOnboarding } from "./saas.js";
 import { tunnel } from "./tunnel.js";
 
 export { normalizeArguments } from "./help.js";
@@ -54,8 +55,28 @@ export function makeRoot(passthrough: readonly string[] = []) {
             { root: projectRoot(), branch: o.branch, main: o.main, rebuild: o.rebuild },
             o,
           );
+        if (
+          action === "tunnel" &&
+          o.args[0] === "login" &&
+          o.args.length === 1 &&
+          !passthrough.length
+        )
+          return attempt(async (signal) => {
+            const provider = await onboard(
+              home,
+              signal,
+              { workspace: o.workspace, login: true },
+              { ui: terminalOnboarding(o.json) },
+            );
+            output(o.json, { provider, authenticated: true });
+          });
         if (action === "tunnel" && !o.args.length && !passthrough.length)
-          return tunnel(home, { root: projectRoot(), branch: o.branch, env: o.env }, o.json);
+          return tunnel(
+            home,
+            { root: projectRoot(), branch: o.branch, env: o.env },
+            o.json,
+            o.workspace,
+          );
         if (name === "serve")
           return serve({
             home,
@@ -161,7 +182,7 @@ export function makeRoot(passthrough: readonly string[] = []) {
                 args.length > (args[0] === "release" ? 2 : 1)
               )
                 fail(
-                  "Use contremaitre tunnel to share all HTTP services, or tunnel status, stop, release SERVICE",
+                  "Use contremaitre tunnel to share all HTTP services, or tunnel login, status, stop, release SERVICE",
                 );
               if (args[0] === "status") {
                 const env = (await call(ctx, home, "resolve", req)) as Environment;
