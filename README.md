@@ -49,6 +49,8 @@ contremaitre start
 
 `mkcert -install` trusts a local development certificate authority. The HTTPS service requests administrator approval to forward port 443 in the background. Run the hub and applications as your normal user. See [HTTPS setup and troubleshooting](docs/local-https.md) if a port is occupied or certificates are not trusted.
 
+After pulling updates, run `bun install --frozen-lockfile` and `make install` again. Installation replaces the CLI and automatically restarts a running hub with the new binary, preserving its HTTP or HTTPS ports and running environments. Active operations and tunnel sessions end, and local routing pauses during the restart. A stopped hub stays stopped. Set `CONTREMAITRE_HOME` when upgrading a hub that uses a custom data directory.
+
 Deploy the included example:
 
 ```sh

@@ -6,5 +6,4 @@ test:
 check:
 	bun run check
 install: build
-	install -d $(HOME)/.local/bin
-	install bin/contremaitre $(HOME)/.local/bin/contremaitre
+	bun scripts/install.ts

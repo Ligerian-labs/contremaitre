@@ -14,6 +14,7 @@ const signal = AbortSignal.timeout(60_000),
   home = join(dir, "home"),
   project = join(dir, "project"),
   fakebin = join(dir, "bin"),
+  installHome = join(dir, "install home"),
   binary = resolve("bin/contremaitre");
 await mkdir(project);
 await mkdir(fakebin);
@@ -24,7 +25,7 @@ await writeFile(
 );
 await writeFile(
   join(project, "driver"),
-  `#!${process.execPath}\nimport {existsSync,writeFileSync} from 'node:fs';\nconst r=await Bun.file(process.env.CONTREMAITRE_REQUEST).json();if(r.operation==='exec'){if(r.arguments[1]!=='--help')process.exit(24);process.exit(23);}if(r.operation==='deploy'){writeFileSync(r.environment.root+'/pid',String(process.pid));await Bun.sleep(existsSync(r.environment.root+'/slow')?50000:200);}console.log(JSON.stringify({version:1,status:r.operation==='deploy'?'running':'stopped',services:{web:{}}}));`,
+  `#!${process.execPath}\nimport {existsSync,writeFileSync} from 'node:fs';\nconst r=await Bun.file(process.env.CONTREMAITRE_REQUEST).json();if(r.operation==='exec'){if(r.arguments[1]!=='--help')process.exit(24);process.exit(23);}if(r.operation==='deploy'){writeFileSync(r.environment.root+'/pid',String(process.pid));await Bun.sleep(existsSync(r.environment.root+'/slow')?50000:200);}console.log(JSON.stringify({version:1,status:['deploy','status'].includes(r.operation)?'running':'stopped',services:{web:{}}}));`,
   { mode: 0o700 },
 );
 await writeFile(join(project, "slow"), "");
@@ -38,12 +39,37 @@ const port = await new Promise<number>((resolve, reject) => {
   });
 });
 let child: ReturnType<typeof Bun.spawn> | undefined;
-async function boot() {
-  child = Bun.spawn([binary, "serve", "--http", "--home", home, "--http-port", String(port)], {
-    env: { ...process.env, PATH: `${fakebin}:${process.env.PATH}` },
-    stdout: "ignore",
+let upgradedPid: number | undefined;
+async function makeInstall() {
+  const command = Bun.spawn(["make", "-o", "build", "install", `HOME=${installHome}`], {
+    env: { ...process.env, CONTREMAITRE_HOME: home, PATH: `${fakebin}:${process.env.PATH}` },
+    stdout: "pipe",
     stderr: "pipe",
   });
+  const [code, stdout, stderr] = await Promise.all([
+    command.exited,
+    new Response(command.stdout).text(),
+    new Response(command.stderr).text(),
+  ]);
+  assert.equal(code, 0, `${stdout}\n${stderr}`);
+}
+async function boot() {
+  child = Bun.spawn(
+    [
+      join(installHome, ".local/bin/contremaitre"),
+      "serve",
+      "--http",
+      "--home",
+      home,
+      "--http-port",
+      String(port),
+    ],
+    {
+      env: { ...process.env, PATH: `${fakebin}:${process.env.PATH}` },
+      stdout: "ignore",
+      stderr: "pipe",
+    },
+  );
   for (let i = 0; i < 100; i++) {
     if (await health(ctx, home)) return;
     if (child.exitCode !== null)
@@ -57,6 +83,8 @@ async function boot() {
   throw Error("Hub startup timeout");
 }
 try {
+  await makeInstall();
+  assert.equal(await health(ctx, home), false, "installation must leave a stopped hub stopped");
   const help = Bun.spawn([binary, "--help"], { stdout: "pipe", stderr: "pipe" });
   const helpText = await new Response(help.stdout).text();
   assert.equal(await help.exited, 0);
@@ -162,10 +190,31 @@ try {
   ); // Driver receives passthrough; Contremaitre must not print its own help.
   assert.equal(await cli.exited, 23);
   assert.ok(!(await new Response(cli.stdout).text()).includes("Usage:"));
+  await makeInstall();
+  assert.notEqual(child?.exitCode, null, "make install must retire the old hub process");
+  const owner = Bun.spawn(["lsof", "-t", join(home, "daemon.lock")], { stdout: "pipe" });
+  upgradedPid = Number((await new Response(owner.stdout).text()).trim());
+  assert.equal(await owner.exited, 0);
+  assert.ok(upgradedPid > 0 && upgradedPid !== child?.pid);
+  assert.equal(await health(ctx, home), true);
+  assert.equal(((await call(ctx, home, "health")) as { public_port: number }).public_port, port);
+  const environments = (await call(ctx, home, "list")) as { Status: string }[];
+  assert.equal(environments[0].Status, "running", "upgrade must preserve running environments");
   console.log(
-    "Standalone help, agent installation, flag validation, Unix socket, duplicate requests, SIGKILL recovery, owned-process cleanup and SIGTERM restart passed",
+    "Standalone help, agent installation, flag validation, Unix socket, duplicate requests, SIGKILL recovery, owned-process cleanup, SIGTERM restart and make install hub upgrade passed",
   );
 } finally {
+  if (upgradedPid) {
+    process.kill(upgradedPid, "SIGTERM");
+    for (let i = 0; i < 100; i++) {
+      try {
+        process.kill(upgradedPid, 0);
+      } catch {
+        break;
+      }
+      await Bun.sleep(100);
+    }
+  }
   child?.kill("SIGTERM");
   await child?.exited;
   await rm(dir, { recursive: true, force: true });
