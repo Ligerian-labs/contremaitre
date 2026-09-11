@@ -1,0 +1,4 @@
+interface:
+  display_name: "Contremaitre runtime"
+  short_description: "Run checks and inspect local application previews."
+  default_prompt: "Use $contremaitre to test this workspace and report its preview and verification results."

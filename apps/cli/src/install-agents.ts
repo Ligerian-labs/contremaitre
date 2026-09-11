@@ -20,7 +20,7 @@ export function installAgents(directory: string, agent: string, global = false) 
   const root = realpathSync(global ? homedir() : directory);
   const files = new Map<string, string>();
   for (const [name, data] of Object.entries(agentAssets))
-    if (name.startsWith("skills/contremaitre/")) files.set(join(root, ".agents", name), data);
+    if (name.startsWith("skills/")) files.set(join(root, ".agents", name), data);
   if (agents.includes("opencode")) {
     const base = join(root, global ? ".config/opencode" : ".opencode");
     files.set(join(base, "contremaitre/common.ts"), agentAssets["common.ts"]);
@@ -43,10 +43,48 @@ export function installAgents(directory: string, agent: string, global = false) 
       agentAssets["extensions/pi.ts"].replace('"../common.ts"', '"./common.ts"'),
     );
   }
+  const links = new Map<string, string>();
+  const skills = Object.keys(agentAssets)
+    .filter((name) => /^skills\/[^/]+\/SKILL\.md$/.test(name))
+    .map((name) => join(root, ".agents", dirname(name)));
+  if (agents.includes("claude"))
+    for (const target of skills)
+      links.set(
+        join(root, ".claude/skills", relative(join(root, ".agents/skills"), target)),
+        target,
+      );
+  writeAssets(root, files, links);
+  return {
+    agents,
+    scope: global ? "global" : "project",
+    directory: root,
+    skill: join(root, ".agents/skills/contremaitre"),
+    skills,
+    next: "Reload skills or restart your agent. Use contremaitre-setup to configure a project, or contremaitre to verify it.",
+  };
+}
+
+export function exportAgents(directory: string) {
+  const root = realpathSync(directory),
+    plugin = join(root, "contremaitre");
+  writeAssets(
+    root,
+    new Map(Object.entries(agentAssets).map(([name, data]) => [join(plugin, name), data])),
+  );
+  return {
+    directory: plugin,
+    next: "Load this directory as a Claude Code plugin or Pi package, or install its skills with contremaitre agents install.",
+  };
+}
+
+function writeAssets(root: string, files: Map<string, string>, links = new Map<string, string>()) {
+  const entry = (path: string) => lstatSync(path, { throwIfNoEntry: false });
   const confined = (path: string) => {
     for (let p = path; ; p = dirname(p)) {
-      if (existsSync(p) && !inside(root, realpathSync(p)))
+      if (entry(p) && (!existsSync(p) || !inside(root, realpathSync(p))))
         fail(`Agent installation path escapes destination: ${relative(root, path)}`);
+      if (p !== path && entry(p) && !lstatSync(realpathSync(p)).isDirectory())
+        fail(`Agent installation parent is not a directory: ${relative(root, p)}`);
       if (p === root) break;
       if (dirname(p) === p) fail("Invalid agent installation destination");
     }
@@ -54,7 +92,7 @@ export function installAgents(directory: string, agent: string, global = false) 
   for (const [path, data] of files) {
     confined(path);
     if (
-      existsSync(path) &&
+      entry(path) &&
       (lstatSync(path).isSymbolicLink() ||
         !lstatSync(path).isFile() ||
         readFileSync(path, "utf8") !== data)
@@ -63,26 +101,18 @@ export function installAgents(directory: string, agent: string, global = false) 
         `Agent file already exists with different content: ${path}. Review it before replacing it.`,
       );
   }
-  const claude = join(root, ".claude/skills/contremaitre"),
-    target = join(root, ".agents/skills/contremaitre");
-  if (agents.includes("claude")) {
-    confined(claude);
-    if (existsSync(claude) && realpathSync(claude) !== resolve(target))
-      fail(`Claude skill already exists: ${claude}`);
+  for (const [path, target] of links) {
+    confined(path);
+    if (existsSync(path) && realpathSync(path) !== resolve(target))
+      fail(`Claude skill already exists: ${path}`);
   }
   for (const [path, data] of files) {
     mkdirSync(dirname(path), { recursive: true });
     if (!existsSync(path)) writeFileSync(path, data, { flag: "wx", mode: 0o644 });
   }
-  if (agents.includes("claude") && !existsSync(claude)) {
-    mkdirSync(dirname(claude), { recursive: true });
-    symlinkSync(relative(dirname(claude), target), claude, "dir");
-  }
-  return {
-    agents,
-    scope: global ? "global" : "project",
-    directory: root,
-    skill: target,
-    next: "Reload skills or restart your agent. Run contremaitre ensure --json in the application workspace.",
-  };
+  for (const [path, target] of links)
+    if (!existsSync(path)) {
+      mkdirSync(dirname(path), { recursive: true });
+      symlinkSync(relative(dirname(path), target), path, "dir");
+    }
 }

@@ -6,22 +6,28 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { agentAssets } from "../apps/cli/src/agent-assets.js";
-import { installAgents } from "../apps/cli/src/install-agents.js";
+import { exportAgents, installAgents } from "../apps/cli/src/install-agents.js";
 import { ContremaitrePlugin } from "../integrations/contremaitre/extensions/opencode.js";
 import piPlugin from "../integrations/contremaitre/extensions/pi.js";
 
-test("all four installations share one skill, preserve edits and resolve their native adapters", () => {
+const skillNames = ["contremaitre", "contremaitre-setup", "contremaitre-share"];
+
+test("all four installations share every skill, preserve edits and resolve their native adapters", () => {
   const root = mkdtempSync(join(tmpdir(), "cm-agents-install-"));
   try {
     expect(installAgents(root, "all").agents).toEqual(["claude", "codex", "opencode", "pi"]);
-    expect(realpathSync(join(root, ".claude/skills/contremaitre"))).toBe(
-      realpathSync(join(root, ".agents/skills/contremaitre")),
-    );
+    for (const name of skillNames) {
+      expect(existsSync(join(root, `.agents/skills/${name}/SKILL.md`))).toBe(true);
+      expect(realpathSync(join(root, `.claude/skills/${name}`))).toBe(
+        realpathSync(join(root, `.agents/skills/${name}`)),
+      );
+    }
     expect(existsSync(join(root, ".opencode/plugins/contremaitre.ts"))).toBe(true);
     expect(existsSync(join(root, ".opencode/contremaitre/common.ts"))).toBe(true);
     expect(existsSync(join(root, ".pi/extensions/contremaitre/index.ts"))).toBe(true);
@@ -40,12 +46,60 @@ test("embedded plugin files match source and keep discovery and instructions bou
   const root = new URL("../integrations/contremaitre/", import.meta.url).pathname;
   for (const [path, text] of Object.entries(agentAssets))
     expect(readFileSync(join(root, path), "utf8")).toBe(text);
-  const text = agentAssets["skills/contremaitre/SKILL.md"];
-  expect(text.split("---")[1].length).toBeLessThan(400);
-  expect(Buffer.byteLength(text)).toBeLessThan(3000);
+  for (const name of skillNames) {
+    const text = agentAssets[`skills/${name}/SKILL.md`];
+    expect(text.split("---")[1].length).toBeLessThan(400);
+    expect(Buffer.byteLength(text)).toBeLessThan(3000);
+  }
   expect(JSON.parse(agentAssets[".codex-plugin/plugin.json"]).skills).toBe("./skills/");
   expect(JSON.parse(agentAssets[".claude-plugin/plugin.json"]).skills).toBe("./skills/");
   expect(JSON.parse(agentAssets["package.json"]).pi.extensions).toEqual(["./extensions/pi.ts"]);
+});
+
+test("exported plugins contain every embedded asset and preserve existing edits", () => {
+  const root = mkdtempSync(join(tmpdir(), "cm-agents-export-"));
+  try {
+    const { directory } = exportAgents(root);
+    expect(directory).toBe(join(realpathSync(root), "contremaitre"));
+    for (const [path, text] of Object.entries(agentAssets))
+      expect(readFileSync(join(directory, path), "utf8")).toBe(text);
+    expect(() => exportAgents(root)).not.toThrow();
+    const skill = join(directory, "skills/contremaitre-setup/SKILL.md");
+    writeFileSync(skill, "user modification");
+    expect(() => exportAgents(root)).toThrow("different content");
+    expect(readFileSync(skill, "utf8")).toBe("user modification");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("installation preflights all skill links before writing files", () => {
+  const root = mkdtempSync(join(tmpdir(), "cm-agents-conflict-"));
+  try {
+    mkdirSync(join(root, ".claude/skills/contremaitre-share"), { recursive: true });
+    expect(() => installAgents(root, "all")).toThrow("already exists");
+    expect(existsSync(join(root, ".agents"))).toBe(false);
+    expect(existsSync(join(root, ".opencode"))).toBe(false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("export rejects escaping and dangling symlinks without writing any assets", () => {
+  const root = mkdtempSync(join(tmpdir(), "cm-agents-paths-")),
+    outside = mkdtempSync(join(tmpdir(), "cm-agents-outside-"));
+  try {
+    for (const target of [outside, join(outside, "missing")]) {
+      symlinkSync(target, join(root, "contremaitre"), "dir");
+      expect(() => exportAgents(root)).toThrow("escapes destination");
+      expect(existsSync(join(outside, ".codex-plugin"))).toBe(false);
+      expect(existsSync(join(outside, "missing"))).toBe(false);
+      rmSync(join(root, "contremaitre"));
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  }
 });
 
 test("OpenCode and Pi display verification state without adding model messages", async () => {
