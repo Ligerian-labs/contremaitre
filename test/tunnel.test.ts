@@ -13,9 +13,9 @@ import { context } from "@contremaitre/execution/context";
 import { startServer } from "@contremaitre/hub/server";
 import { FakeRuntime } from "./fake-runtime.js";
 
-async function until(check: () => boolean, timeout = 5000) {
+async function until(check: () => boolean | Promise<boolean>, timeout = 5000) {
   const deadline = Date.now() + timeout;
-  while (!check()) {
+  while (!(await check())) {
     if (Date.now() > deadline) throw Error("Condition timed out");
     await Bun.sleep(25);
   }
@@ -42,17 +42,18 @@ lines.on('line', async line=>{
  const r=JSON.parse(line),op=process.argv[2];
  if(!first){
   first=r; appendFileSync(r.config.calls,JSON.stringify({op,...r})+'\\n');
+  while(existsSync(r.config.calls+'.hold-'+op)||existsSync(r.config.calls+'.hold-'+op+'-'+r.service_id))await Bun.sleep(10);
   if(op==='start'){
    expires=r.expires_at;
    if(existsSync(r.config.fail)&&r.service_id==='web')process.exit(1);
    const status=(await fetch(r.upstream)).status;
    appendFileSync(r.config.calls,JSON.stringify({op:'initial-gate',status})+'\\n');
    console.log(JSON.stringify({version:2,ready:true}));
-   setInterval(()=>{if(existsSync(r.config.calls+'.revoked'))process.exit(77);if(Date.now()>=expires)process.exit(0)},100);
+   setInterval(()=>{if(existsSync(r.config.calls+'.revoked'))process.exit(77);if(existsSync(r.config.calls+'.disconnected')||Date.now()>=expires)process.exit(0)},100);
   }else{console.log(JSON.stringify({version:1,capabilities:{stable_urls:true,https:true,foreground_sessions:!existsSync(r.config.legacy)},reservation_id:r.service_id,url:'https://'+r.service_id+'.example.test'}));process.exit(0);}
  }else{expires=r.expires_at;appendFileSync(first.config.calls,JSON.stringify({op:'renew',service_id:first.service_id,...r})+'\\n');}
 });
-lines.on('close',()=>process.exit(0));
+lines.on('close',()=>{if(process.argv[2]==='start')process.exit(0)});
 `,
     { mode: 0o700 },
   );
@@ -151,8 +152,10 @@ test("foreground group gates startup, configures browser URLs, restores local co
     const starts = f.events().filter((e) => e.op === "start");
     expect(starts[0].environment_id).not.toBe(f.env.Identity.ID);
     expect(starts[0].service_ids).toEqual(["api", "web"]);
-    expect(starts.map((e) => e.service_id)).toEqual(["api", "web"]);
-    expect(await (await fetch(starts[0].upstream)).text()).toBe("local app");
+    expect(starts.map((e) => e.service_id).sort()).toEqual(["api", "web"]);
+    expect(await (await fetch(starts.find((e) => e.service_id === "api").upstream)).text()).toBe(
+      "local app",
+    );
     const headers = f.requests.at(-1);
     expect(headers?.get("host")).toBe(new URL(f.manager.localURL(f.env, "api")).host);
     expect(headers?.get("x-forwarded-host")).toBe("api.example.test");
@@ -180,6 +183,78 @@ test("foreground group gates startup, configures browser URLs, restores local co
     await f.close();
   }
 }, 20000);
+
+test("tunnel prepares services concurrently and checks capabilities once per service", async () => {
+  const f = await fixture();
+  const reserveGate = join(f.home, "calls.hold-reserve");
+  const startGate = join(f.home, "calls.hold-start");
+  const appGate = Promise.withResolvers<void>();
+  const run = f.runtime.run.bind(f.runtime);
+  f.runtime.run = async (ctx, spec) => {
+    if (spec.name === f.env.Services.api.Container) await appGate.promise;
+    return run(ctx, spec);
+  };
+  writeFileSync(reserveGate, "");
+  writeFileSync(startGate, "");
+  const opening = f.sessions.open(context(), f.env, randomUUID());
+  void opening.catch(() => {});
+  try {
+    await until(() => f.events().filter((e) => e.op === "reserve").length === 2, 2000);
+    expect(f.env.tunnel_configuration).toBeUndefined();
+    rmSync(reserveGate);
+    await until(() => f.events().filter((e) => e.op === "start").length === 2, 2000);
+    expect(f.events().filter((e) => e.op === "capabilities")).toHaveLength(2);
+    expect(f.events().some((e) => e.op === "renew" && e.enabled)).toBe(false);
+    rmSync(startGate);
+    await until(() => f.events().filter((e) => e.op === "initial-gate").length === 2);
+    expect(f.env.Services.api.ready).toBe(false);
+    expect(f.sessions.running(f.env.Identity.ID, "web")).toBe(false);
+    expect(f.events().some((e) => e.op === "renew" && e.enabled)).toBe(false);
+    appGate.resolve();
+    await opening;
+    expect(f.sessions.running(f.env.Identity.ID, "api")).toBe(true);
+    expect(f.sessions.running(f.env.Identity.ID, "web")).toBe(true);
+  } finally {
+    rmSync(reserveGate, { force: true });
+    rmSync(startGate, { force: true });
+    appGate.resolve();
+    await opening.catch(() => {});
+    await f.close();
+  }
+}, 10000);
+
+test("a connector that exits during application preparation cannot activate the group", async () => {
+  const f = await fixture();
+  const gate = Promise.withResolvers<void>();
+  const run = f.runtime.run.bind(f.runtime);
+  f.runtime.run = async (ctx, spec) => {
+    if (spec.name === f.env.Services.api.Container) await gate.promise;
+    return run(ctx, spec);
+  };
+  const opening = f.sessions.open(context(), f.env, randomUUID());
+  void opening.catch(() => {});
+  try {
+    await until(() => f.events().filter((e) => e.op === "initial-gate").length === 2);
+    const upstream = f.events().find((e) => e.op === "start").upstream;
+    writeFileSync(join(f.home, "calls.disconnected"), "");
+    await until(async () => {
+      try {
+        await fetch(upstream);
+        return false;
+      } catch {
+        return true;
+      }
+    });
+    gate.resolve();
+    await expect(opening).rejects.toThrow("connector");
+    expect(f.events().some((e) => e.op === "renew" && e.enabled)).toBe(false);
+    expect(f.env.tunnel_configuration).toBeUndefined();
+  } finally {
+    gate.resolve();
+    await opening.catch(() => {});
+    await f.close();
+  }
+}, 10000);
 
 test("hub uses the CLI-selected provider even when another command changes the default", async () => {
   const f = await fixture();
@@ -219,6 +294,7 @@ test("failed connector startup rolls back the entire group and refuses legacy un
     expect(f.runtime.calls).toEqual(before);
     rmSync(join(f.home, "legacy"));
     writeFileSync(join(f.home, "fail"), "");
+    writeFileSync(join(f.home, "calls.hold-start-api"), "");
     await expect(f.sessions.open(context(), f.env, randomUUID())).rejects.toThrow("connector");
     expect(f.sessions.running(f.env.Identity.ID, "api")).toBe(false);
     expect(f.env.tunnel_configuration).toBeUndefined();

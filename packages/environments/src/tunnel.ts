@@ -169,7 +169,9 @@ export class Tunnels {
     name: string,
     lease: { id: string; expires: number; enabled: () => boolean },
   ): Promise<TunnelReservation> {
-    const reservation = await this.reserve(ctx, env, name);
+    // The session validates capabilities and reserves every URL before preparing connectors.
+    const reservation = env.tunnels?.[name];
+    if (!reservation) fail(`Service ${name} has no tunnel reservation`);
     return this.locks.use([`${env.Identity.ID}/${name}`], ctx.signal, async () => {
       if (this.closing) fail("Hub is shutting down");
       const key = `${env.Identity.ID}/${name}`;

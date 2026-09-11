@@ -6,7 +6,7 @@ import {
   keys,
   message,
 } from "@contremaitre/execution/context";
-import { EnvironmentLocks } from "@contremaitre/execution/locks";
+import { EnvironmentLocks, Semaphore } from "@contremaitre/execution/locks";
 import { sleep } from "@contremaitre/execution/sleep";
 import { detectIdentity } from "@contremaitre/projects/config";
 import type { Lookup } from "@contremaitre/routing/proxy";
@@ -15,6 +15,24 @@ import type { Environment } from "./model.js";
 import { Tunnels } from "./tunnel.js";
 
 export const tunnelLeaseMs = 15_000;
+
+async function prepareTogether(ctx: Context, tasks: Array<(ctx: Context) => Promise<unknown>>) {
+  const controller = new AbortController();
+  const scope = { ...ctx, signal: AbortSignal.any([ctx.signal, controller.signal]) };
+  const slots = new Semaphore(4);
+  await Promise.allSettled(
+    tasks.map((task) =>
+      slots
+        .use(scope.signal, () => task(scope))
+        .catch((error) => {
+          controller.abort(error);
+          throw error;
+        }),
+    ),
+  );
+  // Wait for cancellation to finish before the caller restores local configuration.
+  scope.signal.throwIfAborted();
+}
 interface Session {
   id: string;
   env: Environment;
@@ -50,6 +68,18 @@ export class TunnelSessions implements TunnelHooks {
     session.expires = Date.now() + tunnelLeaseMs;
     this.transport.renew(session.env, id, session.expires, session.enabled);
     return { expires_at: session.expires };
+  }
+  private enable(session: Session, names: string[]) {
+    session.controller.signal.throwIfAborted();
+    if (session.expires <= Date.now()) fail("Tunnel owner lease expired");
+    for (const name of names) {
+      const failure = this.transport.failure(session.env.Identity.ID, name);
+      if (failure) throw failure;
+      if (!this.transport.running(session.env.Identity.ID, name))
+        fail("Tunnel connector exited before group activation", "transient");
+    }
+    session.enabled = true;
+    this.transport.renew(session.env, session.id, session.expires, true);
   }
   async open(
     ctx: Context,
@@ -100,27 +130,33 @@ export class TunnelSessions implements TunnelHooks {
         const urls: Record<string, string> = {};
         await this.locks.use([env.Identity.ID], scope.signal, async () => {
           if (env.Status !== "running") fail("Environment changed before tunnel startup");
-          for (const name of names)
-            urls[name] = (await this.transport.reserve(scope, env, name, provider)).URL;
+          await prepareTogether(
+            scope,
+            names.map((name) => async (task) => {
+              urls[name] = (await this.transport.reserve(task, env, name, provider)).URL;
+            }),
+          );
           if (new Set(names.map((name) => env.tunnels?.[name].Provider)).size !== 1)
             fail(
               "All services in a foreground session must use the same provider; release or migrate older reservations first",
             );
-          await this.manager.configureTunnel(scope, env, urls);
-          for (const name of names)
-            await this.transport.start(scope, env, name, {
-              id,
-              expires: session.expires,
-              enabled: () => session.enabled && session.expires > Date.now(),
-            });
+          await prepareTogether(scope, [
+            (task) => this.manager.configureTunnel(task, env, urls),
+            ...names.map(
+              (name) => (task: Context) =>
+                this.transport.start(task, env, name, {
+                  id,
+                  expires: session.expires,
+                  enabled: () => session.enabled && session.expires > Date.now(),
+                }),
+            ),
+          ]);
           if ((await detectIdentity(scope, env.Root, env.Identity.Project)).ID !== baseline.ID)
             fail("Workspace branch changed during tunnel startup");
-          scope.signal.throwIfAborted();
-          session.enabled = true;
-          this.transport.renew(env, id, session.expires, true);
+          this.enable(session, names);
         });
         ctx.signal.removeEventListener("abort", cancel);
-        resolveReady(urls);
+        resolveReady(Object.fromEntries(names.map((name) => [name, urls[name]])));
         let retryAt = 0,
           retryDelay = 1000;
         while (true) {
@@ -138,14 +174,18 @@ export class TunnelSessions implements TunnelHooks {
           this.transport.renew(env, id, session.expires, false);
           if (Date.now() < retryAt) continue;
           try {
-            for (const name of missing)
-              await this.transport.start(scope, env, name, {
-                id,
-                expires: session.expires,
-                enabled: () => session.enabled && session.expires > Date.now(),
-              });
-            session.enabled = true;
-            this.transport.renew(env, id, session.expires, true);
+            await prepareTogether(
+              scope,
+              missing.map(
+                (name) => (task) =>
+                  this.transport.start(task, env, name, {
+                    id,
+                    expires: session.expires,
+                    enabled: () => session.enabled && session.expires > Date.now(),
+                  }),
+              ),
+            );
+            this.enable(session, names);
             retryDelay = 1000;
           } catch (error) {
             scope.signal.throwIfAborted();
