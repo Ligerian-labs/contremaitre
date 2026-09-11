@@ -21,6 +21,7 @@ import {
   loadManifest,
   order,
   prepareManifest,
+  projectName,
   readEnv,
   safePath,
 } from "@contremaitre/projects/config";
@@ -31,6 +32,7 @@ import { DevelopmentSource } from "./development.js";
 import { applyDriverReply, invokeDriver, snapshotDriver } from "./driver.js";
 import {
   type Environment,
+  httpEndpoints,
   type Request,
   resourceName,
   type ServiceState,
@@ -43,6 +45,7 @@ export interface PreparedDeploy {
   manifest: Manifest;
   request: Request;
   sourceId?: string;
+  configurationLog?: string[];
 }
 export interface TunnelHooks {
   stop(ctx: Context, env: Environment, name: string, release: boolean): Promise<void>;
@@ -171,14 +174,30 @@ export class Manager {
     return keys(this.state.Environments).map((id) => this.view(this.state.Environments[id]));
   }
   async current(ctx: Context, root: string, branch?: string) {
-    const manifest = loadManifest(root);
-    return detectIdentity(ctx, root, manifest.project, branch);
+    return detectIdentity(ctx, root, projectName(root), branch);
   }
   async prepare(ctx: Context, request: Request): Promise<PreparedDeploy> {
     const root = resolve(request.root ?? process.cwd());
-    const manifest = prepareManifest(root, loadManifest(root));
+    const configurationLog: string[] = [];
+    const manifest = prepareManifest(
+      root,
+      loadManifest(root, {
+        refresh: true,
+        log: (event) => {
+          configurationLog.push(event);
+          ctx.log(event);
+        },
+      }),
+    );
     const identity = await detectIdentity(ctx, root, manifest.project, request.branch);
-    return { root, manifest, identity, request, sourceId: this.state.Main[identity.Project] };
+    return {
+      root,
+      manifest,
+      identity,
+      request,
+      sourceId: this.state.Main[identity.Project],
+      configurationLog,
+    };
   }
   fresh(identity: Identity, root: string): Environment {
     return {
@@ -209,6 +228,7 @@ export class Manager {
         "The selected main source was deleted while this deployment was queued; deploy again to select a source",
       );
     phase(ctx, "Reading project configuration");
+    for (const event of p.configurationLog ?? []) ctx.log(event);
     const { root, identity, manifest, request } = p;
     let env = this.state.Environments[identity.ID];
     if (this.tunnels?.sharing?.(identity.ID) || env?.tunnel_configuration)
@@ -347,8 +367,8 @@ export class Manager {
               Image: images[name],
               IP: old?.IP ?? "",
               Volume: old?.Volume ?? "",
-              Port: s.port ?? 0,
-              HTTP: s.http ?? false,
+              Port: s.port || s.endpoints?.[keys(s.endpoints)[0]] || 0,
+              HTTP: !!s.http || Object.keys(s.endpoints ?? {}).length > 0,
               Spec: s,
               Initialized: old?.Initialized ?? false,
             },
@@ -580,9 +600,10 @@ export class Manager {
     }
   }
   localURL(env: Environment, name: string) {
+    name = this.endpointName(env, name);
     const driverURL = env.Services[name]?.url;
     if (driverURL && this.protocol === "http") return driverURL;
-    const first = keys(env.Services).find((n) => env.Services[n].HTTP);
+    const first = keys(httpEndpoints(env))[0];
     const host = driverURL
       ? new URL(driverURL).hostname
       : `${first === name ? "" : `${name}.`}${env.Identity.Host}`;
@@ -590,7 +611,14 @@ export class Manager {
     return `${this.protocol}://${host}${this.httpPort === defaultPort ? "" : `:${this.httpPort}`}`;
   }
   browserURL(env: Environment, name: string) {
+    name = this.endpointName(env, name);
     return env.tunnel_configuration?.urls[name] ?? this.localURL(env, name);
+  }
+  private endpointName(env: Environment, name: string) {
+    const endpoints = httpEndpoints(env);
+    return endpoints[name]
+      ? name
+      : (keys(endpoints).find((endpoint) => endpoints[endpoint].service.Name === name) ?? name);
   }
   async configureTunnel(ctx: Context, env: Environment, urls: Record<string, string>) {
     if (env.driver)
@@ -683,9 +711,10 @@ export class Manager {
         .replace(
           /\{\{([a-z][a-z0-9-]*)\.(host|port|url|local_url|browser_url|browser_origins)\}\}/g,
           (_token, name: string, property: string) => {
-            const dep = env.Services[name];
+            const endpoint = httpEndpoints(env)[name];
+            const dep = endpoint?.service ?? env.Services[name];
             if (property === "browser_origins") {
-              if (!dep?.HTTP) fail(`${s.Name}: browser_origins requires HTTP service ${name}`);
+              if (!endpoint) fail(`${s.Name}: browser_origins requires HTTP service ${name}`);
               return JSON.stringify([
                 ...new Set(
                   [this.localURL(env, name), this.browserURL(env, name)].map(
@@ -695,14 +724,16 @@ export class Manager {
               ]);
             }
             if (property === "browser_url") {
-              if (!dep?.HTTP) fail(`${s.Name}: browser_url requires HTTP service ${name}`);
+              if (!endpoint) fail(`${s.Name}: browser_url requires HTTP service ${name}`);
               return this.browserURL(env, name);
             }
             if (dep && property === "local_url") return this.localURL(env, name);
-            if (!dep?.IP) fail(`${s.Name}: ${name} is not ready; declare depends_on`);
-            if (property === "host") return dep.IP;
-            if (property === "port") return String(dep.Port);
-            const host = `${dep.IP.includes(":") ? `[${dep.IP}]` : dep.IP}:${dep.Port}`;
+            const ip = dep === s ? "127.0.0.1" : dep?.IP;
+            if (!dep || !ip) fail(`${s.Name}: ${name} is not ready; declare depends_on`);
+            const port = endpoint?.port ?? dep.Port;
+            if (property === "host") return ip;
+            if (property === "port") return String(port);
+            const host = `${ip.includes(":") ? `[${ip}]` : ip}:${port}`;
             if (dep.Spec.kind === "postgres")
               return `postgresql://app:${encodeURIComponent(env.credentials?.[name] ?? "")}@${host}/app?sslmode=disable`;
             if (dep.Spec.kind === "redis") return `redis://${host}/0`;
@@ -721,8 +752,8 @@ export class Manager {
         ),
       ),
     ]);
-    if (env.tunnel_configuration?.urls[s.Name])
-      values.CONTREMAITRE_PUBLIC_URL = env.tunnel_configuration.urls[s.Name];
+    const publicURL = env.tunnel_configuration?.urls[this.endpointName(env, s.Name)];
+    if (publicURL) values.CONTREMAITRE_PUBLIC_URL = publicURL;
     return values;
   }
   async volumes(ctx: Context, env: Environment, s: ServiceState) {
@@ -882,6 +913,9 @@ export class Manager {
               });
             else if (s.Port && !(await tcpReady(s.IP, s.Port, signal)))
               throw Error("Port unavailable");
+            for (const port of Object.values(s.Spec.endpoints ?? {}))
+              if (!(await tcpReady(s.IP, port, signal)))
+                throw Error(`Endpoint port ${port} unavailable`);
             s.ready = true;
             return;
           } catch (e) {

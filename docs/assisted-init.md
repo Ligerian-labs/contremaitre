@@ -2,7 +2,9 @@
 
 `contremaitre init` selects a coding agent and discusses the current development stack. Answer with a listed number or free text. On an existing manifest, the first question asks what should change. Ctrl-C or EOF cancels without replacing the manifest. Invalid agent output gets at most two correction attempts. Concurrent manifest edits cause init to exit without overwriting them.
 
-Use `contremaitre init --no-ai` for conventional detection in scripts. `--compose FILE` selects Compose input for either mode. Agent-assisted mode supports the repository's active stack through inspection and questions; it does not execute Compose.
+Development setup writes a [compact app config and a portable lock](compact-config.md). Deployment refreshes the lock automatically after explicit config edits, without repeating discovery. Existing version 1 manifests remain supported.
+
+Use `contremaitre init --no-ai` for conventional detection in scripts or to resolve an existing compact config. `--compose FILE` selects Compose input for either mode. Agent-assisted mode supports the repository's active stack through inspection and questions; it does not execute Compose.
 
 ## Agent configuration
 
@@ -76,7 +78,7 @@ Run `bun scripts/verify-development.ts` for an opt-in test against the native Ap
 - Plain `init` uses a coding agent; `--no-ai` retains conventional initialization.
 - CLI selection overrides saved selection, which overrides local discovery. Support Codex, Claude Code, Pi and OpenCode. Remember an interactive discovery choice. Missing agents explain configuration and the non-AI command.
 - Contremaitre owns the terminal, presents compact numbered choices, and accepts one answer at a time, including free text. Agents inspect the active development stack through bounded file requests. Compose takes precedence for the selected stack, not unrelated deployment profiles.
-- Initialization only writes a validated manifest. Existing manifests enter an update conversation. Cancellation, invalid output and concurrent edits preserve the existing file.
+- Initialization writes a validated config and, for compact apps, a lock containing launch settings. Existing manifests enter an update conversation. Cancellation, invalid output and concurrent edits preserve existing files.
 - Development services run inside managed containers. Source changes, additions and deletions reach the Linux filesystem and trigger native watchers. Dependencies are installed on deployment. Package manifests and lockfiles remain unchanged until redeployment.
 - Sources, dependencies and generated outputs are isolated per environment and service. Sync excludes host dependencies, credentials, VCS state and generated outputs. Stop, deletion and hub shutdown stop synchronization; hub restart resumes it.
 

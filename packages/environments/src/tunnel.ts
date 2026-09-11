@@ -17,7 +17,7 @@ import { run } from "@contremaitre/execution/process";
 import { closeServer, type Lookup, listen, proxyServer } from "@contremaitre/routing/proxy";
 import { Schema } from "effect";
 import type { Manager } from "./manager.js";
-import type { Environment, TunnelReservation } from "./model.js";
+import { type Environment, httpEndpoints, type TunnelReservation } from "./model.js";
 import { providerConfig } from "./tunnel-provider.js";
 
 const readinessSchema = Schema.Struct({ version: Schema.Literal(2), ready: Schema.Boolean });
@@ -125,7 +125,7 @@ export class Tunnels {
   ): Promise<TunnelReservation> {
     return this.locks.use([`${env.Identity.ID}/${name}`], ctx.signal, async () => {
       if (this.closing) fail("Hub is shutting down");
-      if (!env.Services[name]?.HTTP) fail(`Service ${name} is not HTTP`);
+      if (!httpEndpoints(env)[name]) fail(`Service ${name} is not HTTP`);
       env.tunnels ??= {};
       let reservation = env.tunnels[name];
       if (reservation && provider && reservation.Provider !== provider)
@@ -281,9 +281,7 @@ export class Tunnels {
           reservation_id: reservation.ID,
           upstream: `http://127.0.0.1:${port}`,
           session_id: lease.id,
-          service_ids: Object.keys(env.Services)
-            .filter((n) => env.Services[n].HTTP)
-            .sort(),
+          service_ids: Object.keys(httpEndpoints(env)).sort(),
           expires_at: lease.expires,
           enabled: false,
         })}\n`,

@@ -97,8 +97,9 @@ export function deploy(
     const health = (await call(ctx, home, "health")) as {
       deployment_progress?: number;
       development?: number;
+      compact_config?: number;
     };
-    if (health.deployment_progress !== 1 || health.development !== 1)
+    if (health.deployment_progress !== 1 || health.development !== 1 || health.compact_config !== 1)
       fail(
         "The running hub needs an update; restart it with this Contremaitre binary before deploying",
       );

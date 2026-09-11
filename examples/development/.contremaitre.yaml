@@ -1,0 +1,6 @@
+project: development-example
+apps:
+  app:
+    endpoints: {api: 3000, web: 3001}
+    environment:
+      API_URL: '{{api.browser_url}}'

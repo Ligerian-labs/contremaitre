@@ -11,7 +11,7 @@ import { sleep } from "@contremaitre/execution/sleep";
 import { detectIdentity } from "@contremaitre/projects/config";
 import type { Lookup } from "@contremaitre/routing/proxy";
 import type { Manager, TunnelHooks } from "./manager.js";
-import type { Environment } from "./model.js";
+import { type Environment, httpEndpoints } from "./model.js";
 import { Tunnels } from "./tunnel.js";
 
 export const tunnelLeaseMs = 15_000;
@@ -97,7 +97,7 @@ export class TunnelSessions implements TunnelHooks {
     if (env.driver)
       fail("Foreground sharing requires native services; drivers cannot apply URL configuration");
     if (env.tunnel_configuration) fail("Tunnel configuration recovery is pending; restart the hub");
-    const names = keys(env.Services).filter((name) => env.Services[name].HTTP);
+    const names = keys(httpEndpoints(env));
     if (!names.length) fail("This environment has no HTTP services to share");
     this.transport.reset(env);
     const session: Session = {

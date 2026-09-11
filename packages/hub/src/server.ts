@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { join } from "node:path";
 import { Apple, type Runtime } from "@contremaitre/environments/apple";
 import { Manager } from "@contremaitre/environments/manager";
-import { requestSchema } from "@contremaitre/environments/model";
+import { httpEndpoints, requestSchema } from "@contremaitre/environments/model";
 import { Store } from "@contremaitre/environments/store";
 import { TunnelSessions } from "@contremaitre/environments/tunnel-session";
 import { context, decode, fail, keys, message } from "@contremaitre/execution/context";
@@ -53,15 +53,15 @@ export interface ServerOptions {
 export function routes(m: Manager, host: string): Route | undefined {
   for (const env of Object.values(m.state.Environments)) {
     let first = true;
-    for (const name of keys(env.Services)) {
-      const s = env.Services[name];
-      if (!s.HTTP) continue;
+    const endpoints = httpEndpoints(env);
+    for (const name of keys(endpoints)) {
+      const { service: s, port } = endpoints[name];
       const route: Route = {
         upstream:
           ["running", "deploying", "failed"].includes(env.Status) &&
           (s.ready ?? env.Status === "running") &&
           s.IP
-            ? `http://${s.IP.includes(":") ? `[${s.IP}]` : s.IP}:${s.Port}`
+            ? `http://${s.IP.includes(":") ? `[${s.IP}]` : s.IP}:${port}`
             : "",
       };
       const hosts = [`${env.Identity.ID}/${name}`, new URL(m.localURL(env, name)).hostname];
@@ -233,6 +233,7 @@ export async function startServer(
             deployment_progress: 1,
             local_https: options.httpsPort !== undefined,
             development: 1,
+            compact_config: 1,
             agent_workflow: 1,
             foreground_tunnels: 1,
             saas_onboarding: 1,
@@ -480,8 +481,8 @@ export async function startServer(
       const snapshot = (): LocalRoute[] => {
         const hosts = new Set<string>();
         for (const env of Object.values(manager.state.Environments)) {
-          for (const [name, service] of Object.entries(env.Services))
-            if (service.HTTP) hosts.add(new URL(manager.localURL(env, name)).hostname);
+          for (const name of Object.keys(httpEndpoints(env)))
+            hosts.add(new URL(manager.localURL(env, name)).hostname);
           if (manager.state.Main[env.Identity.Project] === env.Identity.ID)
             hosts.add(`main.${env.Identity.Project}.localhost`);
         }

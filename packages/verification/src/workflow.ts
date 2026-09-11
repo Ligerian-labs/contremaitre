@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises";
 import { join } from "node:path";
 import { driverProcess, invokeDriver } from "@contremaitre/environments/driver";
 import type { Manager } from "@contremaitre/environments/manager";
-import type { Environment, Request } from "@contremaitre/environments/model";
+import { type Environment, httpEndpoints, type Request } from "@contremaitre/environments/model";
 import { type Context, fail, HubError, message } from "@contremaitre/execution/context";
 import { run } from "@contremaitre/execution/process";
 import type { Operations } from "@contremaitre/operations/operations";
@@ -28,9 +28,7 @@ export class AgentWorkflow {
   }
   urls(env: Environment) {
     return Object.fromEntries(
-      Object.entries(env.Services)
-        .filter(([, s]) => s.HTTP)
-        .map(([name]) => [name, this.manager.localURL(env, name)]),
+      Object.entries(httpEndpoints(env)).map(([name]) => [name, this.manager.localURL(env, name)]),
     );
   }
   async ready(ctx: Context, env: Environment) {
@@ -73,6 +71,7 @@ export class AgentWorkflow {
           : []),
       ],
       async (operation, id) => {
+        for (const event of p.configurationLog ?? []) operation.log(event);
         const before = await sourceIdentity(operation, p.root);
         const prepared = await this.manager.prepare(operation, req);
         if (prepared.identity.ID !== p.identity.ID || prepared.sourceId !== p.sourceId)
@@ -273,15 +272,19 @@ export class AgentWorkflow {
     const urls =
       check.service && !env.driver
         ? Object.fromEntries(
-            Object.entries(env.Services)
-              .filter(([, s]) => s.HTTP)
-              .map(([name, s]) => [
-                name,
-                `http://${s.IP.includes(":") ? `[${s.IP}]` : s.IP}:${s.Port}`,
-              ]),
+            Object.entries(httpEndpoints(env)).map(([name, { service: s, port }]) => [
+              name,
+              `http://${s.IP.includes(":") ? `[${s.IP}]` : s.IP}:${port}`,
+            ]),
           )
         : this.urls(env);
-    const base = (check.service ? urls[check.service] : undefined) ?? Object.values(urls)[0] ?? "";
+    const selected =
+      check.service && !env.driver
+        ? Object.entries(httpEndpoints(env)).find(
+            ([, endpoint]) => endpoint.service.Name === check.service,
+          )?.[0]
+        : check.service;
+    const base = (selected ? urls[selected] : undefined) ?? Object.values(urls)[0] ?? "";
     const values = {
       CONTREMAITRE_ENVIRONMENT: env.Identity.ID,
       CONTREMAITRE_URLS: JSON.stringify(urls),
