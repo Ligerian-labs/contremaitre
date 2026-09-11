@@ -14,6 +14,7 @@ import {
   serviceContext,
 } from "@contremaitre/execution/context";
 import { privateEnv, removeFile } from "@contremaitre/execution/files";
+import { Semaphore } from "@contremaitre/execution/locks";
 import { sleep } from "@contremaitre/execution/sleep";
 import {
   detectIdentity,
@@ -561,26 +562,46 @@ export class Manager {
     env.tunnel_configuration.pending = [...pending];
     this.save();
     // Persist restart intent before replacing any process, including on rollback.
+    const controller = new AbortController();
+    const scope = { ...ctx, signal: AbortSignal.any([ctx.signal, controller.signal]) };
+    const configuration = env.tunnel_configuration;
+    const slots = new Semaphore(4);
+    const tasks = new Map<string, Promise<void>>();
     for (const name of order(
       Object.fromEntries(keys(env.Services).map((n) => [n, env.Services[n].Spec])),
     )) {
       const service = env.Services[name];
-      if (service.Spec.kind !== "app") continue;
-      if (!pending.has(name) && before.get(name) === this.deploymentFingerprint(env, service))
-        continue;
-      pending.add(name);
-      env.tunnel_configuration.pending = [...pending];
-      service.ready = false;
-      this.save();
-      await this.stopDevelopment(service.Container);
-      await this.runtime.stop(ctx, service.Container);
-      await this.runtime.remove(ctx, service.Container);
-      await this.startService(ctx, env, service, false);
-      service.deployment = this.deploymentFingerprint(env, service);
-      pending.delete(name);
-      env.tunnel_configuration.pending = [...pending];
-      this.save();
+      tasks.set(
+        name,
+        (async () => {
+          await Promise.all((service.Spec.depends_on ?? []).map((dep) => tasks.get(dep)));
+          if (service.Spec.kind !== "app") return;
+          await slots.use(scope.signal, async () => {
+            if (!pending.has(name) && before.get(name) === this.deploymentFingerprint(env, service))
+              return;
+            pending.add(name);
+            configuration.pending = [...pending];
+            service.ready = false;
+            this.save();
+            await this.stopDevelopment(service.Container);
+            await this.runtime.stop(scope, service.Container);
+            await this.runtime.remove(scope, service.Container);
+            await this.startService(scope, env, service, false);
+            scope.signal.throwIfAborted();
+            service.deployment = this.deploymentFingerprint(env, service);
+            pending.delete(name);
+            configuration.pending = [...pending];
+            this.save();
+          });
+        })().catch((error) => {
+          controller.abort(error);
+          throw error;
+        }),
+      );
     }
+    // Rollback must not race a sibling that is still stopping or starting a container.
+    await Promise.allSettled(tasks.values());
+    scope.signal.throwIfAborted();
     if (!keys(urls).length) delete env.tunnel_configuration;
     this.save();
   }
