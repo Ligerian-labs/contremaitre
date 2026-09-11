@@ -78,6 +78,9 @@ export class DevelopmentSource {
   paths() {
     return Object.keys(this.files);
   }
+  removedPaths() {
+    return [...this.pending.removed];
+  }
   private save() {
     atomicWrite(
       join(this.stateDirectory, "files.json"),

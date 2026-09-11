@@ -2,7 +2,7 @@ import { createReadStream } from "node:fs";
 import * as fs from "node:fs/promises";
 import { createConnection } from "node:net";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import type { Readable } from "node:stream";
 import {
   type Context,
@@ -18,7 +18,7 @@ import { type RunOptions, run } from "@contremaitre/execution/process";
 import { sleep } from "@contremaitre/execution/sleep";
 import type { Service } from "@contremaitre/projects/model";
 import { Schema } from "effect";
-import { prepareBuildContext } from "./build-context.js";
+import { fingerprintBuildContext, prepareBuildContext } from "./build-context.js";
 import type { BuildRecord } from "./model.js";
 export interface Inspection {
   IP: string;
@@ -211,14 +211,43 @@ export class Apple implements Runtime {
         },
       );
       const command = ["sh", "-eu", "-c", 'mkdir -p "$1"; tar -xf - -C "$1"', "sync", target];
+      const removeDeleted = 'for p do if [ ! -d "$p" ]; then rm -f -- "$p"; fi; done';
+      const replaceShapes =
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: POSIX shell parameter expansion must remain literal.
+        'for p do if [ -d "$p" ]; then rm -rf -- "$p"; fi; d=${p%/*}; while [ ! -d "$d" ]; do if [ -e "$d" ]; then rm -f -- "$d"; break; fi; d=${d%/*}; d=${d:-/}; done; done';
       if (initial) {
+        // A reused source volume retains dependencies and generated files. Remove
+        // deleted tracked inputs and resolve file/directory changes before extraction.
+        const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+        const script: string[] = [];
+        for (const [paths, action] of [
+          [removed, removeDeleted],
+          [changed, replaceShapes],
+        ] as const)
+          for (let i = 0; i < paths.length; i += 100)
+            script.push(
+              `set -- ${paths
+                .slice(i, i + 100)
+                .map((p) => quote(join(target, p)))
+                .join(" ")}; ${action}`,
+            );
+        script.push(`mkdir -p ${quote(target)}; tar -xf - -C ${quote(target)}`);
+        // The image may run as a non-root user. The parent state directory remains private.
+        await fs.chmod(temp, 0o755);
+        await fs.writeFile(join(temp, "apply.sh"), script.join("\n"), { mode: 0o644 });
+        const control = join("/tmp", basename(temp));
         await this.remove(ctx, `${spec.name}-sync`);
         await this.run(ctx, {
           ...spec,
           name: `${spec.name}-sync`,
           task: true,
           stdin: createReadStream(archive),
-          service: { ...spec.service, working_dir: target, command },
+          volumes: { ...spec.volumes, [temp]: control },
+          service: {
+            ...spec.service,
+            working_dir: target,
+            command: ["sh", "-eu", join(control, "apply.sh")],
+          },
         });
       } else {
         for (let i = 0; i < removed.length; i += 100)
@@ -226,7 +255,7 @@ export class Apple implements Runtime {
             "sh",
             "-eu",
             "-c",
-            'for p do if [ ! -d "$p" ]; then rm -f -- "$p"; fi; done',
+            removeDeleted,
             "sync",
             ...removed.slice(i, i + 100).map((p) => join(target, p)),
           ]);
@@ -235,7 +264,7 @@ export class Apple implements Runtime {
             "sh",
             "-eu",
             "-c",
-            'for p do if [ -d "$p" ]; then rm -rf -- "$p"; fi; d=$(dirname "$p"); while [ ! -d "$d" ]; do if [ -e "$d" ]; then rm -f -- "$d"; break; fi; d=$(dirname "$d"); done; done',
+            replaceShapes,
             "sync",
             ...changed.slice(i, i + 100).map((p) => join(target, p)),
           ]);
@@ -267,11 +296,10 @@ export class Apple implements Runtime {
     tag: string,
     previous?: BuildRecord,
   ): Promise<BuildRecord> {
-    phase(ctx, "Preparing filtered build context");
-    const staged = await prepareBuildContext(ctx, root, dockerfile);
-    try {
-      phase(ctx, `Build context: ${staged.files} files, ${(staged.bytes / 1e6).toFixed(2)} MB`);
-      if (previous?.digest === staged.digest) {
+    if (previous) {
+      phase(ctx, "Checking filtered build inputs");
+      const current = await fingerprintBuildContext(ctx, root, dockerfile);
+      if (previous.digest === current.digest) {
         try {
           await this.call(ctx, "image", "inspect", previous.image);
           phase(ctx, `Reusing unchanged image ${previous.image}`);
@@ -280,6 +308,11 @@ export class Apple implements Runtime {
           if (!missing(e)) throw e;
         }
       }
+    }
+    phase(ctx, "Preparing filtered build context");
+    const staged = await prepareBuildContext(ctx, root, dockerfile);
+    try {
+      phase(ctx, `Build context: ${staged.files} files, ${(staged.bytes / 1e6).toFixed(2)} MB`);
       phase(ctx, "Waiting for a builder slot");
       return await this.builder.use(ctx.signal, () =>
         this.useBuilder(ctx, async (resources) => {

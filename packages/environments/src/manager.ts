@@ -265,6 +265,7 @@ export class Manager {
     const scopes = Object.fromEntries(names.map((name) => [name, serviceContext(ctx, name)]));
     const errors: string[] = [];
     const failed = new Set<string>();
+    const sources = new Map<string, Promise<DevelopmentSource | undefined>>();
     const attemptService = async (name: string, work: () => Promise<void>) => {
       try {
         ctx.signal.throwIfAborted();
@@ -333,6 +334,7 @@ export class Manager {
           );
       }
       const previous = e.Services;
+      const previousRoot = e.Root;
       const services: Environment["Services"] = Object.fromEntries(
         names.map((name) => {
           const s = manifest.services[name],
@@ -355,23 +357,40 @@ export class Manager {
       );
       const candidate = { ...e, Root: root, Services: services };
       const retained = new Set<string>();
-      for (const name of names) {
-        const old = previous[name],
+      const inspections = new Semaphore(4);
+      const reusable = await Promise.allSettled(
+        names.map(async (name) => {
+          const old = previous[name],
+            s = services[name];
+          if (
+            !old?.deployment ||
+            s.Spec.dev ||
+            request.rebuild ||
+            !e.CloneComplete ||
+            old.deployment !== this.deploymentFingerprint(candidate, s)
+          )
+            return false;
+          return inspections.use(ctx.signal, async () => {
+            const inspected = await this.runtime.inspect(scopes[name], old.Container);
+            return !!inspected?.Running && !!inspected.IP && inspected.IP === old.IP;
+          });
+        }),
+      );
+      const inspectionError = reusable.find((result) => result.status === "rejected");
+      if (inspectionError?.status === "rejected") throw inspectionError.reason;
+      // Inspection can overlap; retaining a dependent still requires its dependencies to be retained.
+      for (const [index, name] of names.entries()) {
+        const result = reusable[index],
           s = services[name];
         if (
-          !old?.deployment ||
-          s.Spec.dev ||
-          request.rebuild ||
-          !e.CloneComplete ||
-          s.Spec.depends_on?.some((dep) => !retained.has(dep))
-        )
-          continue;
-        const inspected = await this.runtime.inspect(scopes[name], old.Container);
-        if (!inspected?.Running || !inspected.IP || inspected.IP !== old.IP) continue;
-        if (old.deployment !== this.deploymentFingerprint(candidate, s)) continue;
-        retained.add(name);
-        s.deployment = old.deployment;
-        s.ready = true;
+          result.status === "fulfilled" &&
+          result.value &&
+          !s.Spec.depends_on?.some((dep) => !retained.has(dep))
+        ) {
+          retained.add(name);
+          s.deployment = previous[name].deployment;
+          s.ready = true;
+        }
       }
       ctx.signal.throwIfAborted();
       const changing = names.filter((name) => !retained.has(name));
@@ -409,11 +428,29 @@ export class Manager {
       e.Services = services;
       e.Root = root;
       this.save();
+      // Host source scans do not need live dependency addresses. Start them while
+      // infrastructure and prerequisite applications are becoming ready.
+      const sourceSlots = new Semaphore(4);
+      for (const name of names.filter((name) => services[name].Spec.dev)) {
+        sources.set(
+          name,
+          (async () => {
+            let source: DevelopmentSource | undefined;
+            await attemptService(name, async () => {
+              source = await sourceSlots.use(ctx.signal, () =>
+                this.prepareDevelopment(scopes[name], e, services[name], true),
+              );
+            });
+            return source;
+          })(),
+        );
+      }
       const tasks = new Map<string, Promise<void>>();
       const startGroup = async (apps: boolean) => {
         for (const name of names.filter((name) => (services[name].Spec.kind === "app") === apps)) {
           const s = services[name],
             scope = scopes[name];
+          if (failed.has(name)) continue;
           const dependencies = s.Spec.depends_on ?? [];
           progress(
             scope,
@@ -424,6 +461,8 @@ export class Manager {
             name,
             (async () => {
               await Promise.all(dependencies.map((dep) => tasks.get(dep)));
+              const source = await sources.get(name);
+              if (failed.has(name)) return;
               if (dependencies.some((dep) => failed.has(dep))) {
                 failed.add(name);
                 progress(
@@ -443,7 +482,16 @@ export class Manager {
                     s.HTTP ? this.localURL(e, name) : undefined,
                   );
                 } else {
-                  await this.startService(scope, e, s, apps);
+                  await this.startService(scope, e, s, apps, {
+                    source,
+                    resetSource:
+                      !!request.rebuild ||
+                      previousRoot !== root ||
+                      !previous[name]?.deployment ||
+                      !previous[name]?.Spec.dev ||
+                      previous[name].Image !== s.Image ||
+                      hash(JSON.stringify(previous[name].Spec)) !== hash(JSON.stringify(s.Spec)),
+                  });
                   s.deployment = this.deploymentFingerprint(e, s);
                   this.save();
                   progress(scope, "ready", "ready", s.HTTP ? this.localURL(e, name) : undefined);
@@ -476,6 +524,7 @@ export class Manager {
       e.UpdatedAt = now();
       this.save();
     } catch (error) {
+      await Promise.allSettled(sources.values());
       e.Error = message(error);
       e.Status = mutated ? "failed" : previousStatus;
       e.UpdatedAt = now();
@@ -694,7 +743,30 @@ export class Manager {
     }
     return volumes;
   }
-  async startService(ctx: Context, env: Environment, s: ServiceState, initialize: boolean) {
+  private async prepareDevelopment(
+    ctx: Context,
+    env: Environment,
+    s: ServiceState,
+    initialize: boolean,
+  ) {
+    if (!s.Spec.dev) return fail("Development source requires dev configuration");
+    phase(ctx, "preparing development source");
+    const source = new DevelopmentSource(
+      env.Root,
+      join(this.store.home, "sources", env.Identity.ID, s.Name),
+      s.Spec.dev,
+    );
+    await source.load();
+    await source.refresh(ctx, initialize);
+    return source;
+  }
+  async startService(
+    ctx: Context,
+    env: Environment,
+    s: ServiceState,
+    initialize: boolean,
+    options: { source?: DevelopmentSource; resetSource?: boolean } = {},
+  ) {
     ctx = serviceContext(ctx, s.Name);
     phase(ctx, `resources: ${s.Spec.cpus ?? 1} CPU, ${s.Spec.memory ?? "512M"} memory`);
     const envFile = privateEnv(join(this.store.home, "tmp"), this.serviceEnv(env, s));
@@ -716,18 +788,19 @@ export class Manager {
           env.Volumes.push(volume);
           this.save();
         }
-        if (initialize) await this.runtime.removeVolume(ctx, volume);
+        if (options.resetSource ?? initialize) await this.runtime.removeVolume(ctx, volume);
         await this.runtime.volume(ctx, volume);
         volumes[volume] = s.Spec.dev.target;
-        source = new DevelopmentSource(
-          env.Root,
-          join(this.store.home, "sources", env.Identity.ID, s.Name),
-          s.Spec.dev,
-        );
-        await source.load();
-        await source.refresh(ctx, initialize);
+        source = options.source ?? (await this.prepareDevelopment(ctx, env, s, initialize));
         phase(ctx, "copying development source");
-        await this.runtime.sync(ctx, spec, source.directory, source.paths(), [], true);
+        await this.runtime.sync(
+          ctx,
+          spec,
+          source.directory,
+          source.paths(),
+          source.removedPaths(),
+          true,
+        );
         source.acknowledge();
       }
       if (initialize) {

@@ -99,6 +99,7 @@ test("development deployment installs before startup, resumes sync and stops it 
     root = join(home, "project");
   mkdirSync(root);
   writeFileSync(join(root, "main.ts"), "one");
+  writeFileSync(join(root, "obsolete.ts"), "remove on redeploy");
   const runtime = new FakeRuntime();
   let manager = new Manager(new Store(join(home, "state")), runtime);
   const manifest = parseManifest(
@@ -122,10 +123,29 @@ test("development deployment installs before startup, resumes sync and stops it 
     const installed = runtime.calls.filter(
       (c) => c === `run ${env.Services.api.Container}-task`,
     ).length;
+    const resets = runtime.calls.filter((c) => c.startsWith("remove volume ")).length;
+    rmSync(join(root, "obsolete.ts"));
     await manager.deploy(context(), { root, identity, manifest, request: {} });
+    expect(runtime.calls.filter((c) => c.startsWith("remove volume ")).length).toBe(resets);
+    expect(runtime.calls.some((c) => c.includes("-obsolete.ts"))).toBe(true);
     expect(runtime.calls.filter((c) => c === `run ${env.Services.api.Container}-task`).length).toBe(
       installed + 1,
     );
+    await manager.deploy(context(), { root, identity, manifest, request: { rebuild: true } });
+    expect(runtime.calls.filter((c) => c.startsWith("remove volume ")).length).toBe(resets + 1);
+    manifest.services.api = { ...manifest.services.api, image: "updated-runtime" };
+    await manager.deploy(context(), { root, identity, manifest, request: {} });
+    expect(runtime.calls.filter((c) => c.startsWith("remove volume ")).length).toBe(resets + 2);
+    manifest.services.api = { ...manifest.services.api, image: "another-runtime" };
+    writeFileSync(join(home, "outside"), "outside");
+    symlinkSync(join(home, "outside"), join(root, "escape"));
+    await expect(
+      manager.deploy(context(), { root, identity, manifest, request: {} }),
+    ).rejects.toThrow("escapes");
+    expect(runtime.calls.filter((c) => c.startsWith("remove volume ")).length).toBe(resets + 2);
+    rmSync(join(root, "escape"));
+    await manager.deploy(context(), { root, identity, manifest, request: {} });
+    expect(runtime.calls.filter((c) => c.startsWith("remove volume ")).length).toBe(resets + 3);
     await manager.stopDevelopment();
     manager = new Manager(new Store(join(home, "state")), runtime);
     await manager.recover(context());
@@ -140,6 +160,55 @@ test("development deployment installs before startup, resumes sync and stops it 
     await manager.down(context(), manager.resolve(identity.ID), true);
     expect(existsSync(join(home, "state", "sources", identity.ID))).toBe(false);
   } finally {
+    await manager.stopDevelopment();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("development source preparation overlaps dependency startup", async () => {
+  const home = mkdtempSync(join(tmpdir(), "cm-dev-prefetch-"));
+  const root = join(home, "project");
+  mkdirSync(root);
+  writeFileSync(join(root, "main.ts"), "source");
+  const runtime = new FakeRuntime();
+  const manager = new Manager(new Store(join(home, "state")), runtime);
+  const identity = newIdentity("dev", root, "main");
+  const manifest = parseManifest(`version: 1
+project: dev
+services:
+  api:
+    image: app
+    command: [bun, main.ts]
+    working_dir: /app
+    ready: ["true"]
+    dev: {source: '.', target: /app}
+  web:
+    image: app
+    command: [bun, main.ts]
+    working_dir: /app
+    ready: ["true"]
+    depends_on: [api]
+    dev: {source: '.', target: /app}
+`);
+  const gate = Promise.withResolvers<void>();
+  const run = runtime.run.bind(runtime);
+  runtime.run = async (ctx, spec) => {
+    if (spec.name.endsWith("-api")) await gate.promise;
+    return run(ctx, spec);
+  };
+  const deploying = manager.deploy(context(), { root, identity, manifest, request: {} });
+  void deploying.catch(() => {});
+  try {
+    const checkpoint = join(home, "state", "sources", identity.ID, "web", "files.json");
+    const deadline = Date.now() + 2000;
+    while (!existsSync(checkpoint) && Date.now() < deadline) await Bun.sleep(10);
+    expect(existsSync(checkpoint)).toBe(true);
+    expect(runtime.calls.some((c) => c.startsWith("run ") && c.endsWith("-web"))).toBe(false);
+    gate.resolve();
+    await deploying;
+  } finally {
+    gate.resolve();
+    await deploying.catch(() => {});
     await manager.stopDevelopment();
     rmSync(home, { recursive: true, force: true });
   }
