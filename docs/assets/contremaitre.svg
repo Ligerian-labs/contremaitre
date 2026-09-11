@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-labelledby="title desc">
+  <title id="title">Contremaitre. Every branch gets its own stack.</title>
+  <desc id="desc">Main's PostgreSQL data and uploads are copied into isolated feature environments, each with its own app and local HTTPS URL. Runs on Apple silicon Macs with Git and Jujutsu.</desc>
+  <defs>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse"><path d="M 32 0 L 0 0 0 32" fill="none" stroke="#1c2b35" stroke-width="1"/></pattern>
+  </defs>
+  <rect width="1280" height="640" rx="24" fill="#0c151c"/>
+  <rect width="1280" height="640" rx="24" fill="url(#grid)" opacity="0.55"/>
+  <g font-family="Helvetica, Arial, sans-serif">
+    <rect x="64" y="53" width="32" height="32" rx="8" fill="#b5f878"/>
+    <path d="M85 62 H74 V76 H85" fill="none" stroke="#0c151c" stroke-width="4"/>
+    <text x="110" y="79" font-size="27" font-weight="700" fill="#edf4f8">contremaitre</text>
+    <text x="1216" y="76" text-anchor="end" font-size="17" fill="#a7b6c2">LOCAL DEVELOPMENT / APPLE SILICON</text>
+    <text x="64" y="172" font-size="63" font-weight="700" letter-spacing="-2" fill="#edf4f8">Every branch gets</text>
+    <text x="64" y="243" font-size="63" font-weight="700" letter-spacing="-2" fill="#b5f878">its own stack.</text>
+    <text x="66" y="292" font-size="23" fill="#a7b6c2">Your app. Its own database. A local HTTPS URL.</text>
+    <path d="M396 438 H436 V399 H474 M436 438 V500 H474" stroke="#718696" stroke-width="2" fill="none"/>
+    <path d="M465 394 L474 399 L465 404 M465 495 L474 500 L465 505" stroke="#b5f878" stroke-width="2" fill="none"/>
+    <rect x="64" y="365" width="332" height="151" rx="12" fill="#162530" stroke="#36505e"/>
+    <circle cx="90" cy="396" r="5" fill="#b5f878"/>
+    <text x="107" y="403" font-size="21" font-weight="700" fill="#edf4f8">main</text>
+    <text x="89" y="443" font-size="18" fill="#c2ced7">App + PostgreSQL + uploads</text>
+    <text x="89" y="482" font-size="16" fill="#b5f878">Copy data on first deployment</text>
+    <rect x="478" y="354" width="738" height="89" rx="12" fill="#162530" stroke="#36505e"/>
+    <text x="504" y="390" font-family="Menlo, monospace" font-size="21" fill="#b5f878">feature/auth</text>
+    <text x="504" y="420" font-size="17" fill="#c2ced7">App + database copy + upload copy</text>
+    <rect x="1026" y="378" width="167" height="36" rx="18" fill="#263c2c"/>
+    <text x="1109" y="402" text-anchor="middle" font-size="16" fill="#b5f878">Isolated + HTTPS</text>
+    <rect x="478" y="457" width="738" height="89" rx="12" fill="#162530" stroke="#36505e"/>
+    <text x="504" y="493" font-family="Menlo, monospace" font-size="21" fill="#9aceff">feature/billing</text>
+    <text x="504" y="523" font-size="17" fill="#c2ced7">App + database copy + upload copy</text>
+    <rect x="1026" y="481" width="167" height="36" rx="18" fill="#203449"/>
+    <text x="1109" y="505" text-anchor="middle" font-size="16" fill="#9aceff">Isolated + HTTPS</text>
+    <text x="64" y="594" font-size="17" fill="#a7b6c2">Git worktrees / Jujutsu workspaces / Coding agents</text>
+    <text x="1216" y="594" text-anchor="end" font-size="17" fill="#edf4f8">github.com/Ligerian-labs/contremaitre</text>
+  </g>
+</svg>
