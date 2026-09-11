@@ -241,12 +241,12 @@ main source when accepting a deployment. Build files are staged when the queued
 operation starts. Wait for that staging step before editing files whose exact
 contents must be part of a deployment.
 
-Native deployments fingerprint the filtered context, file permissions, symlink targets, Dockerfile, and ignore rules. If these inputs are unchanged and the previous image still exists, deployment logs `Reusing unchanged image` and skips the builder. Successful builds are retained even if a later service fails. `deploy --rebuild` bypasses this image reuse and invokes the builder with its normal layer cache; it does not force a base-image pull. `--rebuild` also forces service replacement and migrations.
+Native deployments fingerprint the filtered context, file permissions, symlink targets, Dockerfile, and ignore rules. A read-only input check reuses an unchanged image without writing a temporary context. Changed inputs or a missing image trigger a fresh validated snapshot and build. Successful builds are retained even if a later service fails. `deploy --rebuild` bypasses this image reuse and invokes the builder with its normal layer cache; it does not force a base-image pull. `--rebuild` also forces service replacement and migrations and clears development source/dependency volumes.
 
 All required builds must succeed before replacing existing processes. A build failure
 leaves the current application running. A running service with an unchanged image,
 configuration, and dependency connections keeps its process and skips migrations;
-readiness is still checked. Changing a dependency conservatively redeploys its
+readiness is still checked. Reuse inspections run up to four at a time. Changing a dependency conservatively redeploys its
 dependents. Stopped services restart. The first deploy after upgrading records the
 service fingerprints and may restart services once.
 

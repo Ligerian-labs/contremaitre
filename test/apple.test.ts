@@ -1,9 +1,11 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
+import * as fs from "node:fs/promises";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Apple } from "@contremaitre/environments/apple";
 import { context } from "@contremaitre/execution/context";
+import { run } from "@contremaitre/execution/process";
 
 async function fixture(configured = true) {
   const dir = await mkdtemp(join(tmpdir(), "cm-apple-")),
@@ -24,7 +26,10 @@ const fatal = message => { console.error(message); process.exit(1); };
 const resources = () => {
   if (args[args.indexOf('--cpus') + 1] !== '4' || args[args.indexOf('--memory') + 1] !== '8589934592') fatal('builder resources changed');
 };
-if (args[0] === 'inspect') {
+if (args[0] === 'image' && args[1] === 'inspect') {
+  event('image ' + args[2]);
+  if (existsSync(join(dir, 'missing-image'))) fatal('image not found');
+} else if (args[0] === 'inspect') {
   console.log(JSON.stringify([{ status: 'running', configuration: { resources: { cpus: 4, memoryInBytes: 8589934592 } } }]));
 } else if (args[0] === 'builder' && args[1] === 'start') {
   resources(); event('prepare');
@@ -187,5 +192,108 @@ test("failed builder preparation releases the lock and can be retried", async ()
     });
   } finally {
     await f.clean();
+  }
+});
+
+test("unchanged builds reuse the existing image without creating a temporary context", async () => {
+  const f = await fixture();
+  const apple = new Apple(f.binary);
+  try {
+    await f.release("one");
+    const previous = await apple.build(context(), f.root, "Dockerfile", "one");
+    const staging = spyOn(fs, "mkdtemp");
+    try {
+      expect(await apple.build(context(), f.root, "Dockerfile", "two", previous)).toEqual(previous);
+      expect(staging).not.toHaveBeenCalled();
+      expect((await f.events()).filter((event) => event === "prepare")).toHaveLength(1);
+    } finally {
+      staging.mockRestore();
+    }
+  } finally {
+    await f.clean();
+  }
+});
+
+test("changed inputs and missing cached images still produce a fresh build snapshot", async () => {
+  const f = await fixture();
+  const apple = new Apple(f.binary);
+  try {
+    await f.release("one", "changed", "missing", "forced");
+    const original = await apple.build(context(), f.root, "Dockerfile", "one");
+    await writeFile(join(f.root, "new-input"), "changed");
+    const changed = await apple.build(context(), f.root, "Dockerfile", "changed", original);
+    expect(changed.digest).not.toBe(original.digest);
+    expect(changed.image).toBe("changed");
+    await writeFile(join(f.dir, "missing-image"), "");
+    const missing = await apple.build(context(), f.root, "Dockerfile", "missing", changed);
+    expect(missing).toEqual({ digest: changed.digest, image: "missing" });
+    await rm(join(f.dir, "missing-image"));
+    expect(await apple.build(context(), f.root, "Dockerfile", "forced")).toEqual({
+      digest: changed.digest,
+      image: "forced",
+    });
+    expect((await f.events()).filter((event) => event.startsWith("build "))).toEqual([
+      "build one",
+      "build changed",
+      "build missing",
+      "build forced",
+    ]);
+  } finally {
+    await f.clean();
+  }
+});
+
+test("initial source sync updates a reused volume without removing dependencies or interpreting filenames", async () => {
+  const base = await mkdtemp(join(tmpdir(), "cm-cached-sync-"));
+  const source = join(base, "source"),
+    target = join(base, "volume");
+  await mkdir(source);
+  await mkdir(join(target, "node_modules"), { recursive: true });
+  const unusual = "quote'$(touch INJECTED).ts";
+  await writeFile(join(source, unusual), "literal filename");
+  await mkdir(join(source, "shape"));
+  await writeFile(join(source, "shape", "child"), "directory child");
+  await writeFile(join(source, "reverse"), "now a file");
+  await writeFile(join(target, "shape"), "previously a file");
+  await mkdir(join(target, "reverse"));
+  await writeFile(join(target, "reverse", "old"), "old child");
+  await writeFile(join(target, "obsolete"), "old source");
+  await writeFile(join(target, "node_modules", "cached"), "installed dependency");
+  const apple = new Apple();
+  apple.remove = async () => {};
+  apple.run = async (ctx, spec) => {
+    const script = spec.service.command?.[2] ?? "";
+    const entry = Object.entries(spec.volumes).find(([, path]) => script.startsWith(`${path}/`));
+    if (!entry) throw Error("Missing sync control mount");
+    const local = join(entry[0], "apply.sh");
+    expect((await fs.stat(local)).mode & 0o444).toBe(0o444);
+    await run(ctx, ["sh", "-eu", local], { cwd: target, stdin: spec.stdin });
+  };
+  try {
+    await apple.sync(
+      context(),
+      {
+        name: "app",
+        image: "app",
+        network: "test",
+        volumes: {},
+        envFile: "",
+        service: { kind: "app", dev: { source: ".", target } },
+      },
+      source,
+      [unusual, "shape/child", "reverse"],
+      ["obsolete", "reverse/old"],
+      true,
+    );
+    expect(await readFile(join(target, unusual), "utf8")).toBe("literal filename");
+    expect(await readFile(join(target, "shape", "child"), "utf8")).toBe("directory child");
+    expect(await readFile(join(target, "reverse"), "utf8")).toBe("now a file");
+    expect(await readFile(join(target, "node_modules", "cached"), "utf8")).toBe(
+      "installed dependency",
+    );
+    await expect(fs.stat(join(target, "obsolete"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.stat(join(target, "INJECTED"))).rejects.toMatchObject({ code: "ENOENT" });
+  } finally {
+    await rm(base, { recursive: true, force: true });
   }
 });

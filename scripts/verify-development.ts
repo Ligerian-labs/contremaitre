@@ -20,6 +20,10 @@ const source = (value: string) =>
   `console.log("${value}"); await Bun.write("generated.txt", "container"); setInterval(() => {}, 1000);`;
 writeFileSync(join(root, "main.ts"), source("LIVE_ONE"));
 writeFileSync(join(root, "delete-me.ts"), "delete me");
+writeFileSync(join(root, "delete-on-redeploy.ts"), "delete while sync is stopped");
+writeFileSync(join(root, "shape"), "file becomes directory");
+mkdirSync(join(root, "reverse"));
+writeFileSync(join(root, "reverse", "child"), "directory becomes file");
 writeFileSync(join(root, "package.json"), '{"name":"smoke","version":"1.0.0"}');
 const manifest = parseManifest(`version: 1
 project: dev-smoke
@@ -55,11 +59,25 @@ try {
   await manager.recover(ctx);
   writeFileSync(join(root, "main.ts"), source("LIVE_THREE"));
   await waitLog("LIVE_THREE");
+  await manager.stopDevelopment();
+  await runtime.exec(ctx, container, ["sh", "-eu", "-c", "echo cache > /app/cache-sentinel.txt"]);
+  rmSync(join(root, "delete-on-redeploy.ts"));
+  rmSync(join(root, "shape"));
+  mkdirSync(join(root, "shape"));
+  writeFileSync(join(root, "shape", "child"), "new child");
+  rmSync(join(root, "reverse"), { recursive: true });
+  writeFileSync(join(root, "reverse"), "new file");
   await manager.deploy(ctx, { root, identity, manifest, request: {} });
   const redeployed = (await runtime.exec(ctx, container, ["cat", "/app/package.json"])).toString();
   if (!redeployed.includes("changed")) throw Error("Redeploy did not refresh dependency manifests");
+  await runtime.exec(ctx, container, ["test", "-f", "/app/cache-sentinel.txt"]);
+  await runtime.exec(ctx, container, ["test", "!", "-e", "/app/delete-on-redeploy.ts"]);
+  await runtime.exec(ctx, container, ["test", "-f", "/app/shape/child"]);
+  await runtime.exec(ctx, container, ["test", "-f", "/app/reverse"]);
+  await manager.deploy(ctx, { root, identity, manifest, request: { rebuild: true } });
+  await runtime.exec(ctx, container, ["test", "!", "-e", "/app/cache-sentinel.txt"]);
   console.log(
-    "Native Bun hot reload, deletion, dependency redeploy, checkout isolation and sync recovery passed.",
+    "Native Bun hot reload, cached redeploy, source deletion/shape changes, clean rebuild, checkout isolation and sync recovery passed.",
   );
 } finally {
   await manager.stopDevelopment();

@@ -160,6 +160,47 @@ test("unchanged ready services skip restart and migration; rebuild forces both",
   }
 });
 
+test("redeploy inspects reusable services concurrently with a bounded number of runtime calls", async () => {
+  const f = fixture();
+  const gate = Promise.withResolvers<void>();
+  let deploying: Promise<void> | undefined;
+  try {
+    const p = f.prepare();
+    for (const name of ["extraa", "extrab", "extrac", "extrad"])
+      p.manifest.services[name] = { kind: "app", image: "app", ready: ["true"] };
+    await f.manager.deploy(context(), p);
+    f.runtime.calls = [];
+    const inspect = f.runtime.inspect.bind(f.runtime);
+    let active = 0;
+    let peak = 0;
+    f.runtime.inspect = async (ctx, name) => {
+      active++;
+      peak = Math.max(peak, active);
+      try {
+        await gate.promise;
+        return await inspect(ctx, name);
+      } finally {
+        active--;
+      }
+    };
+    deploying = f.manager.deploy(context(), p);
+    void deploying.catch(() => {});
+    const deadline = Date.now() + 2000;
+    while (active < 4 && Date.now() < deadline) await Bun.sleep(10);
+    expect(active).toBe(4);
+    expect(f.runtime.calls.some((call) => /^(stop|run|remove) /.test(call))).toBe(false);
+    f.runtime.inspect = inspect;
+    gate.resolve();
+    await deploying;
+    expect(peak).toBeLessThanOrEqual(4);
+    expect(f.runtime.calls.some((call) => /^(stop|run|remove) /.test(call))).toBe(false);
+  } finally {
+    gate.resolve();
+    await deploying?.catch(() => {});
+    f.clean();
+  }
+});
+
 test("builds overlap and all finish before a failed build can replace running services", async () => {
   const f = fixture();
   try {
