@@ -1,0 +1,4 @@
+interface:
+  display_name: "Contremaitre setup"
+  short_description: "Configure local stacks and verification profiles."
+  default_prompt: "Use $contremaitre-setup to configure this application for isolated local development."

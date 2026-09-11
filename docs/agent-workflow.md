@@ -7,7 +7,8 @@
 - `report` returns local preview and review URLs, source provenance, separate readiness and verification results, and stale evidence after edits or redeployment.
 - `diagnose` returns bounded diagnostics with an explicit cursor and truncation flag. `wait` follows an operation without streaming logs.
 - Interrupted runs recover as interrupted. Timeouts, cancellation, queues, file counts, output sizes and retention are bounded.
-- One shared skill supports Claude Code, Codex, OpenCode and Pi, with installable native packages and deterministic adapter tests.
+- Shared setup, runtime and sharing skills support Claude Code, Codex, OpenCode and Pi. Every installed skill includes its references and UI metadata; Claude compatibility links resolve to the shared copies.
+- The standalone binary exports a complete plugin bundle with Codex and Claude manifests, the Pi package and the OpenCode adapter. Installation and export are repeatable, preserve edited files, and reject paths escaping the destination before writing assets.
 
 ## Ownership
 
@@ -26,9 +27,41 @@ contremaitre report --json
 
 Choose `claude`, `codex`, `opencode` or `pi` to install a specific integration. Add `--global` to use your home directory. Installation is idempotent and refuses to overwrite different existing content. It never edits existing agent settings or project instructions. Restart your agent or reload skills after installation. Agent permissions and project trust still apply.
 
-The shared skill lives in `.agents/skills/contremaitre`; Claude gets a compatibility symlink under `.claude/skills`. OpenCode also gets a local plugin and Pi gets an extension. The OpenCode 1.x plugin shows a toast when verification state changes at session idle. The Pi extension shows a status indicator and provides `/contremaitre`. These UI updates do not inject model messages or register extra model tools. OpenCode v2 can use the shared skill; its different native plugin API is not targeted by the optional 1.x adapter.
+The skills live under `.agents/skills`; Claude gets a compatibility symlink for each one under `.claude/skills`. OpenCode also gets a local plugin and Pi gets an extension. The OpenCode 1.x plugin shows a toast when verification state changes at session idle. The Pi extension shows a status indicator and provides `/contremaitre`. These UI updates do not inject model messages or register extra model tools. OpenCode v2 can use the shared skills; its different native plugin API is not targeted by the optional 1.x adapter.
 
-For native package distribution, `integrations/contremaitre` contains Claude and Codex plugin manifests, the shared skill and a Pi package manifest. Claude Code can load this directory with `claude --plugin-dir /absolute/path/to/integrations/contremaitre`. Pi can install it with `pi install /absolute/path/to/integrations/contremaitre`. Use the CLI skill installer for Codex without changing marketplaces. The packages are included in the standalone binary through generated assets; `scripts/package-agents.ts --check` detects drift.
+| Skill | Use it for | Example request |
+| --- | --- | --- |
+| `contremaitre-setup` | Creating or updating a manifest, hot reload, databases and verification profiles | "Set up this monorepo with Contremaitre and its existing browser tests." |
+| `contremaitre` | Running the current workspace, diagnosing failures and reporting fresh evidence | "Test this branch and give me the local preview and verification report." |
+| `contremaitre-share` | Starting or stopping public previews and managing reserved URLs | "Share this app with a live public preview." |
+
+Codex can invoke these as `$contremaitre-setup`, `$contremaitre` and `$contremaitre-share`. Claude's direct skill installation uses `/contremaitre-setup`, `/contremaitre` and `/contremaitre-share`; loading the native plugin adds its namespace, for example `/contremaitre:contremaitre-setup`. Pi uses `/skill:contremaitre-setup` for a skill and `/contremaitre` for the extension's status command. Natural-language selection depends on the host and model. Skills do not install the runtime or grant execution permissions.
+
+The sharing skill starts a public tunnel only for a public-sharing request. Keep its foreground command alive for the preview's lifetime. The runtime skill preserves local previews for review and does not start a tunnel as part of verification.
+
+## Export a native plugin
+
+The source bundle is `integrations/contremaitre`. To obtain the same files from an installed binary without a source checkout, choose an existing parent directory:
+
+```sh
+mkdir -p "$HOME/agent-plugins"
+contremaitre agents export "$HOME/agent-plugins" --json
+```
+
+The result contains `directory`, the absolute path to the generated `contremaitre` folder. Export includes the Codex and Claude plugin manifests, all skills and references, the Pi package manifest and both native adapters. It does not register a marketplace or change agent settings. `--agent` and `--global` apply only to `agents install`.
+
+Load the exported bundle with one integration method per host to avoid duplicate skills:
+
+```sh
+claude --plugin-dir "$HOME/agent-plugins/contremaitre"
+pi install "$HOME/agent-plugins/contremaitre"
+```
+
+For Codex, `contremaitre agents install --agent codex` is the direct route without a marketplace. The exported `.codex-plugin/plugin.json` is available for existing plugin distribution workflows. For OpenCode, use `contremaitre agents install --agent opencode` to place its adapter at the expected path. See the host documentation for [Claude plugin loading](https://code.claude.com/docs/en/plugins-reference), [Pi skill discovery](https://pi.dev/docs/latest/skills) and [OpenCode skill discovery](https://opencode.ai/docs/skills).
+
+After upgrading Contremaitre, rerun install or export. Identical files are accepted. If an old or edited file differs, the command stops before writing assets and names the conflicting path. Compare that file with a fresh export in an empty parent directory. Back up and move the conflicting Contremaitre-owned files or skill directories, then rerun and reapply any customizations you want to retain. The installer has no force-overwrite mode. Restart the agent or reload its skills after an update.
+
+The binary embeds the bundle through generated assets; `scripts/package-agents.ts --check` detects drift. Source bundle changes require rebuilding the CLI before installation or export.
 
 For projects requiring runtime verification at every handoff, add this instruction to their existing agent guidance:
 
@@ -95,4 +128,4 @@ A source edit, changed verification configuration or redeployment marks earlier 
 
 Run `bun run check` for unit/integration tests, lint, boundaries, typecheck, standalone build and packaging tests. Run `bun scripts/verify-agent-workflow.ts` for the opt-in Apple container check. It uses disposable resources and exercises reuse, container execution, artifact collection, stale detection, failure, and cancellation of the remote process group. `--inspect` temporarily keeps the local review page open for browser inspection.
 
-The integration tests verify all four installation layouts, shared skill size, plugin manifests, and OpenCode/Pi UI callbacks against a real bounded CLI subprocess. They do not measure implicit skill selection or model reasoning across providers. Token costs depend on the host and tokenizer; byte ceilings are checked as a stable proxy. In the native smoke run, the compact one-service report was 527 bytes. No paid model calls are part of the test suite.
+The integration tests verify project installation for all four agents, every skill's size, plugin manifests, complete exports, conflict preservation, symlink confinement and OpenCode/Pi UI callbacks against a real bounded CLI subprocess. Packaging checks exercise installation and export from the compiled binary. They do not measure implicit skill selection or model reasoning across providers. Token costs depend on the host and tokenizer; byte ceilings are checked as a stable proxy. In the native smoke run, the compact one-service report was 527 bytes. No paid model calls are part of the test suite.

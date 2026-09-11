@@ -1,0 +1,4 @@
+interface:
+  display_name: "Contremaitre public preview"
+  short_description: "Start and manage public application previews."
+  default_prompt: "Use $contremaitre-share to share this application with a live public preview."

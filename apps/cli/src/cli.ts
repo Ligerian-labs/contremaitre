@@ -24,7 +24,7 @@ import {
 } from "./help.js";
 import { manageHttpsService } from "./https-service.js";
 import { initialize } from "./init.js";
-import { installAgents } from "./install-agents.js";
+import { exportAgents, installAgents } from "./install-agents.js";
 import { onboard, terminalOnboarding } from "./saas.js";
 import { tunnel } from "./tunnel.js";
 
@@ -107,8 +107,13 @@ export function makeRoot(passthrough: readonly string[] = []) {
           }
           switch (action) {
             case "agents":
+              if (args.length === 2 && args[0] === "export") {
+                if (o.agent || o.global) fail("agents export does not accept --agent or --global");
+                output(o.json, exportAgents(args[1]));
+                return;
+              }
               if (args.length !== 1 || args[0] !== "install")
-                fail("Use contremaitre agents install --agent NAME");
+                fail("Use contremaitre agents install --agent NAME or agents export DIRECTORY");
               output(o.json, installAgents(process.cwd(), o.agent || "all", o.global));
               return;
             case "https-service":

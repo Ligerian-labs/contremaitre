@@ -182,14 +182,15 @@ export const commands: readonly CommandHelp[] = [
   {
     name: "agents",
     group: "Hub and tools",
-    description: "Install shared skills and native agent adapters",
-    usage: "install",
+    description: "Install skills and adapters or export a plugin bundle",
+    usage: "install | export DIRECTORY",
     details:
-      "Defaults to this directory. Existing files with different contents are preserved. --agent all supports Claude Code, Codex, OpenCode and Pi.",
+      "Install defaults to this directory. --agent all supports Claude Code, Codex, OpenCode and Pi. Export writes a self-contained contremaitre plugin under an existing DIRECTORY; --agent and --global apply only to install. Both preserve existing files with different contents.",
     flags: ["agent", "global", "json"],
     examples: [
       "contremaitre agents install --agent all",
       "contremaitre agents install --agent codex --global",
+      "contremaitre agents export .",
     ],
   },
   {

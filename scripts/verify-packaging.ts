@@ -7,6 +7,7 @@ import { call, health } from "@contremaitre/cli/client";
 import { context, decode } from "@contremaitre/execution/context";
 import { sleep } from "@contremaitre/execution/sleep";
 import { operationSchema } from "@contremaitre/operations/operations";
+import { agentAssets } from "../apps/cli/src/agent-assets.js";
 
 const signal = AbortSignal.timeout(60_000),
   ctx = context(signal),
@@ -107,6 +108,29 @@ try {
   const skill = join(project, ".agents/skills/contremaitre");
   assert.ok((await readFile(join(skill, "SKILL.md"), "utf8")).includes("contremaitre ensure"));
   assert.equal(await realpath(join(project, ".claude/skills/contremaitre")), await realpath(skill));
+  for (const name of ["contremaitre-setup", "contremaitre-share"]) {
+    const installed = join(project, ".agents/skills", name);
+    assert.equal(
+      await readFile(join(installed, "SKILL.md"), "utf8"),
+      agentAssets[`skills/${name}/SKILL.md`],
+    );
+    assert.equal(await realpath(join(project, ".claude/skills", name)), await realpath(installed));
+  }
+  const exported = Bun.spawn([binary, "agents", "export", dir, "--json"], {
+    cwd: project,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  assert.equal(await exported.exited, 0, await new Response(exported.stderr).text());
+  const bundle = JSON.parse(await new Response(exported.stdout).text()).data.directory;
+  for (const [path, text] of Object.entries(agentAssets))
+    assert.equal(await readFile(join(bundle, path), "utf8"), text);
+  const invalidExport = Bun.spawn([binary, "agents", "export", dir, "--global"], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  assert.notEqual(await invalidExport.exited, 0);
+  assert.ok((await new Response(invalidExport.stderr).text()).includes("does not accept"));
   assert.ok(
     (await readFile(join(project, ".opencode/plugins/contremaitre.ts"), "utf8")).includes(
       "session.idle",

@@ -1,18 +1,24 @@
 {
   "name": "contremaitre",
   "version": "0.2.0",
-  "description": "Isolated runtime verification and local previews for coding agents",
+  "description": "Configure isolated application stacks, verify changes and share previews with Contremaitre",
   "author": {
     "name": "Ligerian Labs"
   },
   "skills": "./skills/",
   "interface": {
     "displayName": "Contremaitre",
-    "shortDescription": "Test applications and review local previews.",
-    "longDescription": "Reuse isolated environments, run project checks, and review evidence with compact agent output.",
+    "shortDescription": "Configure stacks, run checks and share previews.",
+    "longDescription": "Set up workspace environments, run project verification and manage public preview sessions through the Contremaitre CLI.",
     "developerName": "Ligerian Labs",
     "category": "Productivity",
     "capabilities": [],
-    "defaultPrompt": "Use $contremaitre to test this application and give me its preview and verification report."
-  }
+    "defaultPrompt": [
+      "Use $contremaitre to test this workspace and report its preview and verification results.",
+      "Use $contremaitre-setup to configure this application for isolated local development.",
+      "Use $contremaitre-share to share this application with a live public preview."
+    ]
+  },
+  "license": "Apache-2.0",
+  "repository": "https://github.com/Ligerian-labs/contremaitre"
 }

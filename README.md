@@ -112,6 +112,10 @@ contremaitre agents install --agent all
 contremaitre ensure --json
 ```
 
+The bundle includes `contremaitre-setup` for manifests and development stacks, `contremaitre` for testing and local previews, and `contremaitre-share` for requested public previews. Choose one agent with `--agent codex`, `claude`, `opencode` or `pi`; add `--global` for a user-wide installation. Restart your agent or reload its skills, then ask it to set up, test or share your application.
+
+To distribute the native plugin bundle from the installed CLI, run `contremaitre agents export DIRECTORY` with an existing parent directory. It writes a `contremaitre` folder containing Codex and Claude plugin manifests, a Pi package, skills and adapters. See [plugin loading and updates](docs/agent-workflow.md#export-a-native-plugin).
+
 Define a `smoke` verification profile using your application's existing test commands, following the [verification configuration guide](docs/agent-workflow.md#check-configuration). Then run:
 
 ```sh
