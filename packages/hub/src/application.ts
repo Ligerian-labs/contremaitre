@@ -1,5 +1,10 @@
 import type { Manager } from "@contremaitre/environments/manager";
-import { type Environment, type Request, requestSchema } from "@contremaitre/environments/model";
+import {
+  type Environment,
+  httpEndpoints,
+  type Request,
+  requestSchema,
+} from "@contremaitre/environments/model";
 import {
   type Context,
   context,
@@ -166,7 +171,10 @@ const registry = HandlerRegistry.layer(
     Effect.gen(function* () {
       const { manager: m, operations: ops } = yield* Hub;
       return yield* attempt(async (signal) => {
-        const prepared = await m.prepare(context(signal), req);
+        const prepared = await m.prepare(
+          context(signal, (data) => process.stderr.write(data)),
+          req,
+        );
         const id = prepared.identity.ID,
           source = prepared.sourceId;
         return ops.submit(
@@ -250,9 +258,7 @@ const registry = HandlerRegistry.layer(
       return yield* attempt(async (signal) => {
         const env = await resolveRequest(m, context(signal), req);
         return Object.fromEntries(
-          keys(env.Services)
-            .filter((name) => env.Services[name].HTTP)
-            .map((name) => [name, m.localURL(env, name)]),
+          keys(httpEndpoints(env)).map((name) => [name, m.localURL(env, name)]),
         );
       });
     }),

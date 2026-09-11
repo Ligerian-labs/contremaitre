@@ -1,5 +1,10 @@
 import { hash } from "@contremaitre/execution/context";
-import type { Driver, Identity, Service } from "@contremaitre/projects/model";
+import {
+  type Driver,
+  type Identity,
+  type Service,
+  serviceEndpoints,
+} from "@contremaitre/projects/model";
 import { Schema } from "effect";
 export interface BuildRecord {
   digest: string;
@@ -49,6 +54,24 @@ export interface Environment {
   driver?: Driver;
   driver_directory?: string;
   builds?: Record<string, BuildRecord>;
+}
+export function httpEndpoints(
+  env: Environment,
+): Record<string, { service: ServiceState; port: number }> {
+  return Object.fromEntries(
+    Object.entries(env.Services)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .flatMap(([name, service]) =>
+        Object.entries(
+          service.Spec.endpoints !== undefined
+            ? serviceEndpoints(name, service.Spec)
+            : service.HTTP
+              ? { [name]: service.Port }
+              : {},
+        ).map(([endpoint, port]) => [endpoint, { service, port }] as const),
+      )
+      .sort(([a], [b]) => a.localeCompare(b)),
+  );
 }
 export interface State {
   Version: 1;

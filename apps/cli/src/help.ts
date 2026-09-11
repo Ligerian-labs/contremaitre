@@ -261,7 +261,7 @@ export const commands: readonly CommandHelp[] = [
     group: "Environments",
     description: "Create or update a project manifest",
     details:
-      "Configure the active development stack with a coding agent, one question at a time. Only the manifest is written. --no-ai uses conventional detection and refuses existing manifests. Agent settings live in <home>/init.json.",
+      "Configure the development stack and save launch settings in .contremaitre.lock. --no-ai detects conventional development scripts or Dockerfiles and can resolve an existing compact apps config. Existing version 1 manifests require assisted init. Agent settings live in <home>/init.json.",
     flags: ["agent", "noAI", "compose", "home", "json"],
     examples: [
       "contremaitre init",

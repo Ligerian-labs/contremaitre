@@ -10,11 +10,28 @@ import {
   type Manifest,
   newIdentity,
   type Service,
+  serviceEndpoints,
   serviceSchema,
   verificationSchema,
 } from "./model.js";
+import { type LoadOptions, loadProject } from "./project-lock.js";
+
+export { projectName } from "./project-lock.js";
 export const validName = /^[a-z][a-z0-9-]{0,39}$/;
 export const envKey = /^[A-Za-z_][A-Za-z0-9_]*$/;
+export function serviceDefaults(original: Service): Service {
+  const kind = original.kind || "app";
+  return {
+    ...original,
+    kind,
+    image:
+      original.image ||
+      (kind === "postgres" ? "postgres:17" : kind === "redis" ? "redis:7-alpine" : ""),
+    port: original.port || (kind === "postgres" ? 5432 : kind === "redis" ? 6379 : 0),
+    cpus: original.cpus || 1,
+    memory: original.memory || (original.dev ? "2G" : "512M"),
+  };
+}
 const manifestSchema = Schema.Struct({
   version: Schema.Literal(1),
   project: Schema.String,
@@ -65,6 +82,7 @@ export function parseManifest(text: string): Manifest {
   if (!validName.test(parsed.project))
     fail("Project must be a lowercase DNS label, at most 40 characters");
   const services: Record<string, Service> = Object.create(null);
+  const endpoints = new Set<string>();
   const verification = parsed.verification;
   if (verification) {
     if (Object.keys(verification.profiles).length > 20)
@@ -120,16 +138,7 @@ export function parseManifest(text: string): Manifest {
     if (!validName.test(name)) fail(`Invalid service name ${name}`);
     const kind = original.kind || "app";
     if (!["app", "postgres", "redis"].includes(kind)) fail(`${name}: unknown kind`);
-    const s: Service = {
-      ...original,
-      kind,
-      image:
-        original.image ||
-        (kind === "postgres" ? "postgres:17" : kind === "redis" ? "redis:7-alpine" : ""),
-      port: original.port || (kind === "postgres" ? 5432 : kind === "redis" ? 6379 : 0),
-      cpus: original.cpus || 1,
-      memory: original.memory || (original.dev ? "2G" : "512M"),
-    };
+    const s = serviceDefaults(original);
     if (Boolean(s.image) === Boolean(s.build))
       fail(`${name}: specify exactly one of image or build`);
     if (
@@ -167,6 +176,16 @@ export function parseManifest(text: string): Manifest {
     }
     if ((s.port ?? 0) < 0 || (s.port ?? 0) > 65535) fail(`${name}: invalid port`);
     if (s.http && (kind !== "app" || !s.port)) fail(`${name}: http requires an app port`);
+    for (const [endpoint, port] of Object.entries(serviceEndpoints(name, s))) {
+      if (kind !== "app" || !validName.test(endpoint) || port < 1 || port > 65535)
+        fail(`${name}: invalid HTTP endpoint`);
+      if (
+        endpoints.has(endpoint) ||
+        (endpoint !== name && Object.hasOwn(parsed.services ?? {}, endpoint))
+      )
+        fail(`${name}: duplicate endpoint or service name ${endpoint}`);
+      endpoints.add(endpoint);
+    }
     if ((s.cpus ?? 0) < 1 || (s.cpus ?? 0) > 64) fail(`${name}: cpus must be 1..64`);
     if (!/^[1-9][0-9]*[MG]$/.test(s.memory ?? "")) fail(`${name}: invalid memory`);
     for (const [volume, target] of Object.entries(s.volumes ?? {}))
@@ -192,12 +211,8 @@ export function parseManifest(text: string): Manifest {
   order(services);
   return { version: 1, project: parsed.project, services, verification };
 }
-export function loadManifest(root: string): Manifest {
-  for (const file of [".contremaitre.yaml", ".contremaitre.yml"]) {
-    const p = join(root, file);
-    if (existsSync(p)) return parseManifest(readFileSync(p, "utf8"));
-  }
-  return fail(`No .contremaitre.yaml in ${root}; run contremaitre init`);
+export function loadManifest(root: string, options: LoadOptions = {}): Manifest {
+  return loadProject(root, options);
 }
 export function readEnv(root: string, file: string | readonly string[]): Record<string, string> {
   if (typeof file !== "string")
@@ -224,6 +239,11 @@ export function prepareManifest(root: string, manifest: Manifest): Manifest {
       environment: { ...(s.env_file ? readEnv(root, s.env_file) : {}), ...s.environment },
     };
   const token = /\{\{([^{}]+)\}\}/g;
+  const endpoints = Object.fromEntries(
+    Object.entries(services).flatMap(([name, s]) =>
+      Object.keys(serviceEndpoints(name, s)).map((endpoint) => [endpoint, name]),
+    ),
+  );
   for (const [name, s] of Object.entries(services))
     for (const value of Object.values(s.environment ?? {})) {
       for (const match of value.matchAll(token)) {
@@ -234,7 +254,7 @@ export function prepareManifest(root: string, manifest: Manifest): Manifest {
           !["host", "port", "url", "local_url", "browser_url", "browser_origins"].includes(
             property,
           ) ||
-          !own(services, dep)
+          (!own(services, dep) && !own(endpoints, dep))
         )
           fail(`${name}: unsupported or unknown environment reference ${match[1]}`);
         if (
@@ -242,16 +262,17 @@ export function prepareManifest(root: string, manifest: Manifest): Manifest {
           property === "browser_url" ||
           property === "browser_origins"
         ) {
-          if (!services[dep].http) fail(`${name}: ${property} requires HTTP service ${dep}`);
+          if (!own(endpoints, dep)) fail(`${name}: ${property} requires HTTP service ${dep}`);
           continue;
         }
+        const owner = endpoints[dep] ?? dep;
         const seen = new Set<string>();
         const depends = (n: string): boolean => {
           if (seen.has(n)) return false;
           seen.add(n);
-          return (services[n].depends_on ?? []).some((d) => d === dep || depends(d));
+          return (services[n].depends_on ?? []).some((d) => d === owner || depends(d));
         };
-        if (!depends(name)) fail(`${name}: declare depends_on for ${dep}`);
+        if (owner !== name && !depends(name)) fail(`${name}: declare depends_on for ${owner}`);
       }
       if (value.replace(token, "").includes("{{")) fail(`${name}: malformed environment reference`);
     }

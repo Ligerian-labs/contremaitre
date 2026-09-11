@@ -2,6 +2,18 @@
 
 Keep `.contremaitre.yaml` at the application repository root. Names are lowercase DNS labels, at most 40 characters. Preserve an existing `project` name because it identifies the application's environments and main-data source.
 
+## Compact development config
+
+Prefer a compact config for new development stacks. Start with `project: example` and `apps: {app: '.'}`. App objects can specify `path`, application-specific environment mappings, volumes and any service overrides. Keep databases under `services`. Run `contremaitre init --no-ai` after writing this config to detect conventional launch settings and create `.contremaitre.lock`; this command can also resolve an existing compact config without an interactive session. Commit both files.
+
+Declare `endpoints: {api: 8000, web: 4200}` when ports are known. Setup can detect literal ports in development scripts; ambiguity produces an actionable error. Supply the missing overrides from repository evidence and retry. Deployment uses saved settings and automatically refreshes the lock after config edits. It never runs setup discovery. For unfamiliar runtimes, a fully explicit launch recipe or interactive setup by the developer may be needed. Do not launch an interactive setup conversation inside another agent.
+
+Group compatible processes under the repository's existing runner. Overlapping environment keys must have identical values; extra keys can be shared. Conflicting values require separate app containers. Do not group incompatible runtimes or colliding ports. The runner owns child processes, and the group restarts as one container. Size its resources for the whole group.
+
+Named endpoint references work with `browser_url`, `local_url`, `browser_origins`, `host`, `port` and `url`. Compact config infers startup dependencies from internal references in explicit environment mappings. Keep application-specific settings such as CORS, allowed hosts and passkey identity visible in YAML. Logs, exec and verification's `service` selector use container names; browser URLs use endpoint names. Preserve an existing version 1 configuration unless conversion is requested.
+
+## Explicit version 1 configuration
+
 This example assumes an API at `apps/api/src/main.ts` and an existing `test:e2e` script. Replace paths, commands and runtime image with the application's actual values. Omit services it does not need.
 
 ```yaml

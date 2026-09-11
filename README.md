@@ -61,7 +61,7 @@ contremaitre show --branch main
 
 Open the web URL printed by `show`. You now have a static web page, PostgreSQL, and Redis on a private network. The page does not query the databases; the next example demonstrates data isolation directly. The router dashboard is at [https://contremaitre.localhost](https://contremaitre.localhost).
 
-For your own app, run `contremaitre init` from its repository, review the generated `.contremaitre.yaml`, then run `contremaitre deploy --main`. Init can use an installed coding agent to inspect your stack. Use `contremaitre init --no-ai` for conventional Dockerfile detection. [Read the setup options](docs/assisted-init.md).
+For your own app, run `contremaitre init` from its repository, review and commit `.contremaitre.yaml` and `.contremaitre.lock`, then run `contremaitre deploy --main`. Init can use an installed coding agent to inspect your stack. Development projects can keep just their application paths and overrides in YAML; setup saves inferred launch settings in the lock. Use `contremaitre init --no-ai` for conventional development scripts or Dockerfiles. Existing version 1 manifests remain supported without a lock. [Read the setup options](docs/assisted-init.md).
 
 ## Try a data fork
 
@@ -156,6 +156,7 @@ Contremaitre is in early development. The local runtime supports managed Postgre
 | --- | --- |
 | [Full reference](docs/reference.md) | Manifest fields, environment identity, data lifecycle, commands, and tunnels |
 | [Local HTTPS](docs/local-https.md) | Certificates, port forwarding, and the Traefik dashboard |
+| [Compact configuration](docs/compact-config.md) | Minimal app config, setup detection, shared containers, endpoints and automatic lock refresh |
 | [Initialization and hot reload](docs/assisted-init.md) | Agent-assisted setup, Dockerfiles, and development containers |
 | [Agent verification](docs/agent-workflow.md) | Test profiles, artifacts, review pages, and source freshness |
 | [Project drivers](docs/project-drivers.md) | Integrating an existing deployment system |

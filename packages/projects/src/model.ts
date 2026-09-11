@@ -18,6 +18,7 @@ export const serviceSchema = Schema.Struct({
   ),
   port: Schema.optional(Schema.Int),
   http: Schema.optional(Schema.Boolean),
+  endpoints: Schema.optional(Schema.Record({ key: Schema.String, value: Schema.Int })),
   depends_on: Schema.optional(Schema.Array(Schema.String)),
   environment: Schema.optional(strings),
   env_file: Schema.optional(Schema.Union(Schema.String, Schema.Array(Schema.String))),
@@ -29,6 +30,12 @@ export const serviceSchema = Schema.Struct({
   memory: Schema.optional(Schema.String),
 });
 export type Service = Schema.Schema.Type<typeof serviceSchema>;
+export function serviceEndpoints(name: string, service: Service): Record<string, number> {
+  return {
+    ...(service.http && service.port ? { [name]: service.port } : {}),
+    ...service.endpoints,
+  };
+}
 export const driverSchema = Schema.Struct({
   executable: Schema.String,
   timeout_seconds: Schema.optional(Schema.Int),

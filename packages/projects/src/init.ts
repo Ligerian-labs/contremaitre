@@ -5,6 +5,8 @@ import { Schema } from "effect";
 import { parse, stringify } from "yaml";
 import { parseManifest, safePath, validName } from "./config.js";
 import { type Service, slug } from "./model.js";
+import { isCompact, manifestFile, projectDocument, saveSetupLock } from "./project-lock.js";
+import { conventionalProject, prepareSetup } from "./setup.js";
 export function dockerfilePort(contents: string): number {
   const stages = new Map<string, string[]>();
   let exposed: string[] = [],
@@ -112,6 +114,23 @@ export function importCompose(contents: string, project: string) {
 }
 export function initProject(dir: string, compose?: string) {
   const target = join(dir, ".contremaitre.yaml");
+  if (
+    !compose &&
+    [".contremaitre.yaml", ".contremaitre.yml"].some((name) => existsSync(join(dir, name)))
+  ) {
+    const path = manifestFile(dir);
+    if (!lstatSync(path).isFile()) fail("Manifest must be a regular file");
+    const text = readFileSync(path, "utf8");
+    if (isCompact(projectDocument(text))) {
+      const { lock } = prepareSetup(dir, text);
+      if (!lock) fail("Development setup did not resolve a lock");
+      saveSetupLock(dir, lock, () => {
+        if (readFileSync(path, "utf8") !== text)
+          fail("Config changed during setup; retry init", "conflict");
+      });
+      return path;
+    }
+  }
   for (const name of [".contremaitre.yaml", ".contremaitre.yml"])
     try {
       lstatSync(join(dir, name));
@@ -122,6 +141,13 @@ export function initProject(dir: string, compose?: string) {
   let project = slug(basename(dir)),
     services: Record<string, Service> = {};
   const generated: Record<string, string> = {};
+  const compact = compose ? undefined : conventionalProject(dir);
+  if (compact) {
+    const { lock } = prepareSetup(dir, compact);
+    if (!lock) fail("Development setup did not resolve a lock");
+    saveSetupLock(dir, lock, () => writeFileSync(target, compact, { flag: "wx", mode: 0o644 }));
+    return target;
+  }
   if (compose) {
     const manifest = importCompose(readFileSync(safePath(dir, compose), "utf8"), project);
     project = manifest.project;

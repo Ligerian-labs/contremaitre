@@ -69,11 +69,11 @@ contremaitre list
 
 The example builds a static web page and starts PostgreSQL and Redis. Its web service receives connection settings but does not query the databases. Change `index.html` and redeploy to verify working-file builds.
 
-For an existing application, `contremaitre init` starts a short conversation with a coding agent and writes `.contremaitre.yaml`. Contremaitre asks one question at a time with numbered choices and accepts free-text answers. The agent follows the active development command, workspace scripts and Compose configuration to identify applications and supporting services. Existing manifests enter an update conversation that preserves choices you have not asked to change. Init only writes the validated manifest; it does not build or deploy.
+For an existing application, `contremaitre init` starts a short conversation with a coding agent and writes `.contremaitre.yaml`. Contremaitre asks one question at a time with numbered choices and accepts free-text answers. The agent follows the active development command, workspace scripts and Compose configuration to identify applications and supporting services. Existing manifests enter an update conversation that preserves choices you have not asked to change. Init writes the validated configuration and a lock for compact development apps; it does not build or deploy.
 
 Use `--agent codex`, `--agent claude`, `--agent pi` or `--agent opencode` to override the saved agent. Otherwise init uses `<home>/init.json`, then discovers installed agents and remembers your selection. If none are available, it explains setup and the non-AI command. Agent-assisted init requires an interactive terminal. See [agent configuration and development containers](assisted-init.md) for settings, limits and source-sync behavior.
 
-For scripts or conventional detection, `contremaitre init --no-ai` checks these conventions in order:
+For scripts, `contremaitre init --no-ai` first resolves an existing compact config or detects a root development script with pinned runtime requirements and identifiable ports. It saves the result in `.contremaitre.lock`. Ambiguous development detection requires assisted setup. Otherwise, it checks these conventions in order:
 
 1. A root `Dockerfile` creates a `web` service with port 3000 for you to review.
 2. Named `docker/<service>.Dockerfile` files create one service per file, using the repository root as the build context. For example, `docker/api.Dockerfile` and `docker/web.Dockerfile` create `api` and `web` services. A root Node `start` script is not needed. Init does not search nested workspaces.
@@ -86,6 +86,8 @@ Conventional init generates a starting configuration. Review build contexts, por
 `init --no-ai --compose compose.yaml` imports a strict subset of Compose: app images/builds, argument-list commands, string environment maps, dependency lists, a single published port, and named file volumes. Host port numbers are discarded; routes use the container port. Database services, interpolation, health conditions, bind mounts, and unsupported fields fail with an explanation. Define managed databases explicitly in the resulting manifest. Without `--no-ai`, `--compose` selects the file for the agent to inspect. This is not a Compose runtime.
 
 ## Manifest
+
+For development projects, prefer the [compact configuration](compact-config.md): app paths and application-specific overrides in YAML, with launch settings saved by setup in `.contremaitre.lock`. Deploy refreshes the lock from config edits without repeating discovery. The version 1 format below remains supported.
 
 ```yaml
 version: 1
@@ -154,7 +156,7 @@ Identity includes the project name, canonical workspace path, and branch/bookmar
 
 Git uses the current branch, or a detached commit label. Jujutsu uses its nearest unambiguous ancestor bookmark, falling back to `workspace` when no bookmark exists. Multiple bookmarks require `--branch NAME`. Unbookmarked changes in the same workspace do not create an environment per change. `--branch` is an explicit context override, not a VCS mutation.
 
-URLs include a workspace suffix and hash, avoiding collisions after branch-name normalization. The alphabetically first HTTP service gets the environment URL; other HTTP services get an extra service prefix. Adding a service that sorts earlier changes that default assignment, so use service-specific configuration deliberately.
+URLs include a workspace suffix and hash, avoiding collisions after branch-name normalization. The alphabetically first HTTP endpoint gets the environment URL; other endpoints get their name as an extra prefix. A service may expose several named endpoints with `endpoints: {api: 8000, web: 4200}`. Every named port must listen before that container becomes ready, including when a custom readiness command is present. Adding a service that sorts earlier changes that default assignment, so use service-specific configuration deliberately.
 
 The first deployed `main` branch becomes the project's clone source. Use `deploy --main` to designate a source initially, or `contremaitre main --env ENV` to change it explicitly. Only one environment per project is designated main. It also gets `main.PROJECT.localhost`.
 

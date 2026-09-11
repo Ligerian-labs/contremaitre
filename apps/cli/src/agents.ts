@@ -76,8 +76,11 @@ export async function agentCommand(
       options.publicPort,
       options.http ? undefined : options.httpsPort,
     );
-  const capabilities = (await call(ctx, home, "health")) as { agent_workflow?: number };
-  if (capabilities.agent_workflow !== 1)
+  const capabilities = (await call(ctx, home, "health")) as {
+    agent_workflow?: number;
+    compact_config?: number;
+  };
+  if (capabilities.agent_workflow !== 1 || capabilities.compact_config !== 1)
     fail("Restart the hub with this Contremaitre binary to use agent workflows");
   const accepted = (await call(ctx, home, action, {
     ...req,
