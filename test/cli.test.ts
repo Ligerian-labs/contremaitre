@@ -75,6 +75,7 @@ const commandNames = [
   "wait",
   "init",
   "start",
+  "self-install",
   "serve",
   "deploy",
   "attach",
@@ -96,6 +97,14 @@ const commandNames = [
   "forward-https",
   "https-service",
 ];
+
+test("self-install rejects source execution before copying the Bun interpreter", async () => {
+  const destination = join(cliDirectory, "install");
+  const result = await cli(["self-install", destination]);
+  expect(result.code).not.toBe(0);
+  expect(result.stderr).toContain("requires the compiled CLI");
+  expect(existsSync(join(destination, "contremaitre"))).toBe(false);
+});
 
 test("tunnel documents SaaS login and explicit workspace selection", async () => {
   const result = await cli(["tunnel", "--help"]);
@@ -126,7 +135,7 @@ test("root help is a compact overview of every command, also shown without argum
   expect(help.stdout).toContain("Usage: contremaitre <command> [flags]");
   for (const name of commandNames) expect(help.stdout).toMatch(new RegExp(`\\b${name}\\b`));
   const lines = help.stdout.trimEnd().split("\n");
-  expect(lines.length).toBeLessThanOrEqual(35);
+  expect(lines.length).toBeLessThanOrEqual(36);
   expect(Math.max(...lines.map((line) => line.length))).toBeLessThanOrEqual(80);
   expect(help.stdout).not.toContain("This setting is optional");
   expect(help.stdout).not.toContain("\u001b[");
@@ -177,12 +186,13 @@ test("irrelevant flags and unknown commands fail as usage errors", async () => {
   }
 });
 
-test("every command has specific help and narrow output wraps cleanly", async () => {
-  const results = await Promise.all(commandNames.map((name) => cli([name, "--help"])));
-  for (const [index, help] of results.entries()) {
+// Each subprocess gets its own test deadline; a full CLI matrix can exceed five seconds on CI.
+for (const name of commandNames) {
+  test(`${name} has specific help`, async () => {
+    const help = await cli([name, "--help"]);
     expect(help.code).toBe(0);
     expect(help.stderr).toBe("");
-    expect(help.stdout).toContain(`Usage: contremaitre ${commandNames[index]}`);
+    expect(help.stdout).toContain(`Usage: contremaitre ${name}`);
     expect(help.stdout).toContain("Examples:");
     expect(help.stdout).not.toContain("<arguments>");
     expect(
@@ -193,7 +203,10 @@ test("every command has specific help and narrow output wraps cleanly", async ()
           .map((line) => line.length),
       ),
     ).toBeLessThanOrEqual(80);
-  }
+  });
+}
+
+test("narrow help output wraps cleanly", async () => {
   const narrow = await cli(["deploy", "--help"], 50);
   expect(
     Math.max(
@@ -205,17 +218,20 @@ test("every command has specific help and narrow output wraps cleanly", async ()
   ).toBeLessThanOrEqual(50);
 });
 
-test("shared flag ordering, version output and completion generation still work", async () => {
-  for (const args of [
-    ["version", "--json"],
-    ["--json", "version"],
-    ["--json=true", "version"],
-  ]) {
+for (const args of [
+  ["version", "--json"],
+  ["--json", "version"],
+  ["--json=true", "version"],
+]) {
+  test(`version output supports ${args.join(" ")}`, async () => {
     const result = await cli(args);
     expect(result.code).toBe(0);
     expect(JSON.parse(result.stdout)).toEqual({ version: 1, data: "contremaitre 0.2.0" });
-  }
-  for (const shell of ["bash", "fish", "zsh"]) {
+  });
+}
+
+for (const shell of ["bash", "fish", "zsh"]) {
+  test(`${shell} completion generation works`, async () => {
     const result = await cli(["--completions", shell]);
     expect(result.code).toBe(0);
     expect(result.stderr).toBe("");
@@ -228,8 +244,8 @@ test("shared flag ordering, version output and completion generation still work"
       expect(await new Response(syntax.stderr).text()).toBe("");
       expect(await syntax.exited).toBe(0);
     }
-  }
-});
+  });
+}
 
 test("entrypoint leaves help and unknown flags after -- with the service command", async () => {
   const result = await cli([

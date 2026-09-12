@@ -24,6 +24,7 @@ import {
 } from "./help.js";
 import { manageHttpsService } from "./https-service.js";
 import { initialize } from "./init.js";
+import { installBinary } from "./install.js";
 import { exportAgents, installAgents } from "./install-agents.js";
 import { onboard, terminalOnboarding } from "./saas.js";
 import { tunnel } from "./tunnel.js";
@@ -119,6 +120,16 @@ export function makeRoot(passthrough: readonly string[] = []) {
             case "https-service":
               if (args.length !== 1) fail("https-service requires install, status or uninstall");
               output(o.json, await manageHttpsService(ctx, args[0], o.httpsPort));
+              return;
+            case "self-install":
+              if (args.length !== 1) fail("self-install requires an installation directory");
+              if (!Bun.main.startsWith("/$bunfs/")) fail("self-install requires the compiled CLI");
+              await installBinary(
+                context(AbortSignal.any([signal, AbortSignal.timeout(400_000)]), ctx.log),
+                process.execPath,
+                resolve(args[0], "contremaitre"),
+                home,
+              );
               return;
             case "version":
               output(o.json, "contremaitre 0.2.0");

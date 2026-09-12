@@ -41,12 +41,17 @@ const port = await new Promise<number>((resolve, reject) => {
 });
 let child: ReturnType<typeof Bun.spawn> | undefined;
 let upgradedPid: number | undefined;
-async function makeInstall() {
-  const command = Bun.spawn(["make", "-o", "build", "install", `HOME=${installHome}`], {
-    env: { ...process.env, CONTREMAITRE_HOME: home, PATH: `${fakebin}:${process.env.PATH}` },
-    stdout: "pipe",
-    stderr: "pipe",
-  });
+async function makeInstall(compiled = false) {
+  const command = Bun.spawn(
+    compiled
+      ? [binary, "self-install", join(installHome, ".local/bin")]
+      : ["make", "-o", "build", "install", `HOME=${installHome}`],
+    {
+      env: { ...process.env, CONTREMAITRE_HOME: home, PATH: `${fakebin}:${process.env.PATH}` },
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  );
   const [code, stdout, stderr] = await Promise.all([
     command.exited,
     new Response(command.stdout).text(),
@@ -222,10 +227,21 @@ try {
   assert.ok(upgradedPid > 0 && upgradedPid !== child?.pid);
   assert.equal(await health(ctx, home), true);
   assert.equal(((await call(ctx, home, "health")) as { public_port: number }).public_port, port);
+  const previousPid = upgradedPid;
+  await makeInstall(true);
+  const nextOwner = Bun.spawn(["lsof", "-t", join(home, "daemon.lock")], { stdout: "pipe" });
+  upgradedPid = Number((await new Response(nextOwner.stdout).text()).trim());
+  assert.equal(await nextOwner.exited, 0);
+  assert.ok(
+    upgradedPid > 0 && upgradedPid !== previousPid,
+    "self-install must replace the running hub",
+  );
+  assert.equal(await health(ctx, home), true);
+  assert.equal(((await call(ctx, home, "health")) as { public_port: number }).public_port, port);
   const environments = (await call(ctx, home, "list")) as { Status: string }[];
   assert.equal(environments[0].Status, "running", "upgrade must preserve running environments");
   console.log(
-    "Standalone help, agent installation, flag validation, Unix socket, duplicate requests, SIGKILL recovery, owned-process cleanup, SIGTERM restart and make install hub upgrade passed",
+    "Standalone help, agent installation, flag validation, Unix socket, duplicate requests, SIGKILL recovery, owned-process cleanup, SIGTERM restart and source/downloaded CLI hub upgrades passed",
   );
 } finally {
   if (upgradedPid) {

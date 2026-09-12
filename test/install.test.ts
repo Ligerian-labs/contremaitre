@@ -10,9 +10,9 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { installBinary, routingArguments } from "@contremaitre/cli/install";
 import { context } from "@contremaitre/execution/context";
 import { lockHome } from "@contremaitre/execution/files";
-import { installBinary, routingArguments } from "../scripts/install.js";
 
 test("upgrade preserves HTTPS and legacy HTTP routing options from older hubs", () => {
   expect(routingArguments("/path with spaces/contremaitre serve --https-port=18443", true)).toEqual(
