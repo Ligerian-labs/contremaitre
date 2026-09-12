@@ -95,7 +95,9 @@ test.skipIf(!Bun.which("traefik") || !Bun.which("mkcert"))(
       });
     async function eventually(host: string, status: number, servername = host, path = "/") {
       let last: unknown;
-      for (let i = 0; i < 50; i++) {
+      // A new route can require several sequential mkcert processes on the hosted runner.
+      const deadline = Date.now() + 15_000;
+      while (Date.now() < deadline) {
         try {
           const reply = await get(host, servername, path);
           if (reply.status === status) return reply;
@@ -105,7 +107,9 @@ test.skipIf(!Bun.which("traefik") || !Bun.which("mkcert"))(
         }
         await sleep(100, new AbortController().signal);
       }
-      throw Error(`Route did not reach ${status}: ${String(last)}\n${traefikLog}`);
+      throw Error(
+        `Route ${host}${path} did not reach ${status}: ${last instanceof Error ? String(last) : JSON.stringify(last)}\n${traefikLog}`,
+      );
     }
     try {
       const certificates = await localCertificates(context(), home);
