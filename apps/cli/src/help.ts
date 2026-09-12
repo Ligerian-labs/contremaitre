@@ -414,6 +414,16 @@ export const commands: readonly CommandHelp[] = [
     examples: ["contremaitre cancel OPERATION_ID", "contremaitre cancel OPERATION_ID --json"],
   },
   {
+    name: "self-install",
+    group: "Hub and tools",
+    description: "Install this binary and upgrade a running hub",
+    usage: "DIRECTORY",
+    details:
+      "Used by the download installer. Requires the compiled CLI. A stopped hub stays stopped; a running hub restarts with its existing ports and environments.",
+    flags: ["home"],
+    examples: ["./contremaitre self-install ~/.local/bin"],
+  },
+  {
     name: "start",
     group: "Hub and tools",
     description: "Start the hub in the background",

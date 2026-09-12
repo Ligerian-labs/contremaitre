@@ -75,6 +75,7 @@ const commandNames = [
   "wait",
   "init",
   "start",
+  "self-install",
   "serve",
   "deploy",
   "attach",
@@ -96,6 +97,14 @@ const commandNames = [
   "forward-https",
   "https-service",
 ];
+
+test("self-install rejects source execution before copying the Bun interpreter", async () => {
+  const destination = join(cliDirectory, "install");
+  const result = await cli(["self-install", destination]);
+  expect(result.code).not.toBe(0);
+  expect(result.stderr).toContain("requires the compiled CLI");
+  expect(existsSync(join(destination, "contremaitre"))).toBe(false);
+});
 
 test("tunnel documents SaaS login and explicit workspace selection", async () => {
   const result = await cli(["tunnel", "--help"]);
@@ -126,7 +135,7 @@ test("root help is a compact overview of every command, also shown without argum
   expect(help.stdout).toContain("Usage: contremaitre <command> [flags]");
   for (const name of commandNames) expect(help.stdout).toMatch(new RegExp(`\\b${name}\\b`));
   const lines = help.stdout.trimEnd().split("\n");
-  expect(lines.length).toBeLessThanOrEqual(35);
+  expect(lines.length).toBeLessThanOrEqual(36);
   expect(Math.max(...lines.map((line) => line.length))).toBeLessThanOrEqual(80);
   expect(help.stdout).not.toContain("This setting is optional");
   expect(help.stdout).not.toContain("\u001b[");

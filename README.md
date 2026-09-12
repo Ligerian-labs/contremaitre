@@ -31,25 +31,33 @@ Git worktrees and Jujutsu workspaces on the same branch remain separate. A plain
 
 ## Get started
 
-You need an **Apple silicon Mac running macOS 26**, [Homebrew](https://brew.sh), and [Bun 1.4.2](https://github.com/oven-sh/bun/releases/tag/bun-v1.4.2) to build from source. Application images must support ARM64. The compiled CLI includes Bun.
+You need an **Apple silicon Mac running macOS 26 or newer**. Application images must support ARM64. Install or update the compiled CLI with:
 
 ```sh
+curl -fsSL https://contremaitre.ligerianlabs.fr/install.sh | sh
+```
+
+The installer verifies the release checksum and installs to `~/.local/bin`. Add that directory to your shell's `PATH`. It reports missing runtime prerequisites. For your first installation:
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
 brew install container traefik mkcert
 mkcert -install
-
-git clone https://github.com/Ligerian-labs/contremaitre.git
-cd contremaitre
-bun install --frozen-lockfile
-make install
-export PATH="$HOME/.local/bin:$PATH"
-
 contremaitre https-service install
 contremaitre start
 ```
 
-`mkcert -install` trusts a local development certificate authority. The HTTPS service requests administrator approval to forward port 443 in the background. Run the hub and applications as your normal user. See [HTTPS setup and troubleshooting](docs/local-https.md) if a port is occupied or certificates are not trusted.
+You need [Homebrew](https://brew.sh) for these prerequisites. `mkcert -install` trusts a local development certificate authority. The HTTPS service requests administrator approval to forward port 443 in the background. Run the installer, hub and applications as your normal user. See [HTTPS setup and troubleshooting](docs/local-https.md).
 
-After pulling updates, run `bun install --frozen-lockfile` and `make install` again. Installation replaces the CLI and automatically restarts a running hub with the new binary, preserving its HTTP or HTTPS ports and running environments. Active operations and tunnel sessions end, and local routing pauses during the restart. A stopped hub stays stopped. Set `CONTREMAITRE_HOME` when upgrading a hub that uses a custom data directory.
+Run the same installer command to update. It automatically restarts a running hub with the new binary, preserving its HTTP or HTTPS ports and running environments. Active operations and tunnel sessions end, and local routing pauses during the restart. A stopped hub stays stopped. Set `CONTREMAITRE_HOME` when upgrading a hub that uses a custom data directory.
+
+For a specific release or installation directory, pass environment variables to `sh`:
+
+```sh
+curl -fsSL https://contremaitre.ligerianlabs.fr/install.sh | CONTREMAITRE_VERSION=v0.2.0 CONTREMAITRE_INSTALL_DIR="$HOME/.local/bin" sh
+```
+
+To build from source, install [Bun 1.4.2](https://github.com/oven-sh/bun/releases/tag/bun-v1.4.2), clone this repository, then run `bun install --frozen-lockfile` and `make install`. Repeat after pulling updates. The compiled CLI includes Bun; users of the download installer do not need it. See [release publishing](docs/releases.md).
 
 Deploy the included example:
 
