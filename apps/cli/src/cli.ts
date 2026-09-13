@@ -28,6 +28,7 @@ import { installBinary } from "./install.js";
 import { exportAgents, installAgents } from "./install-agents.js";
 import { onboard, terminalOnboarding } from "./saas.js";
 import { tunnel } from "./tunnel.js";
+import { tunnelLogs } from "./tunnel-logs.js";
 
 export { normalizeArguments } from "./help.js";
 
@@ -206,12 +207,33 @@ export function makeRoot(passthrough: readonly string[] = []) {
               return;
             case "tunnel": {
               if (
-                !["status", "stop", "release"].includes(args[0]) ||
-                args.length > (args[0] === "release" ? 2 : 1)
+                !["status", "logs", "stop", "release"].includes(args[0]) ||
+                args.length > (["release", "logs"].includes(args[0]) ? 2 : 1)
               )
                 fail(
-                  "Use contremaitre tunnel to share all HTTP services, or tunnel login, status, stop, release SERVICE",
+                  "Use contremaitre tunnel to share all HTTP services, or tunnel login, status, logs [SERVICE], stop, release SERVICE",
                 );
+              if (args[0] === "logs") {
+                const env = (await call(ctx, home, "resolve", req)) as Environment;
+                const logs = await tunnelLogs(home, env, args[1]);
+                if (o.json) output(true, logs);
+                else if (!Object.keys(logs).length)
+                  output(false, "No HTTP services have tunnel logs.");
+                else
+                  for (const [service, log] of Object.entries(logs)) {
+                    output(false, `[${service}] ${log.path}`);
+                    if (log.truncated)
+                      output(false, "Showing the last 64 KiB; full log is at the path above.");
+                    if (!log.exists) output(false, `No tunnel logs recorded for ${service}.`);
+                    else if (!log.output)
+                      output(false, `No connector diagnostics recorded for ${service}.`);
+                    else
+                      process.stdout.write(
+                        log.output.endsWith("\n") ? log.output : `${log.output}\n`,
+                      );
+                  }
+                return;
+              }
               if (args[0] === "status") {
                 const env = (await call(ctx, home, "resolve", req)) as Environment;
                 output(o.json, env.tunnels);

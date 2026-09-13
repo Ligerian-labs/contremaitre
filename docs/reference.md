@@ -280,11 +280,15 @@ contremaitre tunnel
 contremaitre tunnel login
 contremaitre tunnel --workspace TEAM_ID
 contremaitre tunnel status
+contremaitre tunnel logs
+contremaitre tunnel logs web --json
 contremaitre tunnel stop
 contremaitre tunnel release web
 ```
 
 Without a custom provider, `tunnel` uses `https://contremaitre.ligerianlabs.fr`. It opens browser authorization when needed, asks for a workspace when none is selected, saves the device credential in macOS Keychain and prepares the provider automatically. Later commands reuse that login. `tunnel login` signs in without starting a preview. `--workspace ID` selects a workspace for new reservations. Device links fill in the authorization code. Before creating tunnels, the CLI checks subscription access and opens the selected workspace's billing page if a subscription is required. No provider is installed or tunnel reserved in that case. See [SaaS onboarding](saas-onboarding.md) for the integration contract.
+
+Use `contremaitre tunnel logs [SERVICE]` after a connector failure or while sharing to read the latest connector's stderr. Without a service, it prints logs for all HTTP services. It does not authenticate, restart services, or start sharing. `--env`, `--branch`, and `--home` select the environment and hub data directory as usual. The command prints the last 64 KiB per service and the full file path. `--json` returns a service map with `path`, `exists`, `output`, and `truncated`. Missing logs and empty logs are reported separately. Files remain after session cleanup; the next connector attempt for that service replaces its file. Connector stderr capture is capped at 10 MiB per attempt. These logs contain provider diagnostics, not application request logs. Providers must omit credentials from stderr.
 
 To use a custom provider, configure its installed executable in `~/.local/share/contremaitre/tunnels.json`. This explicit choice takes precedence; invalid custom configuration never falls back to the SaaS:
 
