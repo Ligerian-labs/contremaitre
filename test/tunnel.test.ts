@@ -45,7 +45,7 @@ lines.on('line', async line=>{
   while(existsSync(r.config.calls+'.hold-'+op)||existsSync(r.config.calls+'.hold-'+op+'-'+r.service_id))await Bun.sleep(10);
   if(op==='start'){
    expires=r.expires_at;
-   if(existsSync(r.config.fail)&&r.service_id==='web')process.exit(1);
+   if(existsSync(r.config.fail)&&r.service_id==='web'){console.error(JSON.stringify({event:'adapter.stopped',code:'1',reason:'Owner lease ended'}));process.exit(1);}
    const status=(await fetch(r.upstream)).status;
    appendFileSync(r.config.calls,JSON.stringify({op:'initial-gate',status})+'\\n');
    console.log(JSON.stringify({version:2,ready:true}));
@@ -127,6 +127,76 @@ services:
     },
   };
 }
+
+async function tunnelCLI(home: string, args: string[]) {
+  const cli = fileURLToPath(new URL("../apps/cli/src/cli.ts", import.meta.url));
+  const child = Bun.spawn(
+    [process.execPath, cli, "tunnel", ...args, "--home", home, "--branch", "main"],
+    { cwd: home, stdout: "pipe", stderr: "pipe" },
+  );
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  return { stdout, stderr, code };
+}
+
+test("tunnel logs expose failed connector diagnostics after cleanup without starting sharing", async () => {
+  const f = await fixture();
+  try {
+    writeFileSync(join(f.home, "fail"), "");
+    writeFileSync(join(f.home, "calls.hold-start-api"), "");
+    const failed = await tunnelCLI(f.home, []);
+    expect(failed.code).not.toBe(0);
+    expect(failed.stderr).toContain("tunnel logs web");
+    expect(f.sessions.sharing(f.env.Identity.ID)).toBe(false);
+    const before = f.events().length;
+    const logs = await tunnelCLI(f.home, ["logs", "web"]);
+    expect(logs.code).toBe(0);
+    expect(logs.stdout).toContain("Owner lease ended");
+    const all = await tunnelCLI(f.home, ["logs", "--json", "--env", f.env.Identity.ID]);
+    expect(all.code).toBe(0);
+    const data = JSON.parse(all.stdout).data;
+    expect(Object.keys(data)).toEqual(["api", "web"]);
+    expect(data.web.output).toContain("Owner lease ended");
+    expect(data.web.path).toBe(join(f.home, `tunnel-${f.env.Identity.ID}-web.log`));
+    expect(data.web.exists).toBe(true);
+    expect(data.web.truncated).toBe(false);
+    expect(data.api.output).toBe("");
+    expect(f.events()).toHaveLength(before);
+    expect(f.env.tunnel_configuration).toBeUndefined();
+  } finally {
+    await f.close();
+  }
+}, 15000);
+
+test("tunnel logs distinguish missing output, reject unknown services and bound large output", async () => {
+  const f = await fixture();
+  try {
+    const missing = await tunnelCLI(f.home, ["logs", "web"]);
+    expect(missing.code).toBe(0);
+    expect(missing.stdout).toContain("No tunnel logs recorded");
+    for (const name of ["../outside", "unknown", "worker"]) {
+      const invalid = await tunnelCLI(f.home, ["logs", name]);
+      expect(invalid.code).not.toBe(0);
+      expect(invalid.stderr).toContain("Unknown HTTP service");
+    }
+    writeFileSync(
+      join(f.home, `tunnel-${f.env.Identity.ID}-web.log`),
+      `${"old log line\n".repeat(10000)}last diagnostic\n`,
+    );
+    const large = await tunnelCLI(f.home, ["logs", "web", "--json"]);
+    expect(large.code).toBe(0);
+    const data = JSON.parse(large.stdout).data.web;
+    expect(data.output).toEndWith("last diagnostic\n");
+    expect(Buffer.byteLength(data.output)).toBeLessThanOrEqual(65536);
+    expect(data.truncated).toBe(true);
+    expect(f.events()).toEqual([]);
+  } finally {
+    await f.close();
+  }
+}, 15000);
 
 test("foreground group gates startup, configures browser URLs, restores local config and reuses reservations", async () => {
   const f = await fixture();

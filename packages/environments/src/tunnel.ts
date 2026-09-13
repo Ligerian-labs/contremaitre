@@ -10,6 +10,7 @@ import {
   fail,
   HubError,
   hash,
+  message,
 } from "@contremaitre/execution/context";
 import { atomicWrite } from "@contremaitre/execution/files";
 import { EnvironmentLocks } from "@contremaitre/execution/locks";
@@ -19,6 +20,10 @@ import { Schema } from "effect";
 import type { Manager } from "./manager.js";
 import { type Environment, httpEndpoints, type TunnelReservation } from "./model.js";
 import { providerConfig } from "./tunnel-provider.js";
+
+export function tunnelLogPath(home: string, id: string, name: string) {
+  return join(home, `tunnel-${id}-${name}.log`);
+}
 
 const readinessSchema = Schema.Struct({ version: Schema.Literal(2), ready: Schema.Boolean });
 const responseSchema = Schema.Struct({
@@ -188,7 +193,13 @@ export class Tunnels {
       const port = await listen(server, 0);
       const controller = new AbortController();
       const input = new PassThrough();
-      const log = join(this.manager.store.home, `tunnel-${env.Identity.ID}-${name}.log`);
+      const log = tunnelLogPath(this.manager.store.home, env.Identity.ID, name);
+      const withLogs = (error: unknown) =>
+        new HubError({
+          message: `${message(error)}. See contremaitre tunnel logs ${name} --env ${env.Identity.ID}. Log: ${log}`,
+          classification: error instanceof HubError ? error.classification : "transient",
+          exitCode: error instanceof HubError ? error.exitCode : undefined,
+        });
       atomicWrite(log, "");
       let logged = 0,
         line = Buffer.alloc(0),
@@ -259,7 +270,7 @@ export class Tunnels {
                 : "Tunnel connector failed",
               classification: permanent ? "permanent" : "transient",
             });
-            if (permanent) this.failures.set(key, failure);
+            if (permanent) this.failures.set(key, withLogs(failure));
             readyReject(failure);
           },
         )
@@ -302,7 +313,7 @@ export class Tunnels {
       } catch (e) {
         controller.abort();
         await done;
-        throw e;
+        throw withLogs(e);
       } finally {
         clearTimeout(timeout);
         ctx.signal.removeEventListener("abort", abort);
