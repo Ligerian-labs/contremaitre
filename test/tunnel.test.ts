@@ -42,6 +42,7 @@ lines.on('line', async line=>{
  const r=JSON.parse(line),op=process.argv[2];
  if(!first){
   first=r; appendFileSync(r.config.calls,JSON.stringify({op,...r})+'\\n');
+  if(op==='reserve'&&r.service_id==='web'&&existsSync(r.config.calls+'.fail-reserve')){console.error(JSON.stringify({event:'adapter.stopped',code:'1',reason:'Control unavailable (HTTP 503; request 11111111-1111-4111-8111-111111111111)'}));process.exit(1);}
   while(existsSync(r.config.calls+'.hold-'+op)||existsSync(r.config.calls+'.hold-'+op+'-'+r.service_id))await Bun.sleep(10);
   if(op==='start'){
    expires=r.expires_at;
@@ -127,6 +128,25 @@ services:
     },
   };
 }
+
+test("reservation failures report the provider reason and create service logs before starting", async () => {
+  const f = await fixture();
+  try {
+    writeFileSync(join(f.home, "calls.fail-reserve"), "");
+    const failed = await tunnelCLI(f.home, []);
+    expect(failed.code).not.toBe(0);
+    expect(failed.stderr).toContain("Tunnel provider reserve failed for web");
+    expect(failed.stderr).toContain("HTTP 503");
+    expect(failed.stderr).toContain("11111111-1111-4111-8111-111111111111");
+    expect(failed.stderr).toContain("tunnel logs web");
+    const logs = await tunnelCLI(f.home, ["logs", "web"]);
+    expect(logs.stdout).toContain("HTTP 503");
+    expect(logs.stdout).toContain("reserve");
+    expect(f.events().some((e) => e.op === "start")).toBe(false);
+  } finally {
+    await f.close();
+  }
+});
 
 async function tunnelCLI(home: string, args: string[]) {
   const cli = fileURLToPath(new URL("../apps/cli/src/cli.ts", import.meta.url));
