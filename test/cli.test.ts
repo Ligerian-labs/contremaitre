@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { makeRoot, normalizeArguments } from "@contremaitre/cli/cli";
 import { runCliForTest } from "@structure-ai/cli";
 import { Effect } from "effect";
+import { version } from "../apps/cli/src/version.js";
 
 test("preserves exec passthrough and global flag ordering", async () => {
   const parsed = normalizeArguments([
@@ -226,7 +227,7 @@ for (const args of [
   test(`version output supports ${args.join(" ")}`, async () => {
     const result = await cli(args);
     expect(result.code).toBe(0);
-    expect(JSON.parse(result.stdout)).toEqual({ version: 1, data: "contremaitre 0.2.0" });
+    expect(JSON.parse(result.stdout)).toEqual({ version: 1, data: `contremaitre ${version}` });
   });
 }
 

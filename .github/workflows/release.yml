@@ -6,10 +6,14 @@ on:
     tags: ['v*']
 permissions:
   contents: read
+concurrency:
+  group: release-${{ github.ref }}
 jobs:
   check:
     runs-on: macos-26
     timeout-minutes: 20
+    outputs:
+      prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -17,6 +21,34 @@ jobs:
           bun-version: '1.4.2'
       - run: brew install traefik mkcert shellcheck
       - run: bun install --frozen-lockfile
+      - name: Parse version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if ! printf '%s' "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::Tag must be vX.Y.Z or vX.Y.Z-prerelease, got: $GITHUB_REF_NAME"
+            exit 1
+          fi
+          case "$VERSION" in
+            *-*) PRERELEASE=true ;;
+            *)   PRERELEASE=false ;;
+          esac
+          {
+            echo "version=$VERSION"
+            echo "prerelease=$PRERELEASE"
+          } >> "$GITHUB_OUTPUT"
+      - name: Stamp tag version into the CLI
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          bun run - <<'JS'
+            const manifest = await Bun.file("package.json").json();
+            manifest.version = process.env.VERSION;
+            await Bun.write("package.json", JSON.stringify(manifest, null, 2) + "\n");
+            await Bun.write("apps/cli/src/version.ts", `export const version = ${JSON.stringify(process.env.VERSION)};\n`);
+          JS
       - run: shellcheck scripts/install.sh
       - run: bun run check
       - name: Package release
@@ -26,6 +58,7 @@ jobs:
         run: |
           test "$RELEASE_TAG" = "v$(bun -p "require('./package.json').version")"
           test "$(bin/contremaitre version)" = "contremaitre ${RELEASE_TAG#v}"
+          test "$(bin/contremaitre --version)" = "${RELEASE_TAG#v}"
           codesign --verify --strict bin/contremaitre
           mkdir -p bin/release
           cp bin/contremaitre bin/release/contremaitre-darwin-arm64
@@ -55,11 +88,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
+          PRERELEASE: ${{ needs.check.outputs.prerelease }}
         run: |
           if gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft > draft; then
-            test "$(cat draft)" = true || { echo 'Release already published'; exit 1; }
+            if [ "$(cat draft)" = false ]; then
+              echo "Release $RELEASE_TAG already published, skipping"
+              exit 0
+            fi
           else
             gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG" --generate-notes
           fi
           gh release upload "$RELEASE_TAG" release/* --clobber
-          gh release edit "$RELEASE_TAG" --draft=false --latest
+          LATEST=true
+          if [ "$PRERELEASE" = true ]; then
+            LATEST=false
+          fi
+          gh release edit "$RELEASE_TAG" --draft=false --prerelease="$PRERELEASE" --latest="$LATEST"
