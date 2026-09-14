@@ -248,9 +248,13 @@ export async function copyTree(ctx: Context, source: string, target: string): Pr
   try {
     const out = await fs.open(target, "wx", info.mode & 0o777);
     try {
-      for await (const chunk of input.createReadStream({ autoClose: false })) {
+      // Read the owned handle directly; Bun can leak a duplicate fd for FileHandle streams.
+      const buffer = Buffer.allocUnsafe(64 * 1024);
+      while (true) {
         ctx.signal.throwIfAborted();
-        const bytes = Buffer.from(chunk);
+        const { bytesRead } = await input.read(buffer, 0, buffer.length, null);
+        if (!bytesRead) break;
+        const bytes = buffer.subarray(0, bytesRead);
         let offset = 0;
         while (offset < bytes.length) offset += (await out.write(bytes, offset)).bytesWritten;
       }

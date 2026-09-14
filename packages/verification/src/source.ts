@@ -53,11 +53,15 @@ export async function sourceIdentity(ctx: Context, directory: string) {
     const handle = await fs.open(actual, "r");
     let read = 0;
     try {
-      for await (const chunk of handle.createReadStream({ autoClose: false })) {
+      // Read the owned handle directly; Bun can leak a duplicate fd for FileHandle streams.
+      const buffer = Buffer.allocUnsafe(64 * 1024);
+      while (true) {
         ctx.signal.throwIfAborted();
-        read += chunk.length;
+        const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+        if (!bytesRead) break;
+        read += bytesRead;
         if (read > before.size) fail("Source grew while fingerprinting; retry ensure");
-        digest.update(chunk);
+        digest.update(buffer.subarray(0, bytesRead));
       }
       const after = await handle.stat();
       if (
