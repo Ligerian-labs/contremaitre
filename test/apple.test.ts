@@ -1,13 +1,14 @@
 import { expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import * as os from "node:os";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Apple } from "@contremaitre/environments/apple";
 import { context } from "@contremaitre/execution/context";
 import { run } from "@contremaitre/execution/process";
 
-async function fixture(configured = true) {
+async function fixture(configured = true, small = false) {
   const dir = await mkdtemp(join(tmpdir(), "cm-apple-")),
     root = join(dir, "context"),
     binary = join(dir, "container");
@@ -30,11 +31,14 @@ if (args[0] === 'image' && args[1] === 'inspect') {
   event('image ' + args[2]);
   if (existsSync(join(dir, 'missing-image'))) fatal('image not found');
 } else if (args[0] === 'inspect') {
-  console.log(JSON.stringify([{ status: 'running', configuration: { resources: { cpus: 4, memoryInBytes: 8589934592 } } }]));
+  console.log(JSON.stringify([{ status: 'running', configuration: { resources: ${small ? "{ cpus: 2, memoryInBytes: 2147483648 }" : "{ cpus: 4, memoryInBytes: 8589934592 }"} } }]));
 } else if (args[0] === 'builder' && args[1] === 'start') {
   resources(); event('prepare');
   if (existsSync(join(dir, 'fail-prepare'))) fatal('builder preparation failed');
   writeFileSync(join(dir, 'configured'), 'true');
+} else if (args[0] === 'exec' && args[1] === 'buildkit') {
+  event('probe');
+  if (existsSync(join(dir, 'unresponsive'))) fatal('builder guest is unresponsive');
 } else if (args[0] === 'build') {
   resources();
   const tag = args[args.indexOf('--tag') + 1];
@@ -76,6 +80,40 @@ if (args[0] === 'image' && args[1] === 'inspect') {
     clean: () => rm(dir, { recursive: true, force: true }),
   };
 }
+
+test("an undersized shared builder is raised to the build resource budget", async () => {
+  const memory = spyOn(os, "totalmem").mockReturnValue(32 * 1024 ** 3);
+  const cpus = spyOn(os, "availableParallelism").mockReturnValue(8);
+  const f = await fixture(true, true);
+  const apple = new Apple(f.binary);
+  try {
+    await f.release("one");
+    await apple.build(context(), f.root, "Dockerfile", "one");
+    expect(await f.events()).toContain("build one");
+  } finally {
+    memory.mockRestore();
+    cpus.mockRestore();
+    await f.clean();
+  }
+});
+
+test("an unresponsive running builder fails before builds launch and releases its lease", async () => {
+  const f = await fixture();
+  const apple = new Apple(f.binary);
+  try {
+    await writeFile(join(f.dir, "unresponsive"), "");
+    await f.release("one", "two");
+    await expect(apple.build(context(), f.root, "Dockerfile", "one")).rejects.toThrow(
+      "Shared builder is unresponsive",
+    );
+    expect(await f.events()).not.toContain("build one");
+    await rm(join(f.dir, "unresponsive"));
+    await apple.build(context(), f.root, "Dockerfile", "two");
+    expect(await f.events()).toContain("build two");
+  } finally {
+    await f.clean();
+  }
+});
 
 test("a running builder is reconciled before concurrent builds can race to recreate it", async () => {
   const f = await fixture(false),

@@ -137,18 +137,17 @@ Managed Postgres defaults to `postgres:17`, database/user `app`, and a generated
 
 Services receive `CONTREMAITRE_ENVIRONMENT`, `CONTREMAITRE_LOCAL_URL`, and, when reserved, `CONTREMAITRE_PUBLIC_URL`. The runtime retains private configuration needed to restart a deployed image, even after its source workspace changes.
 
-For large Angular or Node builds, check `container builder status`. A builder with
-2 GB RAM can become unresponsive under compiler load. On a machine with enough
-available memory, stop it when no builds are active and restart it with more
-resources:
+Contremaitre gives the shared Apple builder up to 4 CPUs and 8 GB RAM, capped at
+the host CPU count and half its total RAM. Larger existing allocations are
+preserved. This avoids reusing Apple's 2 GB default for concurrent compiler builds.
+Application VM resources remain controlled by each service's `cpus` and `memory`.
 
-```sh
-container builder stop
-container builder start --cpus 4 --memory 8G
-```
-
-These settings affect the shared Apple builder. Application VM resources remain
-controlled by each service's `cpus` and `memory` settings.
+Before building, Contremaitre checks that the builder guest responds to commands.
+An unresponsive guest fails this check after 10 seconds, even if Apple reports it
+as running. Builder startup is limited to 60 seconds. If a check fails, stop the
+builder with `container builder stop`, then retry `contremaitre ensure`. If stopping
+also hangs, the Apple builder VM requires recovery. Do not restart the entire
+container system while unrelated applications are running.
 
 ## Environment identity and routing
 
@@ -236,7 +235,7 @@ once. A process-independent lock gives one deployment ownership of the shared bu
 while its builds run. Builder configuration is reconciled before launching those
 builds, even if the builder is already running. Other deployments and hubs wait
 until the active builds finish or cancellation cleanup completes. Existing builder
-CPU and memory settings are preserved. Infrastructure starts before apps,
+CPU and memory settings above the default build budget are preserved. Infrastructure starts before apps,
 with independent services starting concurrently and dependencies waiting for readiness.
 Cloning locks both source and target against concurrent mutations.
 
