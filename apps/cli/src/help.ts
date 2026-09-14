@@ -356,10 +356,16 @@ export const commands: readonly CommandHelp[] = [
     name: "prune",
     group: "Environments",
     description: "Remove old builds",
+    usage: "[ENV...]",
     details:
-      "Remove superseded build images across environments. --delete-data also deletes stopped environments that have no tunnel reservations.",
+      "Remove superseded build images from the supplied environment IDs or names. Without ENV, prune all environments. Every selector must resolve before cleanup starts; repeated selections are pruned once. Busy environments are skipped. --delete-data also deletes selected stopped environments that have no tunnel reservations.",
     flags: ["deleteData", "home", "json"],
-    examples: ["contremaitre prune", "contremaitre prune --delete-data"],
+    examples: [
+      "contremaitre prune",
+      "contremaitre prune id1 id2 id3",
+      "contremaitre prune id1 id2 --delete-data",
+      "contremaitre prune --delete-data",
+    ],
   },
   {
     name: "logs",

@@ -219,9 +219,17 @@ export function makeRoot(passthrough: readonly string[] = []) {
               else if (envs.length) output(false, formatEnvironments(envs));
               return;
             }
+            case "prune":
+              output(
+                o.json,
+                await call(ctx, home, "prune", {
+                  delete_data: o.deleteData,
+                  ...(args.length ? { envs: args } : {}),
+                }),
+              );
+              return;
             case "down":
             case "main":
-            case "prune":
             case "stop":
               output(
                 o.json,
