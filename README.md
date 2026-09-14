@@ -139,7 +139,7 @@ Run these from an application repository with a Contremaitre manifest:
 
 ```sh
 contremaitre deploy                    # Build and wait for readiness
-contremaitre show                      # Print this environment's web URLs
+contremaitre show                      # Show URLs, directories and log commands
 contremaitre list                      # List all environments
 contremaitre logs web                  # Read a service's application logs
 contremaitre deploy logs --failure     # Inspect the latest failed deployment

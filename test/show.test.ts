@@ -23,8 +23,8 @@ async function show(home: string, cwd: string, args: string[] = []) {
   return { stdout, stderr, code };
 }
 
-test("show selects the current directory, supports overrides and prints only HTTP URLs", async () => {
-  const home = mkdtempSync(join(tmpdir(), "cm-show-"));
+test("show exposes deployment paths and log commands while preserving the JSON URL map", async () => {
+  const home = mkdtempSync(join(tmpdir(), "cm-show-' space-"));
   const root = join(home, "project"),
     nested = join(root, "src");
   mkdirSync(nested, { recursive: true });
@@ -59,11 +59,32 @@ services:
     });
     const before = [...runtime.calls];
     const plain = await show(home, nested);
-    expect(plain).toEqual({
-      code: 0,
-      stderr: "",
-      stdout: `admin\thttp://${current.Identity.Host}:9080\nweb\thttp://web.${current.Identity.Host}:9080\n`,
-    });
+    expect(plain.code).toBe(0);
+    expect(plain.stderr).toBe("");
+    expect(plain.stdout).toContain(`Workspace: ${current.Root}\n`);
+    expect(plain.stdout).toContain(`Hub data: ${home}\n`);
+    expect(plain.stdout).toContain(
+      `admin\thttp://${current.Identity.Host}:9080\nweb\thttp://web.${current.Identity.Host}:9080\n`,
+    );
+    expect(plain.stdout).not.toContain("hidden");
+    expect(plain.stdout).not.toContain("Driver directory:");
+    const logCommands = plain.stdout.split("\n").filter((line) => line.startsWith("contremaitre "));
+    expect(logCommands).toHaveLength(4);
+    for (const [index, command] of logCommands.entries()) {
+      const parsed = Bun.spawn(["/bin/sh", "-c", `printf '%s\\n' ${command}`], {
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect((await new Response(parsed.stdout).text()).trimEnd().split("\n")).toEqual([
+        "contremaitre",
+        ...(index < 3 ? ["logs", ["admin", "web", "worker"][index]] : ["deploy", "logs"]),
+        "--env",
+        current.Identity.ID,
+        "--home",
+        home,
+      ]);
+      expect(await parsed.exited).toBe(0);
+    }
     const json = await show(home, root, ["--json"]);
     expect(json.code).toBe(0);
     expect(JSON.parse(json.stdout)).toEqual({ version: 1, data: urls(current.Identity.Host) });
@@ -73,6 +94,15 @@ services:
     const explicit = await show(home, home, ["--env", feature.Identity.ID, "--json"]);
     expect(explicit.code).toBe(0);
     expect(JSON.parse(explicit.stdout).data).toEqual(urls(feature.Identity.Host));
+    const selected = hub.manager.resolve(feature.Identity.ID);
+    selected.driver_directory = join(home, "drivers", feature.Identity.ID);
+    const selectedPlain = await show(home, home, ["--env", feature.Identity.ID]);
+    expect(selectedPlain.code).toBe(0);
+    expect(selectedPlain.stdout).toContain(`Workspace: ${feature.Root}\n`);
+    expect(selectedPlain.stdout).toContain(`Driver directory: ${selected.driver_directory}\n`);
+    expect(selectedPlain.stdout).toContain(`--env ${feature.Identity.ID}`);
+    expect(selectedPlain.stdout).not.toContain(current.Identity.ID);
+    expect((await show(home, nested, ["--branch", "feature"])).stdout).toBe(selectedPlain.stdout);
     const missing = await show(home, root, ["--branch", "missing"]);
     expect(missing.code).not.toBe(0);
     expect(missing.stderr).toContain("not found");
@@ -80,7 +110,10 @@ services:
     const env = hub.manager.resolve(current.Identity.ID);
     env.Services.admin.HTTP = false;
     env.Services.web.HTTP = false;
-    expect((await show(home, nested)).stdout).toBe("No HTTP service URLs for this environment.\n");
+    const noHTTP = await show(home, nested);
+    expect(noHTTP.stdout).toContain("No HTTP service URLs for this environment.\n");
+    expect(noHTTP.stdout).toContain(`Workspace: ${current.Root}\n`);
+    expect(noHTTP.stdout).toContain("contremaitre logs worker");
     expect(JSON.parse((await show(home, nested, ["--json"])).stdout).data).toEqual({});
   } finally {
     await hub.close();

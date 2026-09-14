@@ -178,13 +178,33 @@ export function makeRoot(passthrough: readonly string[] = []) {
               output(o.json, await call(ctx, home, "cancel", { id: args[0] }));
               return;
             case "show": {
-              const urls = (await call(ctx, home, "show", req)) as Record<string, string>;
-              if (o.json) output(true, urls);
-              else if (!Object.keys(urls).length)
+              if (o.json) {
+                output(true, await call(ctx, home, "show", req));
+                return;
+              }
+              const env = (await call(ctx, home, "resolve", req)) as Environment;
+              const urls = (await call(ctx, home, "show", {
+                env: env.Identity.ID,
+              })) as Record<string, string>;
+              output(false, `Environment: ${env.Identity.Name} (${env.Identity.ID})`);
+              output(false, `Workspace: ${env.Root}`);
+              output(false, `Hub data: ${home}`);
+              if (env.driver_directory) output(false, `Driver directory: ${env.driver_directory}`);
+              output(false, "");
+              if (!Object.keys(urls).length)
                 output(false, "No HTTP service URLs for this environment.");
               else
                 for (const [service, url] of Object.entries(urls))
                   output(false, `${service}\t${url}`);
+              const quote = (value: string) =>
+                /^[a-zA-Z0-9_./-]+$/.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`;
+              const selection = `--env ${quote(env.Identity.ID)} --home ${quote(home)}`;
+              output(false, "\nApplication logs:");
+              if (!Object.keys(env.Services).length) output(false, "No deployed services.");
+              for (const service of Object.keys(env.Services).sort())
+                output(false, `contremaitre logs ${quote(service)} ${selection}`);
+              output(false, "\nDeployment logs:");
+              output(false, `contremaitre deploy logs ${selection}`);
               return;
             }
             case "list": {
