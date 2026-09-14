@@ -307,6 +307,13 @@ export async function startServer(
           json(res, op.kind === "ensure" ? agents.ensureResult(id) : agents.result(id));
           return;
         }
+        if (action === "prune") {
+          const payload = decode(Prune.payload, value, "prune request");
+          const jobs = await command(Effect.flatMap(CommandBus, (b) => b.dispatch(Prune, payload)));
+          await Promise.all(jobs.map(wait));
+          json(res, "Prune complete");
+          return;
+        }
         const payload = decode(requestSchema, value, "request");
         if (action === "deployment") {
           const id = payload.env
@@ -400,14 +407,6 @@ export async function startServer(
             );
             json(res);
             return;
-          case "prune": {
-            const jobs = await command(
-              Effect.flatMap(CommandBus, (b) => b.dispatch(Prune, payload)),
-            );
-            await Promise.all(jobs.map(wait));
-            json(res, "Prune complete");
-            return;
-          }
           case "tunnel":
             json(
               res,

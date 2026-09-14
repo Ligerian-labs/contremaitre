@@ -43,7 +43,10 @@ export const DesignateMain = Command.define("DesignateMain", {
   failure: Schema.instanceOf(HubError),
 });
 export const Prune = Command.define("PruneResources", {
-  payload: requestSchema,
+  payload: Schema.Struct({
+    ...requestSchema.fields,
+    envs: Schema.optional(Schema.NonEmptyArray(Schema.String.pipe(Schema.minLength(1)))),
+  }),
   success: Schema.Array(operationSchema),
   failure: Schema.instanceOf(HubError),
 });
@@ -226,8 +229,13 @@ const registry = HandlerRegistry.layer(
   CommandHandler.make(Prune, (req) =>
     Effect.gen(function* () {
       const { manager: m, operations: ops } = yield* Hub;
-      return yield* attempt(async () =>
-        Object.values(m.state.Environments)
+      return yield* attempt(async () => {
+        // Resolve the complete selection before any operation can remove resources.
+        const selected = req.envs
+          ? req.envs.map((selector) => m.resolve(selector))
+          : Object.values(m.state.Environments);
+        const environments = new Map(selected.map((env) => [env.Identity.ID, env]));
+        return [...environments.values()]
           .filter((e) => !ops.current(e.Identity.ID))
           .map((env) =>
             ops.submit(env.Identity.ID, "prune", [env.Identity.ID], async (ctx) => {
@@ -235,8 +243,8 @@ const registry = HandlerRegistry.layer(
               if (req.delete_data && env.Status === "stopped" && !keys(env.tunnels).length)
                 await m.down(ctx, env, true);
             }),
-          ),
-      );
+          );
+      });
     }),
   ),
   QueryHandler.make(List, () =>
