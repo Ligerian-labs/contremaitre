@@ -89,6 +89,7 @@ export class Tunnels {
   ) {
     const cfg = this.config(provider),
       reservation = env.tunnels?.[name];
+    let diagnostics = Buffer.alloc(0);
     try {
       return decode(
         responseSchema,
@@ -108,7 +109,9 @@ export class Tunnels {
               timeout: 30_000,
               maxOutput: 1048576,
               strictOutput: true,
-              stderr: () => {},
+              stderr: (chunk) => {
+                diagnostics = Buffer.concat([diagnostics, chunk]).subarray(-65536);
+              },
             })
           ).toString(),
         ),
@@ -119,7 +122,24 @@ export class Tunnels {
         error instanceof HubError &&
         ([77, 78].includes(error.exitCode ?? 0) ||
           (!error.exitCode && error.classification === "permanent"));
-      fail(`Tunnel provider ${operation} failed`, permanent ? "permanent" : "transient");
+      const log = tunnelLogPath(this.manager.store.home, env.Identity.ID, name);
+      const output = diagnostics.toString().trim();
+      let reason = message(error);
+      for (const line of output.split("\n")) {
+        try {
+          const event = JSON.parse(line);
+          if (event.event === "adapter.stopped" && typeof event.reason === "string")
+            reason = event.reason;
+        } catch {}
+      }
+      reason = reason.replace(/\p{Cc}/gu, " ").slice(0, 512);
+      appendFileSync(log, `\n[${operation}] ${reason}\n${output ? `${output}\n` : ""}`, {
+        mode: 0o600,
+      });
+      fail(
+        `Tunnel provider ${operation} failed for ${name}: ${reason}. See contremaitre tunnel logs ${name} --env ${env.Identity.ID}. Log: ${log}`,
+        permanent ? "permanent" : "transient",
+      );
     }
   }
   async reserve(
