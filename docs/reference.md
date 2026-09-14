@@ -160,7 +160,9 @@ URLs include a workspace suffix and hash, avoiding collisions after branch-name 
 
 The first deployed `main` branch becomes the project's clone source. Use `deploy --main` to designate a source initially, or `contremaitre main --env ENV` to change it explicitly. Only one environment per project is designated main. It also gets `main.PROJECT.localhost`.
 
-Run `contremaitre show` from the project directory or a subdirectory to print each HTTP service's local URL for the current workspace and branch. Use `--branch NAME` or `--env ENV` to select another environment. `contremaitre show --json` returns `{ "version": 1, "data": { "SERVICE": "URL" } }`. These are configured URLs, including for stopped or failed services; the command does not check readiness. An environment with no HTTP services returns an empty map.
+Run `contremaitre show` from the project directory or a subdirectory to print each HTTP service's local URL, the deployed workspace path, the hub data directory, and copyable application and deployment log commands. Project drivers also show their runtime directory. Application log commands cover every service, including workers and databases without HTTP URLs. Each command includes `--env` and `--home`, so it works from any directory and continues to select the same environment after switching branches. Native services run in containers; use the application log commands to read their output.
+
+Use `--branch NAME` or `--env ENV` to select another environment. `contremaitre show --json` returns only the existing URL map, `{ "version": 1, "data": { "SERVICE": "URL" } }`. These are configured URLs, including for stopped or failed services; the command does not check readiness. An environment with no HTTP services still prints directories and log commands in text mode and returns an empty map in JSON mode.
 
 Use environment IDs or names printed by `list` with `--env`. `PROJECT/main` selects the designated source. A project name alone works only when unambiguous.
 

@@ -297,9 +297,9 @@ export const commands: readonly CommandHelp[] = [
   {
     name: "show",
     group: "Environments",
-    description: "Show URLs for the current workspace",
+    description: "Show URLs, directories and log commands",
     details:
-      "Print local HTTP service URLs for the current workspace and branch. Works from subdirectories. URLs use the hub's routing settings; they do not indicate service readiness. Use --json for a service-to-URL map.",
+      "Print local HTTP service URLs, the deployed workspace, hub data directory and log commands. Project drivers also show their runtime directory. Works from subdirectories. Log commands select this environment explicitly and work from any directory. URLs use the hub's routing settings; they do not indicate service readiness. Use --json for a service-to-URL map only.",
     flags: ["env", "branch", "home", "json"],
     examples: ["contremaitre show", "contremaitre show --branch main", "contremaitre show --json"],
   },
