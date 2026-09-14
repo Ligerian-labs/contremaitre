@@ -118,9 +118,13 @@ async function readBuildContext(ctx: Context, root: string, dockerfile: string, 
         const out = target ? await fs.open(target, "wx", 0o600) : undefined;
         try {
           digest.update(`${info.size}\0`);
-          for await (const chunk of input.createReadStream({ autoClose: false })) {
+          // Read the owned handle directly; Bun can leak a duplicate fd for FileHandle streams.
+          const buffer = Buffer.allocUnsafe(64 * 1024);
+          while (true) {
             ctx.signal.throwIfAborted();
-            const data = Buffer.from(chunk);
+            const { bytesRead } = await input.read(buffer, 0, buffer.length, null);
+            if (!bytesRead) break;
+            const data = buffer.subarray(0, bytesRead);
             digest.update(data);
             let offset = 0;
             while (out && offset < data.length) {
