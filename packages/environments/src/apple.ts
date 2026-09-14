@@ -1,7 +1,7 @@
 import { createReadStream } from "node:fs";
 import * as fs from "node:fs/promises";
 import { createConnection } from "node:net";
-import { homedir } from "node:os";
+import { availableParallelism, homedir, totalmem } from "node:os";
 import { basename, join } from "node:path";
 import type { Readable } from "node:stream";
 import {
@@ -369,10 +369,14 @@ export class Apple implements Runtime {
   private async prepareBuilder(ctx: Context): Promise<BuilderLease> {
     const release = await sharedBuilderLock(ctx);
     try {
-      const resources: string[] = [];
+      // Apple defaults to 2 GB, which is too small for concurrent compiler builds.
+      // Use at most half the host RAM for the default budget, and retain larger
+      // user allocations. Application container resources are independent.
+      let cpus = Math.min(4, availableParallelism());
+      let memory = Math.min(8 * 1024 ** 3, Math.floor(totalmem() / 2 / 1048576) * 1048576);
       try {
         const value: unknown = JSON.parse(
-          (await this.output(ctx, ["inspect", "buildkit"])).toString(),
+          (await this.output(ctx, ["inspect", "buildkit"], { timeout: 10_000 })).toString(),
         );
         const builders = Schema.decodeUnknownSync(
           Schema.Array(
@@ -385,8 +389,8 @@ export class Apple implements Runtime {
         )(value);
         const r = builders[0]?.configuration.resources;
         if (r && r.cpus > 0 && r.memoryInBytes > 0) {
-          resources.push("--cpus", String(r.cpus), "--memory", String(r.memoryInBytes));
-          phase(ctx, `Builder: ${r.cpus} CPUs, ${Math.floor(r.memoryInBytes / 1048576)} MB RAM`);
+          cpus = Math.max(cpus, r.cpus);
+          memory = Math.max(memory, r.memoryInBytes);
         }
       } catch (error) {
         if (!missing(error)) throw error;
@@ -394,8 +398,21 @@ export class Apple implements Runtime {
       // "running" does not mean compatible: Apple build reconciles image, resources,
       // managed environment, SSH and DNS, and may delete/recreate the builder.
       // Perform that reconciliation once, before this session launches any builds.
+      const resources = ["--cpus", String(cpus), "--memory", String(memory)];
+      phase(ctx, `Builder: ${cpus} CPUs, ${Math.floor(memory / 1048576)} MB RAM`);
       phase(ctx, "Preparing shared builder");
-      await this.output(ctx, ["builder", "start", ...resources]);
+      await this.output(ctx, ["builder", "start", ...resources], { timeout: 60_000 });
+      phase(ctx, "Checking shared builder responsiveness");
+      try {
+        // The host can report "running" while the guest no longer services RPCs.
+        await this.output(ctx, ["exec", "buildkit", "/bin/true"], { timeout: 10_000 });
+      } catch (error) {
+        ctx.signal.throwIfAborted();
+        fail(
+          `Shared builder is unresponsive: ${message(error)}. Stop the builder with container builder stop, then retry contremaitre ensure. If stopping also hangs, the Apple builder VM needs recovery.`,
+          "transient",
+        );
+      }
       return { resources, release };
     } catch (error) {
       release();
