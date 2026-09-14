@@ -29,6 +29,7 @@ import { exportAgents, installAgents } from "./install-agents.js";
 import { onboard, terminalOnboarding } from "./saas.js";
 import { tunnel } from "./tunnel.js";
 import { tunnelLogs } from "./tunnel-logs.js";
+import { version } from "./version.js";
 
 export { normalizeArguments } from "./help.js";
 
@@ -133,7 +134,7 @@ export function makeRoot(passthrough: readonly string[] = []) {
               );
               return;
             case "version":
-              output(o.json, "contremaitre 0.2.0");
+              output(o.json, `contremaitre ${version}`);
               return;
             case "init":
               output(
@@ -370,7 +371,7 @@ if (import.meta.main) {
   process.argv = [...process.argv.slice(0, 2), ...normalized.args];
   const execute = Command.run(makeRoot(normalized.command), {
     name: "contremaitre",
-    version: "0.2.0",
+    version,
   });
   const app = Effect.suspend(() => {
     try {

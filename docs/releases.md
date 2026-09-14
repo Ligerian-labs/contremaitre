@@ -2,7 +2,9 @@
 
 The CLI supports macOS 26 or newer on Apple silicon. A release contains the compiled `contremaitre-darwin-arm64`, its `contremaitre-darwin-arm64.sha256` checksum and `install.sh`. Users need neither Bun nor a source checkout.
 
-After merging the release changes into `main`, create and push a stable version tag such as `v0.2.0`. Keep the root package version and both CLI version strings in `apps/cli/src/cli.ts` equal to the tag without `v`. The workflow rejects mismatches, runs the full checks on macOS, verifies the binary's code signature and uploads the assets to a draft release. It publishes the release only after all assets are uploaded. A failed draft upload can be retried; published releases cannot be overwritten by the workflow.
+After merging the release changes into `main`, create and push a version tag such as `v0.3.0` or `v0.3.0-rc.1`. The workflow validates the tag and stamps its version into the root package manifest and `apps/cli/src/version.ts` before running the full checks and building on macOS. These version changes apply only to the release checkout; no version bump commit is required.
+
+The workflow verifies the binary's version and code signature, generates release notes and uploads the assets to a draft GitHub release associated with the tag. It publishes the release only after all assets are uploaded. Tags with a prerelease suffix create GitHub prereleases and do not replace the latest stable release. Runs for the same ref are serialized. A failed draft upload can be retried; rerunning a published release succeeds without changing it. No packages are published to a registry and no registry token is required.
 
 The tunnel portal serves `/install.sh` from the latest GitHub release, with a one-minute cache. Its endpoint must be deployed before advertising the one-liner. The first release must be published before the endpoint can serve an installer. Later CLI releases do not require a portal deployment.
 
