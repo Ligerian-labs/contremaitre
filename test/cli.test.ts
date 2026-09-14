@@ -177,7 +177,9 @@ test("irrelevant flags and unknown commands fail as usage errors", async () => {
   for (const args of [
     ["version", "--rebuild"],
     ["version", "--compose", "compose.yml"],
-    ["list", "--branch", "main"],
+    ["list", "--rebuild"],
+    ["show", "--project", "shop"],
+    ["deploy", "--status", "running"],
     ["unknown", "--help"],
   ]) {
     const result = await cli(args);
