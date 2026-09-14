@@ -323,7 +323,7 @@ export const commands: readonly CommandHelp[] = [
     name: "list",
     group: "Environments",
     description: "List environments",
-    details: `Filter by project, branch and status. Different filters must all match; matching is case-sensitive. Without filters, list every environment. Text and JSON use status order: ${listStatuses.join(", ")}, then any unknown statuses. Within each status, sort by environment name, then ID.`,
+    details: `Show environment IDs, statuses, names, projects, branches and full source workspace directories in labeled columns. Use an ID or name with --env on other commands. Filter by project, branch and status. Different filters must all match; matching is case-sensitive. Without filters, list every environment. Text and JSON use status order: ${listStatuses.join(", ")}, then any unknown statuses. Within each status, sort by environment name, then ID.`,
     flags: ["status", "project", "listBranch", "home", "json"],
     examples: [
       "contremaitre list",

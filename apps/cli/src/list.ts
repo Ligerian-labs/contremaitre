@@ -33,3 +33,31 @@ export function selectEnvironments(
         a.Identity.ID.localeCompare(b.Identity.ID),
     );
 }
+
+export function formatEnvironments(environments: Environment[]) {
+  const rows = [
+    ["ID", "STATUS", "NAME", "PROJECT", "BRANCH", "DIRECTORY"],
+    ...environments.map((env) => [
+      env.Identity.ID,
+      env.Status,
+      env.Identity.Name,
+      env.Identity.Project,
+      env.Identity.Branch,
+      env.Root,
+    ]),
+  ];
+  const widths = rows[0].map((_, column) =>
+    rows.reduce((width, row) => Math.max(width, Bun.stringWidth(row[column])), 0),
+  );
+  return rows
+    .map((row) =>
+      row
+        .map((value, column) =>
+          column === row.length - 1
+            ? value
+            : value + " ".repeat(widths[column] - Bun.stringWidth(value)),
+        )
+        .join("  "),
+    )
+    .join("\n");
+}

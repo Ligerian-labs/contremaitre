@@ -40,7 +40,7 @@ test("list filters and orders the same environments in text and JSON without cha
       ["shop", "feature/login", "running"],
     ];
     for (const [project, branch, status] of fixtures) {
-      const root = join(home, project);
+      const root = join(home, `${project} workspace`);
       mkdirSync(root, { recursive: true });
       writeFileSync(
         join(root, ".contremaitre.yaml"),
@@ -106,14 +106,28 @@ test("list filters and orders the same environments in text and JSON without cha
             `${env.Identity.Project}/${env.Identity.Branch}`,
         ),
       ).toEqual(expected);
-      expect(plain.stdout).toBe(
-        reply.data
-          .map(
-            (env: { Identity: { ID: string; Name: string }; Status: string }) =>
-              `${env.Identity.ID}\t${env.Status}\t${env.Identity.Name}\n`,
-          )
-          .join(""),
-      );
+      if (!expected.length) expect(plain.stdout).toBe("");
+      else {
+        const [header, ...rows] = plain.stdout.trimEnd().split("\n");
+        const columns = ["ID", "STATUS", "NAME", "PROJECT", "BRANCH", "DIRECTORY"];
+        expect(header.trim().split(/\s+/)).toEqual(columns);
+        expect(rows).toHaveLength(reply.data.length);
+        const starts = columns.map((column) => header.indexOf(column));
+        for (const [index, row] of rows.entries()) {
+          const env = reply.data[index];
+          expect(
+            starts.map((start, column) => row.slice(start, starts[column + 1]).trimEnd()),
+          ).toEqual([
+            env.Identity.ID,
+            env.Status,
+            env.Identity.Name,
+            env.Identity.Project,
+            env.Identity.Branch,
+            env.Root,
+          ]);
+          expect(env.Root).toBe(join(home, `${env.Identity.Project} workspace`));
+        }
+      }
     }
     expect(JSON.stringify(hub.manager.state)).toBe(before);
     expect(runtime.calls).toEqual(calls);

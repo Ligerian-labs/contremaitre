@@ -26,7 +26,7 @@ import { manageHttpsService } from "./https-service.js";
 import { initialize } from "./init.js";
 import { installBinary } from "./install.js";
 import { exportAgents, installAgents } from "./install-agents.js";
-import { selectEnvironments } from "./list.js";
+import { formatEnvironments, selectEnvironments } from "./list.js";
 import { onboard, terminalOnboarding } from "./saas.js";
 import { tunnel } from "./tunnel.js";
 import { tunnelLogs } from "./tunnel-logs.js";
@@ -216,9 +216,7 @@ export function makeRoot(passthrough: readonly string[] = []) {
                 branch: o.listBranch,
               });
               if (o.json) output(true, envs);
-              else
-                for (const e of envs)
-                  output(false, `${e.Identity.ID}\t${e.Status}\t${e.Identity.Name}`);
+              else if (envs.length) output(false, formatEnvironments(envs));
               return;
             }
             case "down":
