@@ -1,6 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Options } from "@structure-ai/cli";
+import { listStatuses } from "./list.js";
 
 function flag<A>(
   name: string,
@@ -21,6 +22,21 @@ function flag<A>(
 }
 
 const flags = {
+  status: flag(
+    "status",
+    Options.choice("status", listStatuses).pipe(Options.repeated),
+    [],
+    `Filter by status: ${listStatuses.join(", ")}. Repeat to match any selected status.`,
+    "STATUS",
+  ),
+  project: flag("project", Options.text("project"), "", "Filter by exact project name.", "NAME"),
+  listBranch: flag(
+    "branch",
+    Options.text("branch"),
+    "",
+    "Filter by exact branch or bookmark name across projects.",
+    "NAME",
+  ),
   global: flag(
     "global",
     Options.boolean("global"),
@@ -307,8 +323,14 @@ export const commands: readonly CommandHelp[] = [
     name: "list",
     group: "Environments",
     description: "List environments",
-    flags: ["home", "json"],
-    examples: ["contremaitre list", "contremaitre list --json"],
+    details: `Filter by project, branch and status. Different filters must all match; matching is case-sensitive. Without filters, list every environment. Text and JSON use status order: ${listStatuses.join(", ")}, then any unknown statuses. Within each status, sort by environment name, then ID.`,
+    flags: ["status", "project", "listBranch", "home", "json"],
+    examples: [
+      "contremaitre list",
+      "contremaitre list --status running --project shop",
+      "contremaitre list --status stopped --status failed",
+      "contremaitre list --project shop --branch main --json",
+    ],
   },
   {
     name: "main",
@@ -510,6 +532,9 @@ export function optionsFor(command: Pick<CommandHelp, "flags">) {
       : Options.none.pipe(Options.map(() => spec.fallback));
   }
   return {
+    status: option("status", flags.status),
+    project: option("project", flags.project),
+    listBranch: option("listBranch", flags.listBranch),
     workspace: option("workspace", flags.workspace),
     noAI: option("noAI", flags.noAI),
     agent: option("agent", flags.agent),
@@ -576,6 +601,15 @@ export function normalizeArguments(input: readonly string[]) {
     index = actionIndex();
   }
   if (index >= 0) args.unshift(...args.splice(index, 1));
+  if (args[0] === "list") {
+    // The variadic option parser only accepts repeated values as separate tokens.
+    for (let i = 1; i < args.length; i++) {
+      if (args[i].startsWith("--status=")) {
+        args.splice(i, 1, "--status", args[i].slice("--status=".length));
+        i++;
+      } else if (valuedFlags.has(args[i])) i++;
+    }
+  }
   if (args[0] === "deploy") {
     for (let i = 1; i < args.length; i++) {
       if (valuedFlags.has(args[i])) {
@@ -620,6 +654,13 @@ export function helpRequest(args: readonly string[]): string | undefined {
       throw new UsageError(
         `Unknown flag '${key}'${name ? ` for ${name}` : ""}. Run contremaitre${name ? ` ${name}` : ""} --help.`,
       );
+    if (
+      name === "list" &&
+      key === "--status" &&
+      !token.includes("=") &&
+      (!args[i + 1] || args[i + 1].startsWith("-"))
+    )
+      throw new UsageError("--status requires a value. Run contremaitre list --help.");
     if (spec.value && !token.includes("=")) i++;
     if ((key === "--help" || key === "-h") && (token === key || token === `${key}=true`))
       help = true;
