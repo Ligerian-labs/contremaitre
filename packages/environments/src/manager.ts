@@ -141,7 +141,7 @@ export class Manager {
       if (typeof r !== "object" || r === null) fail("Invalid clone recovery journal");
       if (("source" in r && r.source === id) || ("target" in r && r.target === id))
         fail(
-          "Clone recovery is pending; restart the hub to resume recovery before modifying this environment",
+          `Clone recovery is pending for source ${"source" in r ? r.source : "unknown"}; inspect its status and service logs, then restart the hub to retry recovery`,
           "conflict",
         );
     }
@@ -935,32 +935,73 @@ export class Manager {
     this.save();
   }
   async down(ctx: Context, env: Environment, deleteData = false) {
-    this.assertRecovered(env.Identity.ID);
+    if (deleteData || env.driver || env.Status === "deleting")
+      this.assertRecovered(env.Identity.ID);
     if (this.tunnels?.sharing?.(env.Identity.ID))
       fail("Stop the tunnel session before stopping this environment", "conflict");
     const deleting = deleteData || env.Status === "deleting";
     env.Status = deleting ? "deleting" : "stopping";
     this.save();
-    for (const s of Object.values(env.Services)) await this.stopDevelopment(s.Container);
-    for (const name of keys(env.tunnels)) await this.tunnels?.stop(ctx, env, name, deleteData);
+    const errors: string[] = [];
+    const stopTunnels = async () => {
+      for (const name of keys(env.tunnels)) {
+        try {
+          await this.tunnels?.stop(ctx, env, name, deleteData);
+        } catch (error) {
+          errors.push(`tunnel ${name}: ${message(error)}`);
+        }
+      }
+    };
+    // Keep reservations and data until remote release has been confirmed.
+    if (deleteData) {
+      await stopTunnels();
+      if (errors.length) {
+        env.Error = errors.join("; ");
+        this.save();
+        fail(env.Error);
+      }
+    }
+    let localFailure = false;
     if (env.driver) {
-      const reply = await invokeDriver(ctx, env, deleteData ? "delete" : "stop");
-      if (reply.status !== "stopped") fail("Driver did not confirm stopped resources");
+      try {
+        const reply = await invokeDriver(ctx, env, deleteData ? "delete" : "stop");
+        if (reply.status !== "stopped") fail("Driver did not confirm stopped resources");
+        for (const s of Object.values(env.Services)) {
+          s.IP = "";
+          s.ready = false;
+        }
+      } catch (error) {
+        localFailure = true;
+        errors.push(`driver: ${message(error)}`);
+      }
     } else {
       for (const name of keys(env.Services)) {
         const s = env.Services[name];
-        await this.runtime.stop(ctx, s.Container);
-        await this.runtime.remove(ctx, s.Container);
-        await this.runtime.remove(ctx, `${s.Container}-task`);
-        await this.runtime.remove(ctx, `${s.Container}-sync`);
-        s.IP = "";
+        try {
+          await this.stopDevelopment(s.Container);
+          await this.runtime.stop(ctx, s.Container);
+          await this.runtime.remove(ctx, s.Container);
+          await this.runtime.remove(ctx, `${s.Container}-task`);
+          await this.runtime.remove(ctx, `${s.Container}-sync`);
+          s.IP = "";
+          s.ready = false;
+        } catch (error) {
+          localFailure = true;
+          errors.push(`${name}: ${message(error)}`);
+        }
       }
     }
-    env.Status = deleting ? "deleting" : "stopped";
-    env.Error = "";
+    env.Status = deleting ? "deleting" : localFailure ? "stopping" : "stopped";
+    env.Error = errors.join("; ");
     env.UpdatedAt = now();
-    for (const s of Object.values(env.Services)) s.IP = "";
     this.save();
+    // Persist a confirmed local stop before waiting on an unavailable provider.
+    if (!deleteData) {
+      await stopTunnels();
+      env.Error = errors.join("; ");
+      this.save();
+    }
+    if (errors.length) fail(`Could not complete environment shutdown: ${env.Error}`);
     if (deleteData) {
       if (env.driver) {
         if (env.driver_directory) rmSync(env.driver_directory, { recursive: true, force: true });
@@ -998,12 +1039,13 @@ export class Manager {
     return removed;
   }
   async recover(ctx: Context) {
-    await recoverClones(this, ctx);
+    const blocked = await recoverClones(this, ctx);
     for (const env of Object.values(this.state.Environments)) {
       for (const reservation of Object.values(env.tunnels ?? {})) {
         reservation.Desired = false;
         reservation.Connected = false;
       }
+      if (blocked.has(env.Identity.ID)) continue;
       if (env.tunnel_configuration) {
         try {
           await this.configureTunnel(ctx, env, {});
@@ -1019,6 +1061,7 @@ export class Manager {
     }
 
     for (const env of Object.values(this.state.Environments)) {
+      if (blocked.has(env.Identity.ID)) continue;
       if (env.driver) {
         if (env.Status === "running" || env.Status === "deploying")
           try {

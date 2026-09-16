@@ -385,3 +385,12 @@ unchanged deployments reuse the stored image directly.
 Run `bun run check` for formatting, lint, typechecking, tests, and the standalone
 macOS ARM64 build. See
 [the migration contract](structure-migration.md) for acceptance criteria.
+
+
+## Shutdown and interrupted clones
+
+`contremaitre stop` attempts every environment and closes the hub even when cleanup reports errors. For container environments, it attempts each local service independently. Local shutdown does not depend on the tunnel provider being available. A remote tunnel failure retains its reservation and diagnostic log; the command reports the failure after attempting local cleanup. Data deletion still requires successful reservation release.
+
+Startup retries interrupted clones within a shared two-minute recovery budget. A failed clone recovery retains its journal, records the error on the source and target, and allows the hub to start. Inspect the source environment's status and service logs to diagnose readiness or migration failures. Deployment and deletion remain blocked for the affected pair until recovery succeeds.
+
+You can stop a container environment with pending clone recovery without deleting its data. A confirmed source stop supersedes the journal's request to restart its writers; the next hub startup completes cleanup without restarting them. Project-driver environments retain their recovery guard because the driver owns its recovery journal. Invalid clone journals still prevent startup rather than admitting changes with unknown recovery ownership.

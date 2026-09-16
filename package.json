@@ -28,6 +28,7 @@
     "effect": "3.22.1",
     "@effect/platform-bun": "0.91.2",
     "@structure-ai/cli": "0.1.1",
+    "@structure-ai/fixtures": "0.2.0",
     "@contremaitre/verification": "workspace:*"
   },
   "workspaces": [
