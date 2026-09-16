@@ -149,7 +149,7 @@ async function withRecovery(
   try {
     await recover(m, { ...ctx, signal: AbortSignal.timeout(120_000) }, r);
   } catch (e) {
-    throw new Error([failure && message(failure), message(e)].filter(Boolean).join("; "));
+    fail([failure && message(failure), message(e)].filter(Boolean).join("; "));
   }
   if (failure) throw failure;
 }

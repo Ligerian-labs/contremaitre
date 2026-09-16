@@ -1,6 +1,6 @@
 import { existsSync, lstatSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { decode, fail, hash, message } from "@contremaitre/execution/context";
+import { decode, fail, hash, isCode, message } from "@contremaitre/execution/context";
 import { atomicWrite } from "@contremaitre/execution/files";
 import { Schema } from "effect";
 import { parseAllDocuments, stringify } from "yaml";
@@ -220,7 +220,7 @@ export function readProjectLock(root: string): ProjectLock | undefined {
       ".contremaitre.lock; run contremaitre init to repair it",
     );
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    if (isCode(error, "ENOENT")) return undefined;
     return fail(`Cannot read .contremaitre.lock; run contremaitre init: ${message(error)}`);
   }
 }

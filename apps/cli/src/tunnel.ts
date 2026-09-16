@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { Environment, Request } from "@contremaitre/environments/model";
 import { type Context, context, fail } from "@contremaitre/execution/context";
+import { attempt, withCleanup } from "@contremaitre/execution/effect";
 import { sleep } from "@contremaitre/execution/sleep";
-import { attempt } from "@contremaitre/hub/application";
 import { Effect } from "effect";
 import { call } from "./client.js";
 import { onboard, terminalOnboarding } from "./saas.js";
@@ -35,13 +35,11 @@ export function tunnel(home: string, req: Request, json: boolean, workspace?: st
     return { ...req, env: env.Identity.ID, session_id: randomUUID(), provider };
   }).pipe(
     Effect.flatMap((payload) =>
-      Effect.acquireUseRelease(
-        Effect.succeed(payload),
-        (value) => attempt((signal) => runTunnel(context(signal), home, value, json)),
-        (value) =>
-          attempt(async () => {
-            await call(context(AbortSignal.timeout(130_000)), home, "tunnel-stop", value, 130_000);
-          }).pipe(Effect.orDie),
+      withCleanup(
+        attempt((signal) => runTunnel(context(signal), home, payload, json)),
+        attempt(async () => {
+          await call(context(AbortSignal.timeout(130_000)), home, "tunnel-stop", payload, 130_000);
+        }),
       ),
     ),
   );

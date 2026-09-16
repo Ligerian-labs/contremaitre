@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     "./context": "./src/context.ts",
+    "./effect": "./src/effect.ts",
     "./files": "./src/files.ts",
     "./locks": "./src/locks.ts",
     "./process-journal": "./src/process-journal.ts",

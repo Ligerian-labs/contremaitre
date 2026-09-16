@@ -630,7 +630,7 @@ export function normalizeArguments(input: readonly string[]) {
   return { args, command };
 }
 
-class UsageError extends Error {
+export class UsageError extends Error {
   readonly exitCode = 64;
 }
 

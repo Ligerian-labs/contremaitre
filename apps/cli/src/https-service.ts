@@ -12,7 +12,14 @@ import {
 } from "node:fs";
 import { createConnection } from "node:net";
 import { dirname, join } from "node:path";
-import { type Context, context, fail, message } from "@contremaitre/execution/context";
+import {
+  type Context,
+  context,
+  fail,
+  HubError,
+  isCode,
+  message,
+} from "@contremaitre/execution/context";
 import { run } from "@contremaitre/execution/process";
 import { sleep } from "@contremaitre/execution/sleep";
 
@@ -98,7 +105,8 @@ export class HttpsService {
     try {
       return await this.system.command(ctx, [launchctl, "print", service]);
     } catch (error) {
-      if (message(error).includes("Could not find service")) return undefined;
+      if (error instanceof HubError && error.message.includes("Could not find service"))
+        return undefined;
       throw error;
     }
   }
@@ -116,7 +124,7 @@ export class HttpsService {
       ]);
       return output.trim().split(/\s+/).includes(String(pid));
     } catch (error) {
-      if ((error as { exitCode?: number }).exitCode === 1) return false;
+      if (error instanceof HubError && error.exitCode === 1) return false;
       throw error;
     }
   }
@@ -172,7 +180,7 @@ export class HttpsService {
       try {
         lstatSync(path);
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+        if (isCode(error, "ENOENT")) continue;
         throw error;
       }
       this.secure(path, false);

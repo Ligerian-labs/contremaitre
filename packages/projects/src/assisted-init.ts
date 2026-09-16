@@ -9,9 +9,9 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, join } from "node:path";
-import { type Context, decode, fail, message } from "@contremaitre/execution/context";
+import { type Context, fail, isCode, message } from "@contremaitre/execution/context";
 import { atomicWrite, lockHome } from "@contremaitre/execution/files";
-import { Schema } from "effect";
+import { Either, Schema } from "effect";
 import { safePath } from "./config.js";
 import { serviceSchema } from "./model.js";
 import { lockFilename, type ProjectLock, saveSetupLock } from "./project-lock.js";
@@ -117,7 +117,7 @@ function existingManifest(root: string) {
       lstatSync(join(root, p));
       return true;
     } catch (e) {
-      if ((e as NodeJS.ErrnoException).code === "ENOENT") return false;
+      if (isCode(e, "ENOENT")) return false;
       throw e;
     }
   });
@@ -161,17 +161,12 @@ export async function assistedInit(
     const prompt = `${initInstructions}\n${JSON.stringify({ project: basename(root), inventory, files, preferredCompose: options.compose, history })}`;
     if (Buffer.byteLength(prompt) > 2 * 1024 * 1024)
       fail("Init context exceeds 2 MiB; narrow the project or use --no-ai");
-    let reply: InitReply;
-    try {
-      const text = await agent(ctx, prompt);
-      reply = decode(
-        replySchema,
-        JSON.parse(text.trim().replace(/^```(?:json)?\s*\n([\s\S]*?)\n```$/, "$1")),
-        "agent reply; expected one question, file request or manifest",
-      );
-    } catch (e) {
-      // Process/auth failures must not be retried as model formatting failures.
-      if (!(e instanceof SyntaxError) && !message(e).startsWith("Invalid agent reply")) throw e;
+    // Execution/authentication failures are not model-formatting failures.
+    const text = await agent(ctx, prompt);
+    const parsed = Schema.decodeUnknownEither(Schema.parseJson(replySchema), {
+      onExcessProperty: "error",
+    })(text.trim().replace(/^```(?:json)?\s*\n([\s\S]*?)\n```$/, "$1"));
+    if (Either.isLeft(parsed)) {
       if (++invalid > 2)
         fail("Agent returned invalid responses three times; existing manifest was preserved");
       history.push({
@@ -179,6 +174,7 @@ export async function assistedInit(
       });
       continue;
     }
+    const reply = parsed.right;
     if (reply.type === "error") fail(reply.message);
     if (reply.type === "read") {
       for (const p of reply.paths) {
@@ -226,7 +222,7 @@ export async function assistedInit(
       try {
         currentLock = readFileSync(lockPath, "utf8");
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        if (!isCode(error, "ENOENT")) throw error;
       }
       if (currentLock !== initialLock)
         fail("Lock changed during init; rerun to preserve those edits", "conflict");

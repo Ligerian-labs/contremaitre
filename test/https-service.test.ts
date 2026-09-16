@@ -12,7 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { forwardingPlist, forwardingWarning, HttpsService } from "@contremaitre/cli/https-service";
-import { type Context, context } from "@contremaitre/execution/context";
+import { type Context, context, HubError } from "@contremaitre/execution/context";
 import { run } from "@contremaitre/execution/process";
 
 function fixture() {
@@ -31,17 +31,31 @@ function fixture() {
       calls.push(args[1]);
       switch (args[1]) {
         case "print":
-          if (!state.loaded) throw Error("Could not find service");
+          if (!state.loaded)
+            throw new HubError({
+              message: "Could not find service",
+              classification: "permanent",
+              exitCode: 113,
+            });
           return "state = running\n\tpid = 1234\n";
         case "bootout":
-          if (state.failBootout) throw Error("bootout denied");
+          if (state.failBootout)
+            throw new HubError({
+              message: "bootout denied",
+              classification: "permanent",
+              exitCode: 1,
+            });
           state.loaded = false;
           state.listening = false;
           return "";
         case "bootstrap":
           if (state.failBootstrap) {
             state.failBootstrap = false;
-            throw Error("bootstrap failed");
+            throw new HubError({
+              message: "bootstrap failed",
+              classification: "permanent",
+              exitCode: 1,
+            });
           }
           state.loaded = true;
           state.listening = true;
@@ -185,4 +199,22 @@ test("forwarding status distinguishes missing, stopped, matching and mismatched 
   expect(forwardingWarning({ ...installed, pid: undefined }, 8443)).toContain("unavailable");
   for (const port of [443, 1023, 65536, 1.5, NaN])
     expect(() => forwardingPlist("binary", port, "log")).toThrow("1024..65535");
+});
+
+test("HTTPS service does not swallow unrelated errors with matching message text", async () => {
+  const root = mkdtempSync(join(tmpdir(), "cm-https-error-"));
+  const failure = new TypeError("Could not find service");
+  const manager = new HttpsService({
+    root,
+    owner: process.getuid?.() ?? -1,
+    command: async () => {
+      throw failure;
+    },
+    listening: async () => false,
+  });
+  try {
+    await expect(manager.status(context())).rejects.toBe(failure);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

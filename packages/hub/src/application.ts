@@ -5,14 +5,8 @@ import {
   type Request,
   requestSchema,
 } from "@contremaitre/environments/model";
-import {
-  type Context,
-  context,
-  fail,
-  HubError,
-  keys,
-  message,
-} from "@contremaitre/execution/context";
+import { type Context, context, fail, HubError, keys } from "@contremaitre/execution/context";
+import { attempt } from "@contremaitre/execution/effect";
 import { type Operations, operationSchema } from "@contremaitre/operations/operations";
 import type { AgentWorkflow } from "@contremaitre/verification/workflow";
 import {
@@ -134,14 +128,6 @@ export class Hub extends EffectContext.Tag("contremaitre/Hub")<
     endShare?: (e: Environment, id?: string) => Promise<void>;
   }
 >() {}
-export const attempt = <A>(work: (signal: AbortSignal) => Promise<A>) =>
-  Effect.tryPromise({
-    try: work,
-    catch: (e) =>
-      e instanceof HubError
-        ? e
-        : new HubError({ message: message(e), classification: "permanent" }),
-  });
 async function resolveRequest(m: Manager, ctx: Context, req: Request) {
   return m.resolve(req.env || (await m.current(ctx, req.root ?? process.cwd(), req.branch)).ID);
 }
