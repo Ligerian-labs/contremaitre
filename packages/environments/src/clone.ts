@@ -44,6 +44,12 @@ async function recover(m: Manager, ctx: Context, r: Recovery) {
   try {
     if (r.driver) await invokeDriver(ctx, source, "recover");
     else {
+      // A confirmed local stop supersedes the earlier request to resume writers.
+      if (source.Status === "stopped") {
+        r.writers = [];
+        r.originalStatus = "stopped";
+        save(m, r);
+      }
       const names = order(
         Object.fromEntries(Object.entries(source.Services).map(([name, s]) => [name, s.Spec])),
       );
@@ -81,7 +87,9 @@ async function recover(m: Manager, ctx: Context, r: Recovery) {
 }
 export async function recoverClones(m: Manager, ctx: Context) {
   const dir = join(m.store.home, "recovery");
-  if (!existsSync(dir)) return;
+  const blocked = new Set<string>();
+  if (!existsSync(dir)) return blocked;
+  const recovery = { ...ctx, signal: AbortSignal.any([ctx.signal, AbortSignal.timeout(120_000)]) };
   for (const file of readdirSync(dir).sort()) {
     if (!/^[a-f0-9]{16}\.json$/.test(file)) continue;
     const data = decode(
@@ -90,8 +98,29 @@ export async function recoverClones(m: Manager, ctx: Context) {
       "clone recovery journal",
     );
     if (file !== `${data.target}.json`) fail("Invalid clone recovery journal filename");
-    await recover(m, ctx, { ...data, writers: [...data.writers], temporary: [...data.temporary] });
+    try {
+      recovery.signal.throwIfAborted();
+      await recover(m, recovery, {
+        ...data,
+        writers: [...data.writers],
+        temporary: [...data.temporary],
+      });
+    } catch (error) {
+      ctx.signal.throwIfAborted();
+      const detail = `Clone recovery failed: ${message(error)}`;
+      for (const id of [data.source, data.target]) {
+        blocked.add(id);
+        const env = m.state.Environments[id];
+        if (env) {
+          if (env.Status !== "stopped") env.Status = "failed";
+          env.Error = detail;
+        }
+      }
+      m.save();
+      phase(ctx, `${data.source}/${data.target}: ${detail}; journal retained`);
+    }
   }
+  return blocked;
 }
 async function withRecovery(
   m: Manager,

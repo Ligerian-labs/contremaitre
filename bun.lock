@@ -16,6 +16,7 @@
         "@contremaitre/verification": "workspace:*",
         "@effect/platform-bun": "0.91.2",
         "@structure-ai/cli": "0.1.1",
+        "@structure-ai/fixtures": "0.2.0",
         "@types/bun": "1.4.2",
         "effect": "3.22.1",
         "typescript": "5.9.3",
@@ -270,6 +271,8 @@
 
     "@structure-ai/domain": ["@structure-ai/domain@0.1.1", "", { "dependencies": { "effect": "^3.22.1" } }, "sha512-EYEbKvGZsThyN7moETw33Bh17bQLRJVMQpSVjNrkrWN4oECMdOQS/CTpyS9T74NF0ruQCLDXLCnGKZYlV9S2lQ=="],
 
+    "@structure-ai/fixtures": ["@structure-ai/fixtures@0.2.0", "", { "dependencies": { "@structure-ai/cli": "0.2.0", "@structure-ai/cqrs": "0.2.0", "effect": "^3.22.1" } }, "sha512-xEZ5Fat96RIjDwbOPZzrlwdnAGZ8Oz3k1NHQW9GX16ENRtJXdmVSc50qz/LtA57yLUfHBJmGZaioNPk+g1g+eg=="],
+
     "@structure-ai/observability": ["@structure-ai/observability@0.1.1", "", { "dependencies": { "@effect/opentelemetry": "^0.64.0", "@effect/platform": "^0.97.1", "@opentelemetry/api": "^1.9.0", "@opentelemetry/exporter-metrics-otlp-http": "^0.203.0", "@opentelemetry/exporter-trace-otlp-http": "^0.203.0", "@opentelemetry/resources": "^2.0.0", "@opentelemetry/sdk-logs": "^0.203.0", "@opentelemetry/sdk-metrics": "^2.0.0", "@opentelemetry/sdk-trace-base": "^2.0.0", "@opentelemetry/sdk-trace-node": "^2.0.0", "@opentelemetry/sdk-trace-web": "^2.0.0", "@opentelemetry/semantic-conventions": "^1.33.0", "@structure-ai/config": "0.1.1", "effect": "^3.22.1" } }, "sha512-cCfiigowYJqhD700woBbUh29+ds86afGDY3yAVLrQ8LvyiiDZ5g7k2s3aAN7iP/P9RIiBf71O3yh1M1y9V0guQ=="],
 
     "@structure-ai/runtime": ["@structure-ai/runtime@0.1.1", "", { "dependencies": { "@effect/platform": "^0.97.1", "@effect/platform-bun": "^0.91.2", "@structure-ai/config": "0.1.1", "@structure-ai/observability": "0.1.1", "effect": "^3.22.1" } }, "sha512-jMPjWD46DFXw9sDo7ZrUsJjVjgHB5oiHAPv2hv05oTk3GaikKnivdrhsCz8guun5+5yLfzftIDuclzGELOoH5w=="],
@@ -353,5 +356,21 @@
     "@opentelemetry/sdk-trace-node/@opentelemetry/core": ["@opentelemetry/core@2.11.0", "", { "dependencies": { "@opentelemetry/semantic-conventions": "^1.29.0" }, "peerDependencies": { "@opentelemetry/api": ">=1.0.0 <1.10.0" } }, "sha512-7YP44XH0tV6+Mb54x2YGf84i7yi+31MBZlE8JwvozkxyTvXbSp10X7cI7YE49ChJ3shMJoBmCJF3+1QFBJctGA=="],
 
     "@opentelemetry/sdk-trace-web/@opentelemetry/core": ["@opentelemetry/core@2.11.0", "", { "dependencies": { "@opentelemetry/semantic-conventions": "^1.29.0" }, "peerDependencies": { "@opentelemetry/api": ">=1.0.0 <1.10.0" } }, "sha512-7YP44XH0tV6+Mb54x2YGf84i7yi+31MBZlE8JwvozkxyTvXbSp10X7cI7YE49ChJ3shMJoBmCJF3+1QFBJctGA=="],
+
+    "@structure-ai/fixtures/@structure-ai/cli": ["@structure-ai/cli@0.2.0", "", { "dependencies": { "@effect/cli": "^0.77.0", "@effect/platform": "^0.97.1", "@effect/platform-bun": "^0.91.2", "@structure-ai/config": "0.2.0", "@structure-ai/observability": "0.2.0", "@structure-ai/runtime": "0.2.0", "effect": "^3.22.1" } }, "sha512-8JmYgTcbRCDJcB5x5vA6sYmGhrRHF/gviWCXe4xzgZPwnwqDSFjUncjxUKcstX2osKsj1VE1S4s6168G3hIkYw=="],
+
+    "@structure-ai/fixtures/@structure-ai/cqrs": ["@structure-ai/cqrs@0.2.0", "", { "dependencies": { "@structure-ai/domain": "0.2.0", "@structure-ai/observability": "0.2.0", "effect": "^3.22.1" } }, "sha512-YZ/mPI3rvnhh2Cja4DufkJ7xJ68hDTsZaYqJjUwWuY6kFNcj9dOlZKe8w+AXMlmBLcqbp0rdpZYzyYCKQ6oitg=="],
+
+    "@structure-ai/fixtures/@structure-ai/cli/@structure-ai/config": ["@structure-ai/config@0.2.0", "", { "dependencies": { "@effect/platform": "^0.97.1", "effect": "^3.22.1" } }, "sha512-YfcKJTHn9Qgy2WhvI9SE+fQMdLV9srZzFy6d8HpF9uOyxcdh5/KUMm0UFFL575AKJ/llNDmDmakzy+jA2UsrZA=="],
+
+    "@structure-ai/fixtures/@structure-ai/cli/@structure-ai/observability": ["@structure-ai/observability@0.2.0", "", { "dependencies": { "@effect/opentelemetry": "^0.64.0", "@effect/platform": "^0.97.1", "@opentelemetry/api": "^1.9.0", "@opentelemetry/exporter-metrics-otlp-http": "^0.203.0", "@opentelemetry/exporter-trace-otlp-http": "^0.203.0", "@opentelemetry/resources": "^2.0.0", "@opentelemetry/sdk-logs": "^0.203.0", "@opentelemetry/sdk-metrics": "^2.0.0", "@opentelemetry/sdk-trace-base": "^2.0.0", "@opentelemetry/sdk-trace-node": "^2.0.0", "@opentelemetry/sdk-trace-web": "^2.0.0", "@opentelemetry/semantic-conventions": "^1.33.0", "@structure-ai/config": "0.2.0", "effect": "^3.22.1" } }, "sha512-rDeUawk92CpTcCEJE80MokIPWCr+G0+6j2JmsHqRW5G+2qc+MwEE+eRWRQINPcw9EBol8ZpudE/4ppeiWoJiKQ=="],
+
+    "@structure-ai/fixtures/@structure-ai/cli/@structure-ai/runtime": ["@structure-ai/runtime@0.2.0", "", { "dependencies": { "@effect/platform": "^0.97.1", "@effect/platform-bun": "^0.91.2", "@structure-ai/config": "0.2.0", "@structure-ai/observability": "0.2.0", "effect": "^3.22.1" } }, "sha512-fawlv+vhMj3HP/bEPoP0LuzPOYGGWr7P+J7HAHYjISe3CW6lTnPIFoBwKRDdgx+2JmtKVYYJSHQB08LU+4wLAw=="],
+
+    "@structure-ai/fixtures/@structure-ai/cqrs/@structure-ai/domain": ["@structure-ai/domain@0.2.0", "", { "dependencies": { "effect": "^3.22.1" } }, "sha512-+zP1HMKX9ZTh5lSse0V3HdJz9tvFbOyjDlevAUh7BhHGos8XQ7FpcPBgnW1eMkiCFp7HMXiEOF0emCwMnNUdPQ=="],
+
+    "@structure-ai/fixtures/@structure-ai/cqrs/@structure-ai/observability": ["@structure-ai/observability@0.2.0", "", { "dependencies": { "@effect/opentelemetry": "^0.64.0", "@effect/platform": "^0.97.1", "@opentelemetry/api": "^1.9.0", "@opentelemetry/exporter-metrics-otlp-http": "^0.203.0", "@opentelemetry/exporter-trace-otlp-http": "^0.203.0", "@opentelemetry/resources": "^2.0.0", "@opentelemetry/sdk-logs": "^0.203.0", "@opentelemetry/sdk-metrics": "^2.0.0", "@opentelemetry/sdk-trace-base": "^2.0.0", "@opentelemetry/sdk-trace-node": "^2.0.0", "@opentelemetry/sdk-trace-web": "^2.0.0", "@opentelemetry/semantic-conventions": "^1.33.0", "@structure-ai/config": "0.2.0", "effect": "^3.22.1" } }, "sha512-rDeUawk92CpTcCEJE80MokIPWCr+G0+6j2JmsHqRW5G+2qc+MwEE+eRWRQINPcw9EBol8ZpudE/4ppeiWoJiKQ=="],
+
+    "@structure-ai/fixtures/@structure-ai/cqrs/@structure-ai/observability/@structure-ai/config": ["@structure-ai/config@0.2.0", "", { "dependencies": { "@effect/platform": "^0.97.1", "effect": "^3.22.1" } }, "sha512-YfcKJTHn9Qgy2WhvI9SE+fQMdLV9srZzFy6d8HpF9uOyxcdh5/KUMm0UFFL575AKJ/llNDmDmakzy+jA2UsrZA=="],
   }
 }

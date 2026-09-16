@@ -1,10 +1,11 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Manager, type PreparedDeploy } from "@contremaitre/environments/manager";
 import { Store } from "@contremaitre/environments/store";
 import { context } from "@contremaitre/execution/context";
+import { sleep } from "@contremaitre/execution/sleep";
 import { parseManifest, prepareManifest } from "@contremaitre/projects/config";
 import { newIdentity } from "@contremaitre/projects/model";
 import { FakeRuntime } from "./fake-runtime.js";
@@ -86,7 +87,7 @@ test("restart resumes a recorded main writer before admission", async () => {
     await f.manager.deploy(context(), p);
     const env = f.manager.resolve(p.identity.ID);
     await f.runtime.stop(context(), env.Services.web.Container);
-    mkdirSync(join(f.home, "recovery"));
+    mkdirSync(join(f.home, "recovery"), { recursive: true });
     writeFileSync(
       join(f.home, "recovery", "0123456789abcdef.json"),
       JSON.stringify({
@@ -335,6 +336,194 @@ test("cancelling a migration removes its task container with an independent clea
     await expect(f.manager.deploy(context(controller.signal), p)).rejects.toThrow();
     expect(cleaned).toBe(true);
   } finally {
+    f.clean();
+  }
+});
+
+test("failed remote tunnel cleanup still stops local services and retains reservations and data", async () => {
+  const f = fixture();
+  try {
+    const p = f.prepare();
+    await f.manager.deploy(context(), p);
+    const env = f.manager.resolve(p.identity.ID);
+    const stopped: string[] = [];
+    f.manager.tunnels = {
+      running: () => false,
+      stop: async (_ctx, _env, name) => {
+        stopped.push(name);
+        expect(f.runtime.containers.size).toBe(0);
+        if (stopped.length <= 2)
+          expect(new Store(f.home).load().Environments[env.Identity.ID].Status).toBe("stopped");
+        throw Error("Control unavailable");
+      },
+    };
+    env.tunnels = Object.fromEntries(
+      ["web", "other"].map((name) => [
+        name,
+        {
+          Provider: "fake",
+          ID: name,
+          URL: `https://${name}.example.test`,
+          Desired: false,
+          Connected: false,
+        },
+      ]),
+    );
+    await expect(f.manager.down(context(), env)).rejects.toThrow("Control unavailable");
+    expect(stopped).toEqual(["other", "web"]);
+    expect(env.Status).toBe("stopped");
+    expect(env.Error).toContain("Control unavailable");
+    expect(f.runtime.containers.size).toBe(0);
+    expect(env.Volumes.length).toBe(1);
+    expect(Object.keys(env.tunnels)).toHaveLength(2);
+    await expect(f.manager.down(context(), env, true)).rejects.toThrow("Control unavailable");
+    expect(f.manager.resolve(env.Identity.ID).Volumes.length).toBe(1);
+    expect(f.runtime.calls.some((c) => c.startsWith("remove volume "))).toBe(false);
+  } finally {
+    f.clean();
+  }
+});
+
+test("failed clone recovery preserves its journal, isolates both environments and continues other recovery", async () => {
+  const f = fixture();
+  try {
+    const p = f.prepare();
+    await f.manager.deploy(context(), p);
+    const target = f.prepare("target");
+    await f.manager.deploy(context(), target);
+    const env = f.manager.resolve(p.identity.ID);
+    const other = f.prepare("other");
+    await f.manager.deploy(context(), other);
+    const otherEnv = f.manager.resolve(other.identity.ID);
+    mkdirSync(join(f.home, "recovery"), { recursive: true });
+    const journal = join(f.home, "recovery", `${target.identity.ID}.json`);
+    const writeJournal = (path: string, source: string, target: string) =>
+      writeFileSync(
+        path,
+        JSON.stringify({
+          version: 1,
+          source,
+          target,
+          driver: false,
+          writers: ["web"],
+          temporary: [],
+          originalStatus: "running",
+        }),
+      );
+    writeJournal(journal, env.Identity.ID, target.identity.ID);
+    const otherJournal = join(f.home, "recovery", "ffffffffffffffff.json");
+    writeJournal(otherJournal, otherEnv.Identity.ID, "ffffffffffffffff");
+    const run = f.runtime.run.bind(f.runtime);
+    f.runtime.run = async (ctx, spec) => {
+      if (spec.name === env.Services.web.Container) throw Error("server refuses readiness");
+      await run(ctx, spec);
+    };
+    await f.manager.recover(context());
+    expect(existsSync(journal)).toBe(true);
+    expect(existsSync(otherJournal)).toBe(false);
+    expect(env.Error).toContain("server refuses readiness");
+    expect(f.manager.resolve(target.identity.ID).Error).toContain("server refuses readiness");
+    await expect(f.manager.deploy(context(), p)).rejects.toThrow("Clone recovery is pending");
+    await expect(f.manager.down(context(), env, true)).rejects.toThrow("Clone recovery is pending");
+    await f.manager.down(context(), env);
+    expect(env.Status).toBe("stopped");
+    f.runtime.calls = [];
+    await f.manager.recover(context());
+    expect(existsSync(journal)).toBe(false);
+    expect(env.Status).toBe("stopped");
+    expect(f.runtime.calls.some((c) => c.startsWith("run "))).toBe(false);
+  } finally {
+    f.clean();
+  }
+});
+
+test("local stop failure does not leave independent services running", async () => {
+  const f = fixture();
+  try {
+    const p = f.prepare();
+    await f.manager.deploy(context(), p);
+    const env = f.manager.resolve(p.identity.ID);
+    const stop = f.runtime.stop.bind(f.runtime);
+    f.runtime.stop = async (ctx, name) => {
+      if (name === env.Services.db.Container) throw Error("database stop failed");
+      await stop(ctx, name);
+    };
+    await expect(f.manager.down(context(), env)).rejects.toThrow("database stop failed");
+    expect(f.runtime.containers.has(env.Services.web.Container)).toBe(false);
+    expect(f.runtime.containers.get(env.Services.db.Container)?.Running).toBe(true);
+    expect(env.Status).toBe("stopping");
+    expect(env.Error).toContain("db: database stop failed");
+  } finally {
+    f.clean();
+  }
+});
+
+test("clone recovery propagates hub cancellation and rejects invalid journals", async () => {
+  const f = fixture();
+  try {
+    const p = f.prepare();
+    await f.manager.deploy(context(), p);
+    const env = f.manager.resolve(p.identity.ID);
+    mkdirSync(join(f.home, "recovery"), { recursive: true });
+    const journal = join(f.home, "recovery", "0123456789abcdef.json");
+    writeFileSync(
+      journal,
+      JSON.stringify({
+        version: 1,
+        source: env.Identity.ID,
+        target: "0123456789abcdef",
+        driver: false,
+        writers: ["web"],
+        temporary: [],
+      }),
+    );
+    const controller = new AbortController();
+    f.runtime.run = async () => {
+      controller.abort(Error("hub cancelled"));
+      throw Error("cancelled");
+    };
+    await expect(f.manager.recover(context(controller.signal))).rejects.toThrow("hub cancelled");
+    expect(existsSync(journal)).toBe(true);
+    writeFileSync(journal, "{}");
+    await expect(f.manager.recover(context())).rejects.toThrow("Invalid clone recovery journal");
+    expect(existsSync(journal)).toBe(true);
+  } finally {
+    f.clean();
+  }
+});
+
+test("startup recovery budget leaves the hub context usable and keeps pending journals", async () => {
+  const f = fixture();
+  const timeout = AbortSignal.timeout.bind(AbortSignal);
+  const shortened = spyOn(AbortSignal, "timeout").mockImplementation((ms) =>
+    timeout(ms === 120_000 ? 20 : ms),
+  );
+  try {
+    const p = f.prepare();
+    await f.manager.deploy(context(), p);
+    const env = f.manager.resolve(p.identity.ID);
+    mkdirSync(join(f.home, "recovery"), { recursive: true });
+    const journal = join(f.home, "recovery", "0123456789abcdef.json");
+    writeFileSync(
+      journal,
+      JSON.stringify({
+        version: 1,
+        source: env.Identity.ID,
+        target: "0123456789abcdef",
+        driver: false,
+        writers: ["web"],
+        temporary: [],
+      }),
+    );
+    f.runtime.run = async (ctx) => sleep(60_000, ctx.signal);
+    const parent = context();
+    await f.manager.recover(parent);
+    expect(parent.signal.aborted).toBe(false);
+    expect(env.Status).toBe("failed");
+    expect(env.Error).toContain("Clone recovery failed");
+    expect(existsSync(journal)).toBe(true);
+  } finally {
+    shortened.mockRestore();
     f.clean();
   }
 });

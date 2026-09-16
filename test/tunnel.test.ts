@@ -43,6 +43,7 @@ lines.on('line', async line=>{
  if(!first){
   first=r; appendFileSync(r.config.calls,JSON.stringify({op,...r})+'\\n');
   if(op==='reserve'&&r.service_id==='web'&&existsSync(r.config.calls+'.fail-reserve')){console.error(JSON.stringify({event:'adapter.stopped',code:'1',reason:'Control unavailable (HTTP 503; request 11111111-1111-4111-8111-111111111111)'}));process.exit(1);}
+  if(op==='stop'&&existsSync(r.config.calls+'.fail-stop')){console.error(JSON.stringify({event:'adapter.stopped',code:'1',reason:'Control unavailable'}));process.exit(1);}
   while(existsSync(r.config.calls+'.hold-'+op)||existsSync(r.config.calls+'.hold-'+op+'-'+r.service_id))await Bun.sleep(10);
   if(op==='start'){
    expires=r.expires_at;
@@ -524,3 +525,27 @@ test("installation identity separates equal local environment IDs on different c
     await second.close();
   }
 }, 10000);
+
+test("hub stop reports provider failures after stopping every local service", async () => {
+  const f = await fixture();
+  try {
+    const transport = new Tunnels(f.manager, () => undefined);
+    for (const name of ["api", "web"]) await transport.reserve(context(), f.env, name);
+    writeFileSync(join(f.home, "calls.fail-stop"), "");
+    await expect(call(context(), f.home, "stop")).rejects.toThrow("Control unavailable");
+    expect(f.env.Status).toBe("stopped");
+    expect(f.runtime.containers.size).toBe(0);
+    expect(
+      f
+        .events()
+        .filter((event) => event.op === "stop")
+        .map((event) => event.service_id),
+    ).toEqual(["api", "web"]);
+    expect(Object.keys(f.env.tunnels ?? {})).toEqual(["api", "web"]);
+    expect(readFileSync(join(f.home, `tunnel-${f.env.Identity.ID}-web.log`), "utf8")).toContain(
+      "Control unavailable",
+    );
+  } finally {
+    await f.close();
+  }
+});

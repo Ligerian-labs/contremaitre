@@ -161,3 +161,44 @@ test("ready services remain routable during redeploy and after another service f
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+test("interrupted clone fixture admits requests, stops and restarts without resuming writers", async () => {
+  const { recoveryFixture } = await import("./recovery-fixture.js");
+  const receipt = await recoveryFixture();
+  expect(receipt.verified).toHaveLength(3);
+  rmSync(receipt.home, { recursive: true, force: true });
+});
+
+test("sharing shutdown failure still closes the hub and attempts local stop", async () => {
+  const home = mkdtempSync(join(tmpdir(), "cm-sharing-stop-"));
+  const runtime = new FakeRuntime();
+  const hub = await startServer({ home, port: 0, runtime, skipSystemStart: true });
+  try {
+    writeFileSync(
+      join(home, ".contremaitre.yaml"),
+      'version: 1\nproject: example\nservices:\n  web: {image: app, ready: ["true"]}\n',
+    );
+    await hub.manager.deploy(
+      context(),
+      await hub.manager.prepare(context(), { root: home, branch: "main" }),
+    );
+    const sharing = hub.manager
+      .tunnels as import("@contremaitre/environments/tunnel-session").TunnelSessions;
+    const shutdown = sharing.shutdown.bind(sharing);
+    sharing.shutdown = async () => {
+      await shutdown();
+      sharing.shutdown = shutdown;
+      throw Error("sharing cleanup failed");
+    };
+    await expect(call(context(), home, "stop")).rejects.toThrow("sharing cleanup failed");
+    expect(runtime.containers.size).toBe(0);
+    const deadline = Date.now() + 1000;
+    while (!hub.closed && Date.now() < deadline) await delay(10);
+    expect(hub.closed).toBe(true);
+    await hub.close();
+    expect(existsSync(join(home, "hub.sock"))).toBe(false);
+  } finally {
+    await hub.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});

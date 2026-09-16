@@ -435,10 +435,14 @@ export async function startServer(
             return;
           case "stop": {
             ready = false;
-            await sharing.shutdown();
             try {
-              await operations.shutdown();
               const errors: string[] = [];
+              try {
+                await sharing.shutdown();
+              } catch (error) {
+                errors.push(`sharing: ${message(error)}`);
+              }
+              await operations.shutdown();
               for (const env of Object.values(manager.state.Environments)) {
                 try {
                   await manager.down(context(AbortSignal.timeout(180_000)), env, false);
@@ -446,7 +450,7 @@ export async function startServer(
                   errors.push(`${env.Identity.Project}/${env.Identity.ID}: ${message(error)}`);
                 }
               }
-              if (errors.length) fail(`Could not stop all environments: ${errors.join("; ")}`);
+              if (errors.length) fail(`Hub shutdown encountered errors: ${errors.join("; ")}`);
               json(res);
             } finally {
               // Let the control response flush, including errors, before closing its socket.
