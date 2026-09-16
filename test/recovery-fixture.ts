@@ -3,8 +3,15 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { call } from "@contremaitre/cli/client";
-import { context } from "@contremaitre/execution/context";
-import { application, Deploy, List, QueryBus } from "@contremaitre/hub/application";
+import { context, HubError } from "@contremaitre/execution/context";
+import {
+  application,
+  CommandBus,
+  Deploy,
+  Down,
+  List,
+  QueryBus,
+} from "@contremaitre/hub/application";
 import { startServer } from "@contremaitre/hub/server";
 import { defineFixture, defineScenario, makeCatalog, plan, run } from "@structure-ai/fixtures";
 import { Effect, Schema } from "effect";
@@ -91,6 +98,15 @@ export async function recoveryFixture() {
           }),
       }),
     );
+    const rejected = await app.runPromise(
+      Effect.flatMap(CommandBus, (bus) =>
+        bus
+          .dispatch(Down, { env: "missing-fixture-environment" })
+          .pipe(Effect.catchTag("HubError", (error) => Effect.succeed(error))),
+      ),
+    );
+    assert(rejected instanceof HubError);
+    assert.match(rejected.message, /not found/);
     const target = String(report.values.interrupted);
     const journal = join(home, "recovery", `${target}.json`);
     assert(existsSync(journal));
@@ -121,6 +137,7 @@ export async function recoveryFixture() {
       home,
       environmentIds: hub.manager.list().map((env) => env.Identity.ID),
       verified: [
+        "typed command errors recover through catchTag",
         "hub admits requests after failed recovery",
         "stop preserves data",
         "restart does not resume stopped writers",

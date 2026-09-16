@@ -1,7 +1,7 @@
 import { stripVTControlCharacters } from "node:util";
 import type { Environment, Request } from "@contremaitre/environments/model";
 import { context, decode, fail } from "@contremaitre/execution/context";
-import { attempt } from "@contremaitre/hub/application";
+import { attempt } from "@contremaitre/execution/effect";
 import { type Operation, operationSchema, terminal } from "@contremaitre/operations/operations";
 import { Effect, Exit } from "effect";
 import { call, followDeployment, launch } from "./client.js";
@@ -145,7 +145,7 @@ export function deploy(
                 );
                 display?.update(cancelled);
               }).pipe(
-                Effect.catchAll((error) =>
+                Effect.catchTag("HubError", (error) =>
                   Effect.sync(() =>
                     process.stderr.write(`Could not confirm cancellation: ${error.message}\n`),
                   ),

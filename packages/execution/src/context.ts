@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
-import { Data, Schema } from "effect";
+import { Data, Either, Schema } from "effect";
 export class HubError extends Data.TaggedError("HubError")<{
   readonly message: string;
   readonly exitCode?: number;
+  readonly cause?: unknown;
   readonly classification: "permanent" | "transient" | "conflict";
 }> {}
 export function fail(
@@ -51,11 +52,8 @@ export function phase(ctx: Context, text: string): void {
   progress(ctx, "running", text);
 }
 export function decode<A, I>(schema: Schema.Schema<A, I>, value: unknown, label: string): A {
-  try {
-    return Schema.decodeUnknownSync(schema, { onExcessProperty: "error" })(value);
-  } catch {
-    return fail(`Invalid ${label}`);
-  }
+  const result = Schema.decodeUnknownEither(schema, { onExcessProperty: "error" })(value);
+  return Either.isRight(result) ? result.right : fail(`Invalid ${label}`);
 }
 export const hash = (value: string | Uint8Array): string =>
   createHash("sha256").update(value).digest("hex");

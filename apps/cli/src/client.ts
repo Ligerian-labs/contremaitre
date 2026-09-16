@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, renameSync, statSync } from "node:fs";
 import { request } from "node:http";
 import { dirname, join, resolve } from "node:path";
-import { type Context, context, decode, fail } from "@contremaitre/execution/context";
+import { type Context, context, decode, fail, HubError } from "@contremaitre/execution/context";
 import { sleep } from "@contremaitre/execution/sleep";
 import { type Operation, operationSchema, terminal } from "@contremaitre/operations/operations";
 import { Schema } from "effect";
@@ -35,7 +35,9 @@ export async function call(
         let bytes = Buffer.alloc(0);
         res.on("data", (chunk) => {
           if (bytes.length + chunk.length > 32 * 1048576) {
-            req.destroy(Error("Hub response too large"));
+            req.destroy(
+              new HubError({ message: "Hub response too large", classification: "permanent" }),
+            );
             return;
           }
           bytes = Buffer.concat([bytes, chunk]);
@@ -43,7 +45,7 @@ export async function call(
         res.on("error", reject);
         res.on("end", () => {
           try {
-            const reply = decode(replySchema, JSON.parse(bytes.toString()), "hub response");
+            const reply = decode(Schema.parseJson(replySchema), bytes.toString(), "hub response");
             if (reply.error) fail(reply.error);
             if (res.statusCode !== 200) fail("Hub unavailable; run contremaitre start");
             resolve(reply.data);

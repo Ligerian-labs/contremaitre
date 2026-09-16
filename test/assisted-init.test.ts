@@ -198,3 +198,30 @@ test("agent adapters extract final text and reject provider errors", () => {
   expect(agentCommand({ provider: "codex" })).toContain("read-only");
   expect(agentCommand({ provider: "pi" })).toContain("--no-tools");
 });
+
+test("agent execution failures are not retried as invalid model output", async () => {
+  const f = fixture();
+  try {
+    for (const failure of [
+      new SyntaxError("agent process failed"),
+      new Error("Invalid agent reply from authentication service"),
+    ]) {
+      let calls = 0;
+      await expect(
+        assistedInit(
+          context(),
+          f.root,
+          async () => {
+            calls++;
+            throw failure;
+          },
+          { ask: async () => "", note() {} },
+          f.options,
+        ),
+      ).rejects.toBe(failure);
+      expect(calls).toBe(1);
+    }
+  } finally {
+    f.clean();
+  }
+});

@@ -165,7 +165,7 @@ test("ready services remain routable during redeploy and after another service f
 test("interrupted clone fixture admits requests, stops and restarts without resuming writers", async () => {
   const { recoveryFixture } = await import("./recovery-fixture.js");
   const receipt = await recoveryFixture();
-  expect(receipt.verified).toHaveLength(3);
+  expect(receipt.verified).toContain("typed command errors recover through catchTag");
   rmSync(receipt.home, { recursive: true, force: true });
 });
 
@@ -197,6 +197,52 @@ test("sharing shutdown failure still closes the hub and attempts local stop", as
     expect(hub.closed).toBe(true);
     await hub.close();
     expect(existsSync(join(home, "hub.sock"))).toBe(false);
+  } finally {
+    await hub.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("control API keeps typed failures distinct from defects and omits private causes", async () => {
+  const { HubError } = await import("@contremaitre/execution/context");
+  const home = mkdtempSync(join(tmpdir(), "cm-control-errors-"));
+  const hub = await startServer({
+    home,
+    port: 0,
+    runtime: new FakeRuntime(),
+    skipSystemStart: true,
+  });
+  try {
+    const request = (action: string) =>
+      fetch(`http://localhost/v1/${action}`, {
+        unix: join(home, "hub.sock"),
+        method: "POST",
+        body: JSON.stringify({ env: "fixture" }),
+      });
+    hub.manager.list = () => {
+      throw new TypeError("private-defect-token");
+    };
+    const defect = await request("list");
+    expect(defect.status).toBe(500);
+    expect(await defect.text()).not.toContain("private-defect-token");
+    hub.manager.resolve = () => {
+      throw new HubError({
+        message: "Environment not available",
+        classification: "permanent",
+        cause: new Error("private-provider-token"),
+      });
+    };
+    const rejected = await request("resolve");
+    expect(rejected.status).toBe(400);
+    const response = await rejected.text();
+    expect(response).toContain("Environment not available");
+    expect(response).not.toContain("private-provider-token");
+    const invalid = await fetch("http://localhost/v1/list", {
+      unix: join(home, "hub.sock"),
+      method: "POST",
+      body: "not-json",
+    });
+    expect(invalid.status).toBe(400);
   } finally {
     await hub.close();
     rmSync(home, { recursive: true, force: true });

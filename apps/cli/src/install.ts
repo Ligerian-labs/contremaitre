@@ -4,13 +4,20 @@ import { existsSync } from "node:fs";
 import { chmod, copyFile, mkdir, rename, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
-import { type Context, isCode, message } from "@contremaitre/execution/context";
+import { type Context, fail, HubError, isCode, message } from "@contremaitre/execution/context";
 import { lockHome } from "@contremaitre/execution/files";
 import { sleep } from "@contremaitre/execution/sleep";
 
 import { call } from "./client.js";
 
-const exec = promisify(execFile);
+const execute = promisify(execFile);
+const exec = async (file: string, args: readonly string[], options: { signal: AbortSignal }) => {
+  try {
+    return await execute(file, args, options);
+  } catch (cause) {
+    throw new HubError({ message: message(cause), classification: "permanent", cause });
+  }
+};
 
 export function routingArguments(command: string, https: boolean): string[] {
   const port = (flag: string, fallback: number) => {
@@ -18,7 +25,7 @@ export function routingArguments(command: string, https: boolean): string[] {
     if (!matches.length) return fallback;
     const value = matches[0][1];
     if (matches.length !== 1 || !/^\d+$/.test(value) || Number(value) > 65535)
-      throw Error(`Cannot preserve hub --${flag}: ${value}`);
+      fail(`Cannot preserve hub --${flag}: ${value}`);
     return Number(value);
   };
   return https
@@ -39,7 +46,7 @@ async function owner(ctx: Context, home: string): Promise<number> {
   });
   const pids = [...new Set(stdout.trim().split(/\s+/))];
   if (pids.length !== 1 || !/^\d+$/.test(pids[0]) || Number(pids[0]) <= 1)
-    throw Error("Cannot identify a single running hub from daemon.lock");
+    fail("Cannot identify a single running hub from daemon.lock");
   return Number(pids[0]);
 }
 
@@ -58,7 +65,7 @@ async function runningHub(ctx: Context, home: string) {
     signal: ctx.signal,
   });
   if (!/(?:^|\s)serve(?:\s|$)/.test(stdout))
-    throw Error(`Process ${pid} owns daemon.lock but is not a hub serve command`);
+    fail(`Process ${pid} owns daemon.lock but is not a hub serve command`);
   return { pid, args: routingArguments(stdout, !!health.local_https) };
 }
 
@@ -84,7 +91,7 @@ export async function installBinary(
   const args = ["start", "--home", home, ...hub.args];
   try {
     if ((await owner(ctx, home)) !== hub.pid)
-      throw Error("The running hub changed during installation; rerun the installer");
+      fail("The running hub changed during installation; rerun the installer");
     ctx.log("Upgrading the running hub. Active operations and tunnel sessions will end.\n");
     process.kill(hub.pid, "SIGTERM");
     const deadline = Date.now() + 180_000;
@@ -96,14 +103,14 @@ export async function installBinary(
         if (isCode(error, "ESRCH")) break;
         throw error;
       }
-      if (Date.now() >= deadline) throw Error("Timed out waiting for the old hub to exit");
+      if (Date.now() >= deadline) fail("Timed out waiting for the old hub to exit");
       await sleep(100, ctx.signal);
     }
     const result = await exec(destination, args, { signal: ctx.signal });
     ctx.log(result.stdout);
     ctx.log(result.stderr);
   } catch (error) {
-    throw Error(
+    fail(
       `CLI installed, but hub upgrade failed: ${message(error)}. Start it with: ${[destination, ...args].map((arg) => `'${arg.replaceAll("'", "'\\''")}'`).join(" ")}`,
     );
   }

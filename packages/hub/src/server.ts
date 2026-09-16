@@ -6,7 +6,8 @@ import { Manager } from "@contremaitre/environments/manager";
 import { httpEndpoints, requestSchema } from "@contremaitre/environments/model";
 import { Store } from "@contremaitre/environments/store";
 import { TunnelSessions } from "@contremaitre/environments/tunnel-session";
-import { context, decode, fail, keys, message } from "@contremaitre/execution/context";
+import { context, decode, fail, HubError, keys, message } from "@contremaitre/execution/context";
+import { attempt, withCleanup } from "@contremaitre/execution/effect";
 import { lockHome } from "@contremaitre/execution/files";
 import { reapProcesses } from "@contremaitre/execution/process-journal";
 import { sleep } from "@contremaitre/execution/sleep";
@@ -17,10 +18,9 @@ import { startReview } from "@contremaitre/verification/review";
 import { AgentWorkflow } from "@contremaitre/verification/workflow";
 import { load, Settings } from "@structure-ai/config";
 import { Readiness, Shutdown } from "@structure-ai/runtime";
-import { Duration, Effect, Layer } from "effect";
+import { Cause, Duration, Effect, Runtime as EffectRuntime, Layer, Schema } from "effect";
 import {
   application,
-  attempt,
   Cancel,
   CommandBus,
   Deploy,
@@ -84,11 +84,26 @@ async function body(req: IncomingMessage): Promise<unknown> {
     data = Buffer.concat([data, Buffer.from(chunk)]);
     if (data.length > 65536) fail("Request exceeds 64 KiB");
   }
-  return data.length ? JSON.parse(data.toString()) : {};
+  return data.length
+    ? decode(Schema.parseJson(Schema.Unknown), data.toString(), "control request JSON")
+    : {};
 }
-function json(res: ServerResponse, data?: unknown, error?: string) {
+function controlError(error: unknown): { status: number; message: string } {
+  if (error instanceof HubError) return { status: 400, message: error.message };
+  if (EffectRuntime.isFiberFailure(error)) {
+    const cause = error[EffectRuntime.FiberFailureCauseId];
+    if (Cause.isInterrupted(cause)) return { status: 503, message: "Control request interrupted" };
+    if (!Cause.isDie(cause)) {
+      const failures = Array.from(Cause.failures(cause));
+      if (failures.length && failures.every((failure) => failure instanceof HubError))
+        return { status: 400, message: failures.map((failure) => failure.message).join("; ") };
+    }
+  }
+  return { status: 500, message: "Internal hub error" };
+}
+function json(res: ServerResponse, data?: unknown, error?: string, status = error ? 400 : 200) {
   if (res.destroyed) return;
-  res.writeHead(error ? 400 : 200, { "Content-Type": "application/json" });
+  res.writeHead(status, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ version: 1, data, error }));
 }
 async function write(res: ServerResponse, event: unknown, signal: AbortSignal) {
@@ -462,9 +477,10 @@ export async function startServer(
             fail("Unknown control operation");
         }
       })().catch((error) => {
-        if (!res.headersSent) json(res, undefined, message(error));
+        const failure = controlError(error);
+        if (!res.headersSent) json(res, undefined, failure.message, failure.status);
         else if (!res.destroyed) {
-          res.end(`${JSON.stringify({ version: 1, type: "result", error: message(error) })}\n`);
+          res.end(`${JSON.stringify({ version: 1, type: "result", error: failure.message })}\n`);
         }
       });
     });
@@ -525,7 +541,11 @@ export async function startServer(
       },
     };
   } catch (e) {
-    await close();
+    try {
+      await close();
+    } catch (cleanup) {
+      throw new AggregateError([e, cleanup], "Hub startup and cleanup failed");
+    }
     throw e;
   }
 }
@@ -536,26 +556,33 @@ export const serve = (options: ServerOptions) =>
     const config = yield* load(settings);
     const concurrency = options.concurrency ?? config.concurrency;
     if (concurrency < 1 || concurrency > 16)
-      return yield* Effect.fail(new Error("CONTREMAITRE_CONCURRENCY must be 1..16"));
+      return yield* Effect.fail(
+        new HubError({
+          message: "CONTREMAITRE_CONCURRENCY must be 1..16",
+          classification: "permanent",
+        }),
+      );
     const hub = yield* attempt((signal) => startServer({ ...options, concurrency }, signal));
-    yield* shutdown.onShutdown(
-      "hub",
-      Effect.promise(() => hub.close()),
-    );
-    yield* readiness.setReady;
-    yield* Effect.logInfo("contremaitre.hub.ready").pipe(
-      Effect.annotateLogs({ home: options.home, port: options.port, concurrency }),
-    );
-    return yield* Effect.race(
-      shutdown.awaitShutdown,
+    const closing = attempt(() => hub.close());
+    // The registry only accepts infallible hooks. Join the same close promise
+    // below so its error is propagated together with the serving outcome.
+    yield* shutdown.onShutdown("hub", Effect.exit(closing).pipe(Effect.asVoid));
+    return yield* withCleanup(
       Effect.gen(function* () {
-        while (!hub.closed) yield* Effect.sleep("200 millis");
-        yield* shutdown.trigger("stop");
-        return "stop";
+        yield* readiness.setReady;
+        yield* Effect.logInfo("contremaitre.hub.ready").pipe(
+          Effect.annotateLogs({ home: options.home, port: options.port, concurrency }),
+        );
+        return yield* Effect.race(
+          shutdown.awaitShutdown,
+          Effect.gen(function* () {
+            while (!hub.closed) yield* Effect.sleep("200 millis");
+            yield* shutdown.trigger("stop");
+            return "stop";
+          }),
+        ).pipe(Effect.onInterrupt(() => shutdown.trigger("signal")));
       }),
-    ).pipe(
-      Effect.onInterrupt(() => shutdown.trigger("signal")),
-      Effect.ensuring(Effect.promise(() => hub.close())),
+      closing,
     );
   }).pipe(
     Effect.provide(

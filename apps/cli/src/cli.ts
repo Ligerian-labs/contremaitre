@@ -3,16 +3,17 @@ import { Apple } from "@contremaitre/environments/apple";
 import { driverProcess } from "@contremaitre/environments/driver";
 import type { Environment, Request } from "@contremaitre/environments/model";
 import { context, decode, fail } from "@contremaitre/execution/context";
-import { attempt } from "@contremaitre/hub/application";
+import { attempt } from "@contremaitre/execution/effect";
 import { serve } from "@contremaitre/hub/server";
 import { operationSchema } from "@contremaitre/operations/operations";
 import { tcpProxy } from "@contremaitre/routing/proxy";
 import { BunContext, BunRuntime } from "@effect/platform-bun";
-import { Args, Command, defineCommand, exitCodeFor, withSubcommands } from "@structure-ai/cli";
-import { Cause, Effect, Exit, Option } from "effect";
+import { Args, Command, defineCommand, withSubcommands } from "@structure-ai/cli";
+import { Effect, Exit } from "effect";
 import { AgentResultError, agentCommand } from "./agents.js";
 import { attach, call, deploymentLogs, launch, projectRoot } from "./client.js";
 import { deploy } from "./deploy.js";
+import { commandFailure } from "./errors.js";
 import {
   type CommandHelp,
   commands as commandHelp,
@@ -21,6 +22,7 @@ import {
   normalizeArguments,
   optionsFor,
   renderHelp,
+  UsageError,
 } from "./help.js";
 import { manageHttpsService } from "./https-service.js";
 import { initialize } from "./init.js";
@@ -386,26 +388,22 @@ if (import.meta.main) {
   });
   const app = Effect.suspend(() => {
     try {
-      const help = helpRequest(normalized.args);
-      return help === undefined
+      return Effect.succeed(helpRequest(normalized.args));
+    } catch (error) {
+      return error instanceof UsageError ? Effect.fail(error) : Effect.die(error);
+    }
+  }).pipe(
+    Effect.flatMap((help) =>
+      help === undefined
         ? execute(process.argv)
         : Effect.sync(() => {
             process.stdout.write(help);
-          });
-    } catch (error) {
-      return Effect.fail(error);
-    }
-  }).pipe(
+          }),
+    ),
     Effect.tapErrorCause((cause) =>
       Effect.sync(() => {
-        const code = exitCodeFor(cause);
-        if (code === 64) return;
-        const failure = Cause.failureOption(cause);
-        if (Option.isSome(failure) && failure.value instanceof AgentResultError) return;
-        const text =
-          Option.isSome(failure) && failure.value instanceof Error
-            ? failure.value.message
-            : Cause.pretty(cause);
+        const { text } = commandFailure(cause);
+        if (text === undefined) return;
         if (normalized.args.includes("--json"))
           process.stdout.write(`${JSON.stringify({ version: 1, error: text })}\n`);
         else process.stderr.write(`contremaitre: ${text}\n`);
@@ -421,15 +419,7 @@ if (import.meta.main) {
         done(0);
         return;
       }
-      const failure = Cause.failureOption(exit.cause);
-      const error = Option.isSome(failure) ? failure.value : undefined;
-      const childCode =
-        error && typeof error === "object" && "exitCode" in error ? error.exitCode : undefined;
-      done(
-        typeof childCode === "number" && childCode > 0 && childCode <= 255
-          ? childCode
-          : exitCodeFor(exit.cause),
-      );
+      done(commandFailure(exit.cause).code);
     },
   });
 }
