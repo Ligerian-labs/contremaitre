@@ -335,3 +335,60 @@ test("initial source sync updates a reused volume without removing dependencies 
     await rm(base, { recursive: true, force: true });
   }
 });
+
+async function vanishingRuntime(deleteError: string) {
+  const dir = await mkdtemp(join(tmpdir(), "cm-apple-remove-")),
+    binary = join(dir, "container");
+  await writeFile(
+    binary,
+    `#!${process.execPath}
+import { appendFileSync } from 'node:fs';
+const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(join(dir, "events"))}, args.join(' ') + '\\n');
+const deleting = args.includes('delete');
+if (args[0] === 'inspect') console.log(JSON.stringify([{ status: 'stopped' }]));
+else if (!deleting) process.exit(0);
+else { console.error(${JSON.stringify(deleteError)}); process.exit(1); }
+`,
+    { mode: 0o700 },
+  );
+  return {
+    apple: new Apple(binary),
+    events: async () => (await readFile(join(dir, "events"), "utf8")).trim().split("\n"),
+    clean: () => rm(dir, { recursive: true, force: true }),
+  };
+}
+
+test("removing a resource that disappears after inspection succeeds", async () => {
+  // A `--rm` task container can finish removing itself between inspect and delete.
+  const f = await vanishingRuntime(
+    'Error: internalError: "failed to delete container" (cause: "notFound: "container with ID app-task not found"")',
+  );
+  try {
+    await f.apple.remove(context(), "app-task");
+    await f.apple.removeVolume(context(), "app-data");
+    await f.apple.removeImage(context(), "app-image");
+    expect(await f.events()).toEqual([
+      "inspect app-task",
+      "delete --force app-task",
+      "volume inspect app-data",
+      "volume delete app-data",
+      "image inspect app-image",
+      "image delete app-image",
+    ]);
+  } finally {
+    await f.clean();
+  }
+});
+
+test("removing a resource still fails when delete fails for another reason", async () => {
+  const f = await vanishingRuntime(
+    'Error: internalError: "failed to delete container" (cause: "busy")',
+  );
+  try {
+    await expect(f.apple.remove(context(), "app-task")).rejects.toThrow("busy");
+    await expect(f.apple.removeVolume(context(), "app-data")).rejects.toThrow("busy");
+  } finally {
+    await f.clean();
+  }
+});
