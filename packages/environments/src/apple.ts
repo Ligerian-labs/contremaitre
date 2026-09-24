@@ -132,7 +132,7 @@ export class Apple implements Runtime {
       if (missing(e)) return;
       throw e;
     }
-    await this.call(ctx, kind, "delete", name);
+    await this.deleteIfPresent(ctx, kind, "delete", name);
   }
   removeNetwork(ctx: Context, name: string) {
     return this.removeResource(ctx, "network", name);
@@ -160,7 +160,15 @@ export class Apple implements Runtime {
     await this.call(ctx, "start", name);
   }
   async remove(ctx: Context, name: string) {
-    if (await this.inspect(ctx, name)) await this.call(ctx, "delete", "--force", name);
+    if (await this.inspect(ctx, name)) await this.deleteIfPresent(ctx, "delete", "--force", name);
+  }
+  // A resource can disappear between inspect and delete, e.g. a `--rm` task container finishing its own removal.
+  private async deleteIfPresent(ctx: Context, ...args: string[]) {
+    try {
+      await this.call(ctx, ...args);
+    } catch (e) {
+      if (!missing(e)) throw e;
+    }
   }
   async run(ctx: Context, s: RunSpec) {
     const args = [
