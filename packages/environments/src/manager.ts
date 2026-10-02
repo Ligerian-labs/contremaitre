@@ -862,11 +862,18 @@ export class Manager {
         }
         source = options.source ?? (await this.prepareDevelopment(ctx, env, s, initialize));
         const fingerprint = this.developmentSourceFingerprint(env, s, source.directory);
-        if ((options.resetSource ?? initialize) || s.development_source !== fingerprint)
+        if (
+          (options.resetSource ?? initialize) ||
+          (initialize && s.development_source !== fingerprint)
+        )
           await this.runtime.removeVolume(ctx, volume);
         await this.runtime.volume(ctx, volume);
-        s.development_source = fingerprint;
-        this.save();
+        // URL changes and clone resumes do not install. Keep their installed
+        // layout and its fingerprint until a deployment can refresh both.
+        if (initialize) {
+          s.development_source = fingerprint;
+          this.save();
+        }
         volumes[volume] = s.Spec.dev.target;
         phase(ctx, "copying development source");
         await this.runtime.sync(
@@ -966,9 +973,12 @@ export class Manager {
       await this.runtime.run(ctx, task);
       return;
     }
-    // Built image tags include the environment and a timestamp. Equivalent build
-    // inputs describe the runtime across those tags, services and workspaces.
-    const runtime = this.dependencyRuntime(env, service);
+    // Downloaded packages can be reused when app source changes. Scope built
+    // runtimes by their Dockerfile recipe; installed source still uses the full
+    // build fingerprint for compatibility and stays isolated per environment.
+    const runtime = service.Spec.build
+      ? `dockerfile-${hash(readFileSync(safePath(env.Root, service.Spec.dockerfile || join(service.Spec.build, "Dockerfile"))))}`
+      : service.Image;
     const volume = `${this.store.namespace()}-cache-${hash(JSON.stringify([env.Identity.Project, runtime, cache.manager])).slice(0, 16)}`;
     phase(ctx, `waiting for shared ${cache.manager} download cache`);
     await this.dependencyLocks.use([volume], ctx.signal, async () => {

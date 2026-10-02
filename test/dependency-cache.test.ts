@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fingerprintBuildContext } from "@contremaitre/environments/build-context";
 import { installCacheEnvironment, packageInstaller } from "@contremaitre/environments/development";
 import { Manager } from "@contremaitre/environments/manager";
 import { Store } from "@contremaitre/environments/store";
@@ -311,6 +312,7 @@ test("identical built runtimes share downloads across services and environments"
     await f.deploy("feature");
     expect(caches.size).toBe(1);
     f.runtime.build = async () => ({ image: "changed-runtime", digest: "changed-inputs" });
+    writeFileSync(join(f.root, "Dockerfile"), "FROM node:25-bookworm-slim\n");
     await f.deploy("changed");
     expect(caches.size).toBe(2);
   } finally {
@@ -470,6 +472,72 @@ test("failed built installers retain source across equivalent generated image ta
     await f.deploy("main");
     expect(builds).toBe(2);
     expect(resets()).toBe(1);
+  } finally {
+    await f.clean();
+  }
+});
+
+test("non-installing URL restarts preserve dependencies and defer compatibility refresh", async () => {
+  for (const variant of ["legacy", "configuration"] as const) {
+    const f = fixture();
+    writeFileSync(join(f.root, "bunfig.toml"), "[install]\nfrozenLockfile = true\n");
+    try {
+      await f.deploy("main");
+      const env = f.manager.list()[0];
+      assertEnvironment(env);
+      const stored = f.manager.resolve(env.Identity.ID);
+      const source = `${stored.Services.api.Container}-source`;
+      if (variant === "legacy") delete stored.Services.api.development_source;
+      else
+        writeFileSync(join(f.root, "bunfig.toml"), "[install.cache]\ndir = '/app/local-cache'\n");
+      const identityBeforeRestart = stored.Services.api.development_source;
+      f.manager.save();
+      const resets = () =>
+        f.runtime.calls.filter((call) => call === `remove volume ${source}`).length;
+      const installs = () =>
+        f.runtime.calls.filter((call) => call === `run ${stored.Services.api.Container}-task`)
+          .length;
+      await f.manager.configureTunnel(context(), stored, { api: "https://download-proof.invalid" });
+      expect(resets()).toBe(1);
+      expect(installs()).toBe(1);
+      expect(stored.Services.api.development_source).toBe(identityBeforeRestart);
+      await f.manager.configureTunnel(context(), stored, {});
+      expect(resets()).toBe(1);
+      expect(installs()).toBe(1);
+      await f.deploy("main");
+      expect(resets()).toBe(2);
+      expect(installs()).toBe(2);
+    } finally {
+      await f.clean();
+    }
+  }
+});
+
+test("built download caches survive app source changes and follow the Dockerfile recipe", async () => {
+  const f = fixture();
+  writeFileSync(join(f.root, "Dockerfile"), "FROM node:24-bookworm-slim\nCOPY . /app\n");
+  writeFileSync(join(f.root, "main.js"), "console.log('main')\n");
+  f.manifest.services.api = { ...f.manifest.services.api, image: undefined, build: "." };
+  f.runtime.build = async (ctx, root, dockerfile, tag) => ({
+    image: tag,
+    digest: (await fingerprintBuildContext(ctx, root, dockerfile)).digest,
+  });
+  const caches = new Set<string>();
+  const start = f.runtime.run.bind(f.runtime);
+  f.runtime.run = async (ctx, spec) => {
+    if (spec.task)
+      for (const [volume, target] of Object.entries(spec.volumes))
+        if (target === "/tmp/contremaitre-cache") caches.add(volume);
+    await start(ctx, spec);
+  };
+  try {
+    await f.deploy("main");
+    writeFileSync(join(f.root, "main.js"), "console.log('feature')\n");
+    await f.deploy("feature");
+    expect(caches.size).toBe(1);
+    writeFileSync(join(f.root, "Dockerfile"), "FROM node:25-bookworm-slim\nCOPY . /app\n");
+    await f.deploy("runtime-changed");
+    expect(caches.size).toBe(2);
   } finally {
     await f.clean();
   }

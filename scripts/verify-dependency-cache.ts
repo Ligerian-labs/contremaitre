@@ -137,6 +137,19 @@ try {
     "-e",
     "/app/rebuild-sentinel",
   ]);
+  // Sharing/URL restarts do not install, so even legacy metadata must retain
+  // the existing dependency volume until the next explicit deployment.
+  delete warm.Services.api.development_source;
+  manager.save();
+  const restartStarted = performance.now();
+  await manager.configureTunnel(ctx, warm, { api: "https://download-proof.invalid" });
+  timings.url_restart = (performance.now() - restartStarted) / 1000;
+  await runtime.exec(ctx, warm.Services.api.Container, [
+    "node",
+    "-e",
+    "if(!require('is-number')(42))process.exit(1)",
+  ]);
+  await manager.configureTunnel(ctx, warm, {});
   // Simulate a successful pre-cache deployment, whose modules reference a
   // source-local pnpm store and whose persisted state has no source identity.
   await runtime.exec(ctx, warm.Services.api.Container, [
@@ -170,6 +183,7 @@ try {
       source_isolation: true,
       rebuild_refreshes_source: true,
       legacy_store_upgrade: true,
+      url_restart_keeps_dependencies: true,
     }),
   );
 } finally {
