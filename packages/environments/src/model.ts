@@ -28,6 +28,8 @@ export interface ServiceState {
   Spec: Service;
   Initialized: boolean;
   deployment?: string;
+  development_source?: string;
+  dependency_cache?: string;
   ready?: boolean;
   url?: string;
   raw_environment?: Record<string, string>;

@@ -244,7 +244,7 @@ main source when accepting a deployment. Build files are staged when the queued
 operation starts. Wait for that staging step before editing files whose exact
 contents must be part of a deployment.
 
-Native deployments fingerprint the filtered context, file permissions, symlink targets, Dockerfile, and ignore rules. A read-only input check reuses an unchanged image without writing a temporary context. Changed inputs or a missing image trigger a fresh validated snapshot and build. Successful builds are retained even if a later service fails. `deploy --rebuild` bypasses this image reuse and invokes the builder with its normal layer cache; it does not force a base-image pull. `--rebuild` also forces service replacement and migrations and clears development source/dependency volumes.
+Native deployments fingerprint the filtered context, file permissions, symlink targets, Dockerfile, and ignore rules. A read-only input check reuses an unchanged image without writing a temporary context. Changed inputs or a missing image trigger a fresh validated snapshot and build. Successful builds are retained even if a later service fails. `deploy --rebuild` bypasses this image reuse and invokes the builder with its normal layer cache; it does not force a base-image pull. `--rebuild` also forces service replacement and migrations and clears development source/dependency volumes. Shared package-download caches remain available for installation; see [dependency reuse](assisted-init.md#development-services).
 
 All required builds must succeed before replacing existing processes. A build failure
 leaves the current application running. A running service with an unchanged image,

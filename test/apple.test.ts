@@ -392,3 +392,25 @@ test("removing a resource still fails when delete fails for another reason", asy
     await f.clean();
   }
 });
+
+test("installer deadline reaches the native task process without changing ordinary task defaults", async () => {
+  const apple = new Apple();
+  const output = spyOn(apple, "output").mockResolvedValue(Buffer.alloc(0));
+  const spec = {
+    name: "installer",
+    image: "node:24-bookworm-slim",
+    network: "isolated",
+    service: { command: ["corepack", "pnpm", "install"] },
+    volumes: {},
+    envFile: "",
+    task: true,
+  };
+  try {
+    await apple.run(context(), { ...spec, timeout: 1_800_000 });
+    expect(output.mock.calls[0]?.[2]?.timeout).toBe(1_800_000);
+    await apple.run(context(), spec);
+    expect(output.mock.calls[1]?.[2]?.timeout).toBeUndefined();
+  } finally {
+    output.mockRestore();
+  }
+});
