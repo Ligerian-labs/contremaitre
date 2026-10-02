@@ -172,7 +172,21 @@ test("failed cleanup blocks reuse of a possibly mounted cache", async () => {
     await remove(ctx, name);
   };
   try {
-    await expect(f.deploy("first")).rejects.toThrow("cannot remove guest");
+    const logs: string[] = [];
+    await expect(
+      f.manager.deploy(
+        context(undefined, (chunk) => logs.push(chunk.toString())),
+        {
+          root: f.root,
+          identity: newIdentity("cache", f.root, "first"),
+          manifest: f.manifest,
+          request: {},
+        },
+      ),
+    ).rejects.toThrow("cannot remove guest");
+    expect(logs.join("")).toContain(
+      "dependency installation failed before cleanup: installation failed",
+    );
     await expect(f.deploy("second")).rejects.toThrow("Dependency cache task cleanup failed");
   } finally {
     await f.clean();
@@ -238,6 +252,224 @@ test("Corepack installers share bootstrap downloads while app containers use the
   };
   try {
     await f.deploy("main");
+  } finally {
+    await f.clean();
+  }
+});
+
+test("cache mode changes and legacy installs refresh incompatible pnpm source volumes", async () => {
+  const f = fixture();
+  try {
+    await f.deploy("main");
+    const env = f.manager.list()[0];
+    assertEnvironment(env);
+    const service = f.manager.resolve(env.Identity.ID).Services.api;
+    const source = `${service.Container}-source`;
+    const resets = () =>
+      f.runtime.calls.filter((call) => call === `remove volume ${source}`).length;
+    expect(resets()).toBe(1);
+    delete service.development_source;
+    f.manager.save();
+    await f.deploy("main");
+    expect(resets()).toBe(2);
+    writeFileSync(join(f.root, ".npmrc"), "store-dir=/app/local-store\n");
+    await f.deploy("main");
+    expect(resets()).toBe(3);
+    writeFileSync(join(f.root, ".npmrc"), "store-dir=/app/another-store\n");
+    await f.deploy("main");
+    expect(resets()).toBe(4);
+    rmSync(join(f.root, ".npmrc"));
+    await f.deploy("main");
+    expect(resets()).toBe(5);
+  } finally {
+    await f.clean();
+  }
+});
+
+function assertEnvironment<T>(value: T | undefined): asserts value is T {
+  if (!value) throw Error("Missing fixture environment");
+}
+
+test("identical built runtimes share downloads across services and environments", async () => {
+  const f = fixture();
+  writeFileSync(join(f.root, "Dockerfile"), "FROM node:24-bookworm-slim\n");
+  const original = f.manifest.services.api;
+  f.manifest.services = {
+    api: { ...original, image: undefined, build: "." },
+    web: { ...original, image: undefined, build: "." },
+  };
+  const caches = new Set<string>();
+  const start = f.runtime.run.bind(f.runtime);
+  f.runtime.run = async (ctx, spec) => {
+    if (spec.task)
+      for (const [volume, target] of Object.entries(spec.volumes))
+        if (target === "/tmp/contremaitre-cache") caches.add(volume);
+    await start(ctx, spec);
+  };
+  try {
+    await f.deploy("main");
+    await f.deploy("feature");
+    expect(caches.size).toBe(1);
+    f.runtime.build = async () => ({ image: "changed-runtime", digest: "changed-inputs" });
+    await f.deploy("changed");
+    expect(caches.size).toBe(2);
+  } finally {
+    await f.clean();
+  }
+});
+
+test("a rebuilt runtime and service recipe each invalidate retained source", async () => {
+  const f = fixture();
+  f.manifest.services.api = { ...f.manifest.services.api, image: undefined, build: "." };
+  writeFileSync(join(f.root, "Dockerfile"), "FROM node:24-bookworm-slim\n");
+  let image = "runtime-a";
+  f.runtime.build = async () => ({ image, digest: image });
+  try {
+    await f.deploy("main");
+    const env = f.manager.list()[0];
+    assertEnvironment(env);
+    const source = `${f.manager.resolve(env.Identity.ID).Services.api.Container}-source`;
+    const resets = () =>
+      f.runtime.calls.filter((call) => call === `remove volume ${source}`).length;
+    expect(resets()).toBe(1);
+    await f.deploy("main");
+    expect(resets()).toBe(1);
+    image = "runtime-b";
+    await f.deploy("main");
+    expect(resets()).toBe(2);
+    f.manifest.services.api = { ...f.manifest.services.api, command: ["node", "other.js"] };
+    await f.deploy("main");
+    expect(resets()).toBe(3);
+    const moved = join(f.home, "moved-project");
+    mkdirSync(moved);
+    writeFileSync(join(moved, "package.json"), "{}");
+    writeFileSync(join(moved, "Dockerfile"), "FROM node:24-bookworm-slim\n");
+    await f.manager.deploy(context(), {
+      root: moved,
+      identity: env.Identity,
+      manifest: f.manifest,
+      request: {},
+    });
+    expect(resets()).toBe(4);
+  } finally {
+    await f.clean();
+  }
+});
+
+test("initialization and migration keep ordinary deadlines alongside an installer", async () => {
+  const f = fixture();
+  f.manifest.services.api = {
+    ...f.manifest.services.api,
+    init: ["node", "init.js"],
+    migrate: ["node", "migrate.js"],
+  };
+  const tasks: Array<{ command: readonly string[]; timeout?: number }> = [];
+  const start = f.runtime.run.bind(f.runtime);
+  f.runtime.run = async (ctx, spec) => {
+    if (spec.task) tasks.push({ command: spec.service.command ?? [], timeout: spec.timeout });
+    await start(ctx, spec);
+  };
+  try {
+    await f.deploy("main");
+    expect(tasks).toHaveLength(3);
+    expect(tasks.find((task) => task.command.includes("pnpm"))?.timeout).toBe(1_800_000);
+    for (const command of ["init.js", "migrate.js"])
+      expect(tasks.find((task) => task.command.includes(command))?.timeout).toBeUndefined();
+  } finally {
+    await f.clean();
+  }
+});
+
+test("explicit Corepack home is respected while pnpm downloads use the shared cache", async () => {
+  const f = fixture();
+  f.manifest.services.api = {
+    ...f.manifest.services.api,
+    environment: { COREPACK_HOME: "/app/custom-corepack" },
+  };
+  const start = f.runtime.run.bind(f.runtime);
+  f.runtime.run = async (ctx, spec) => {
+    if (spec.task) {
+      expect(Object.values(spec.volumes)).toContain("/tmp/contremaitre-cache");
+      expect(readFileSync(spec.envFile, "utf8")).toContain("COREPACK_HOME=/app/custom-corepack");
+      expect(spec.service.command).toEqual(["corepack", "pnpm", "install"]);
+    }
+    await start(ctx, spec);
+  };
+  try {
+    await f.deploy("main");
+  } finally {
+    await f.clean();
+  }
+});
+
+test("shared cache mounts respect declared volumes and overlapping source targets", async () => {
+  for (const sourceTarget of ["/app", "/tmp"]) {
+    const f = fixture();
+    f.manifest.services.api = {
+      ...f.manifest.services.api,
+      volumes: sourceTarget === "/app" ? { owned: "/tmp/contremaitre-cache/owned" } : undefined,
+      dev: { source: ".", target: sourceTarget, install: ["corepack", "pnpm", "install"] },
+    };
+    const start = f.runtime.run.bind(f.runtime);
+    f.runtime.run = async (ctx, spec) => {
+      if (spec.task) {
+        expect(Object.values(spec.volumes)).not.toContain("/tmp/contremaitre-cache");
+        expect(readFileSync(spec.envFile, "utf8")).not.toContain("npm_config_store_dir=");
+      }
+      await start(ctx, spec);
+    };
+    try {
+      await f.deploy("main");
+    } finally {
+      await f.clean();
+    }
+  }
+});
+
+test("download cache identity remains isolated between projects in one hub", async () => {
+  const f = fixture();
+  const caches = new Set<string>();
+  const start = f.runtime.run.bind(f.runtime);
+  f.runtime.run = async (ctx, spec) => {
+    if (spec.task)
+      for (const [volume, target] of Object.entries(spec.volumes))
+        if (target === "/tmp/contremaitre-cache") caches.add(volume);
+    await start(ctx, spec);
+  };
+  try {
+    await f.deploy("main");
+    const manifest = { ...f.manifest, project: "other-project" };
+    await f.manager.deploy(context(), {
+      root: f.root,
+      identity: newIdentity(manifest.project, f.root, "main"),
+      manifest,
+      request: {},
+    });
+    expect(caches.size).toBe(2);
+  } finally {
+    await f.clean();
+  }
+});
+
+test("failed built installers retain source across equivalent generated image tags", async () => {
+  const f = fixture();
+  writeFileSync(join(f.root, "Dockerfile"), "FROM node:24-bookworm-slim\n");
+  f.manifest.services.api = { ...f.manifest.services.api, image: undefined, build: "." };
+  let builds = 0;
+  f.runtime.build = async () => ({ image: `equivalent-${++builds}`, digest: "same-inputs" });
+  try {
+    f.runtime.failTask = true;
+    await expect(f.deploy("main")).rejects.toThrow("task failed");
+    const env = f.manager.list()[0];
+    assertEnvironment(env);
+    const source = `${f.manager.resolve(env.Identity.ID).Services.api.Container}-source`;
+    const resets = () =>
+      f.runtime.calls.filter((call) => call === `remove volume ${source}`).length;
+    expect(resets()).toBe(1);
+    f.runtime.failTask = false;
+    await f.deploy("main");
+    expect(builds).toBe(2);
+    expect(resets()).toBe(1);
   } finally {
     await f.clean();
   }

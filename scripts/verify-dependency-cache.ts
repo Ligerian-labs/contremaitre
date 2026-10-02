@@ -137,6 +137,26 @@ try {
     "-e",
     "/app/rebuild-sentinel",
   ]);
+  // Simulate a successful pre-cache deployment, whose modules reference a
+  // source-local pnpm store and whose persisted state has no source identity.
+  await runtime.exec(ctx, warm.Services.api.Container, [
+    "sh",
+    "-eu",
+    "-c",
+    "rm -rf /app/node_modules; corepack pnpm install --store-dir /app/legacy-store",
+  ]);
+  delete warm.Services.api.development_source;
+  manager.save();
+  await manager.stopDevelopment();
+  const legacyStarted = performance.now();
+  await manager.deploy(ctx, { root, identity: warm.Identity, manifest, request: {} });
+  timings.legacy_upgrade = (performance.now() - legacyStarted) / 1000;
+  await runtime.exec(ctx, warm.Services.api.Container, ["test", "!", "-e", "/app/legacy-store"]);
+  await runtime.exec(ctx, warm.Services.api.Container, [
+    "node",
+    "-e",
+    "if(!require('is-number')(42))process.exit(1)",
+  ]);
   console.log(
     JSON.stringify({
       proof: "native dependency retry and offline cache reuse",
@@ -149,6 +169,7 @@ try {
       corepack_startup_offline: true,
       source_isolation: true,
       rebuild_refreshes_source: true,
+      legacy_store_upgrade: true,
     }),
   );
 } finally {

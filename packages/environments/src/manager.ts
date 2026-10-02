@@ -362,7 +362,6 @@ export class Manager {
           );
       }
       const previous = e.Services;
-      const previousRoot = e.Root;
       const services: Environment["Services"] = Object.fromEntries(
         names.map((name) => {
           const s = manifest.services[name],
@@ -380,11 +379,7 @@ export class Manager {
               Spec: s,
               Initialized: old?.Initialized ?? false,
               dependency_cache: old?.dependency_cache,
-              development_source:
-                old?.development_source ??
-                (old?.deployment && old.Spec.dev
-                  ? hash(JSON.stringify([previousRoot, old.Image, old.Spec]))
-                  : undefined),
+              development_source: old?.development_source,
             },
           ];
         }),
@@ -520,9 +515,7 @@ export class Manager {
                 } else {
                   await this.startService(scope, e, s, apps, {
                     source,
-                    resetSource:
-                      !!request.rebuild ||
-                      s.development_source !== hash(JSON.stringify([root, s.Image, s.Spec])),
+                    resetSource: !!request.rebuild,
                   });
                   s.deployment = this.deploymentFingerprint(e, s);
                   this.save();
@@ -809,6 +802,36 @@ export class Manager {
     await source.refresh(ctx, initialize);
     return source;
   }
+  private dependencyRuntime(env: Environment, service: ServiceState) {
+    return service.Spec.build
+      ? (env.builds?.[service.Name]?.digest ?? service.Image)
+      : service.Image;
+  }
+  private developmentSourceFingerprint(env: Environment, service: ServiceState, directory: string) {
+    // Cache paths belong to the installed layout. pnpm cannot switch stores under
+    // retained node_modules in a non-interactive task, including the first upgrade.
+    const config = [".npmrc", "bunfig.toml", "pnpm-workspace.yaml"].map((name) => {
+      const path = join(directory, name);
+      return [name, existsSync(path) ? readFileSync(path, "utf8") : null];
+    });
+    const values = this.serviceEnv(env, service);
+    const cacheSettings = Object.entries(values)
+      .filter(([key]) =>
+        /^(?:(?:npm|pnpm)_config_(?:store_dir|cache)|BUN_INSTALL_CACHE_DIR|COREPACK_HOME|XDG_CACHE_HOME)$/i.test(
+          key,
+        ),
+      )
+      .sort(([a], [b]) => a.localeCompare(b));
+    return hash(
+      JSON.stringify([
+        env.Root,
+        this.dependencyRuntime(env, service),
+        service.Spec,
+        config,
+        cacheSettings,
+      ]),
+    );
+  }
   async startService(
     ctx: Context,
     env: Environment,
@@ -837,12 +860,14 @@ export class Manager {
           env.Volumes.push(volume);
           this.save();
         }
-        if (options.resetSource ?? initialize) await this.runtime.removeVolume(ctx, volume);
+        source = options.source ?? (await this.prepareDevelopment(ctx, env, s, initialize));
+        const fingerprint = this.developmentSourceFingerprint(env, s, source.directory);
+        if ((options.resetSource ?? initialize) || s.development_source !== fingerprint)
+          await this.runtime.removeVolume(ctx, volume);
         await this.runtime.volume(ctx, volume);
-        s.development_source = hash(JSON.stringify([env.Root, s.Image, s.Spec]));
+        s.development_source = fingerprint;
         this.save();
         volumes[volume] = s.Spec.dev.target;
-        source = options.source ?? (await this.prepareDevelopment(ctx, env, s, initialize));
         phase(ctx, "copying development source");
         await this.runtime.sync(
           ctx,
@@ -941,7 +966,10 @@ export class Manager {
       await this.runtime.run(ctx, task);
       return;
     }
-    const volume = `${this.store.namespace()}-cache-${hash(JSON.stringify([env.Identity.Project, task.image, cache.manager])).slice(0, 16)}`;
+    // Built image tags include the environment and a timestamp. Equivalent build
+    // inputs describe the runtime across those tags, services and workspaces.
+    const runtime = this.dependencyRuntime(env, service);
+    const volume = `${this.store.namespace()}-cache-${hash(JSON.stringify([env.Identity.Project, runtime, cache.manager])).slice(0, 16)}`;
     phase(ctx, `waiting for shared ${cache.manager} download cache`);
     await this.dependencyLocks.use([volume], ctx.signal, async () => {
       if (this.unavailableCaches.has(volume))
@@ -996,6 +1024,8 @@ export class Manager {
         await this.runtime.remove(context(AbortSignal.timeout(15_000), ctx.log), task.name);
       } catch (error) {
         this.unavailableCaches.add(volume);
+        if (failure)
+          phase(ctx, `dependency installation failed before cleanup: ${message(failure.error)}`);
         throw error;
       }
       delete service.dependency_cache;
