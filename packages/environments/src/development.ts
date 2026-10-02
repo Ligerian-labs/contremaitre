@@ -217,3 +217,39 @@ export class DevelopmentSource {
     return this.pending;
   }
 }
+
+export const installCacheTarget = "/tmp/contremaitre-cache";
+
+// Only direct package installs have known cache semantics. Leave wrappers alone.
+export function packageInstaller(command: readonly string[] = []) {
+  const offset = command[0] === "corepack" ? 1 : 0;
+  const manager = command[offset];
+  return ["pnpm", "npm", "bun"].includes(manager ?? "") &&
+    ["install", "i", ...(manager === "npm" ? ["ci"] : [])].includes(command[offset + 1] ?? "")
+    ? manager
+    : undefined;
+}
+
+export function installCacheEnvironment(
+  command: readonly string[],
+  values: Record<string, string>,
+) {
+  const manager = packageInstaller(command);
+  if (!manager || command.some((arg) => /^--(?:store-dir|cache|cache-dir)(?:=|$)/.test(arg)))
+    return undefined;
+  const settings: Record<string, string> =
+    manager === "pnpm"
+      ? {
+          npm_config_store_dir: `${installCacheTarget}/pnpm`,
+          pnpm_config_store_dir: `${installCacheTarget}/pnpm`,
+          XDG_CACHE_HOME: values.XDG_CACHE_HOME ?? `${installCacheTarget}/metadata`,
+        }
+      : manager === "npm"
+        ? { npm_config_cache: `${installCacheTarget}/npm` }
+        : { BUN_INSTALL_CACHE_DIR: `${installCacheTarget}/bun` };
+  const keys = Object.keys(settings)
+    .filter((key) => key !== "XDG_CACHE_HOME")
+    .map((key) => key.toLowerCase());
+  if (Object.keys(values).some((key) => keys.includes(key.toLowerCase()))) return undefined;
+  return { manager, values: { ...values, ...settings } };
+}

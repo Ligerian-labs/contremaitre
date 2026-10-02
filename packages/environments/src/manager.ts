@@ -14,10 +14,11 @@ import {
   serviceContext,
 } from "@contremaitre/execution/context";
 import { privateEnv, removeFile } from "@contremaitre/execution/files";
-import { Semaphore } from "@contremaitre/execution/locks";
+import { EnvironmentLocks, Semaphore } from "@contremaitre/execution/locks";
 import { sleep } from "@contremaitre/execution/sleep";
 import {
   detectIdentity,
+  inside,
   loadManifest,
   order,
   prepareManifest,
@@ -28,7 +29,12 @@ import {
 import type { Identity, Manifest } from "@contremaitre/projects/model";
 import { type RunSpec, type Runtime, tcpReady } from "./apple.js";
 import { cloneData, cloneDriver, recoverClones } from "./clone.js";
-import { DevelopmentSource } from "./development.js";
+import {
+  DevelopmentSource,
+  installCacheEnvironment,
+  installCacheTarget,
+  packageInstaller,
+} from "./development.js";
 import { applyDriverReply, invokeDriver, snapshotDriver } from "./driver.js";
 import {
   type Environment,
@@ -53,6 +59,8 @@ export interface TunnelHooks {
   sharing?(id: string): boolean;
 }
 export class Manager {
+  private readonly dependencyLocks = new EnvironmentLocks();
+  private readonly unavailableCaches = new Set<string>();
   private readonly sourceWatchers = new Map<string, { stop: () => Promise<void> }>();
   async stopDevelopment(container?: string) {
     for (const [name, watcher] of this.sourceWatchers)
@@ -354,7 +362,6 @@ export class Manager {
           );
       }
       const previous = e.Services;
-      const previousRoot = e.Root;
       const services: Environment["Services"] = Object.fromEntries(
         names.map((name) => {
           const s = manifest.services[name],
@@ -371,6 +378,8 @@ export class Manager {
               HTTP: !!s.http || Object.keys(s.endpoints ?? {}).length > 0,
               Spec: s,
               Initialized: old?.Initialized ?? false,
+              dependency_cache: old?.dependency_cache,
+              development_source: old?.development_source,
             },
           ];
         }),
@@ -435,6 +444,8 @@ export class Manager {
             await this.runtime.remove(scope, s.Container);
             await this.runtime.remove(scope, `${s.Container}-task`);
             await this.runtime.remove(scope, `${s.Container}-sync`);
+            if (s.dependency_cache) this.unavailableCaches.delete(s.dependency_cache);
+            if (services[name]) delete services[name].dependency_cache;
           }),
         );
         const error = stopped.find((result) => result.status === "rejected");
@@ -504,13 +515,7 @@ export class Manager {
                 } else {
                   await this.startService(scope, e, s, apps, {
                     source,
-                    resetSource:
-                      !!request.rebuild ||
-                      previousRoot !== root ||
-                      !previous[name]?.deployment ||
-                      !previous[name]?.Spec.dev ||
-                      previous[name].Image !== s.Image ||
-                      hash(JSON.stringify(previous[name].Spec)) !== hash(JSON.stringify(s.Spec)),
+                    resetSource: !!request.rebuild,
                   });
                   s.deployment = this.deploymentFingerprint(e, s);
                   this.save();
@@ -754,6 +759,12 @@ export class Manager {
     ]);
     const publicURL = env.tunnel_configuration?.urls[this.endpointName(env, s.Name)];
     if (publicURL) values.CONTREMAITRE_PUBLIC_URL = publicURL;
+    if (
+      s.Spec.dev &&
+      s.Spec.dev.install?.[0] === "corepack" &&
+      packageInstaller(s.Spec.dev.install)
+    )
+      values.COREPACK_HOME ??= join(s.Spec.dev.target, ".cache", "corepack");
     return values;
   }
   async volumes(ctx: Context, env: Environment, s: ServiceState) {
@@ -791,6 +802,36 @@ export class Manager {
     await source.refresh(ctx, initialize);
     return source;
   }
+  private dependencyRuntime(env: Environment, service: ServiceState) {
+    return service.Spec.build
+      ? (env.builds?.[service.Name]?.digest ?? service.Image)
+      : service.Image;
+  }
+  private developmentSourceFingerprint(env: Environment, service: ServiceState, directory: string) {
+    // Cache paths belong to the installed layout. pnpm cannot switch stores under
+    // retained node_modules in a non-interactive task, including the first upgrade.
+    const config = [".npmrc", "bunfig.toml", "pnpm-workspace.yaml"].map((name) => {
+      const path = join(directory, name);
+      return [name, existsSync(path) ? readFileSync(path, "utf8") : null];
+    });
+    const values = this.serviceEnv(env, service);
+    const cacheSettings = Object.entries(values)
+      .filter(([key]) =>
+        /^(?:(?:npm|pnpm)_config_(?:store_dir|cache)|BUN_INSTALL_CACHE_DIR|COREPACK_HOME|XDG_CACHE_HOME)$/i.test(
+          key,
+        ),
+      )
+      .sort(([a], [b]) => a.localeCompare(b));
+    return hash(
+      JSON.stringify([
+        env.Root,
+        this.dependencyRuntime(env, service),
+        service.Spec,
+        config,
+        cacheSettings,
+      ]),
+    );
+  }
   async startService(
     ctx: Context,
     env: Environment,
@@ -819,10 +860,21 @@ export class Manager {
           env.Volumes.push(volume);
           this.save();
         }
-        if (options.resetSource ?? initialize) await this.runtime.removeVolume(ctx, volume);
-        await this.runtime.volume(ctx, volume);
-        volumes[volume] = s.Spec.dev.target;
         source = options.source ?? (await this.prepareDevelopment(ctx, env, s, initialize));
+        const fingerprint = this.developmentSourceFingerprint(env, s, source.directory);
+        if (
+          (options.resetSource ?? initialize) ||
+          (initialize && s.development_source !== fingerprint)
+        )
+          await this.runtime.removeVolume(ctx, volume);
+        await this.runtime.volume(ctx, volume);
+        // URL changes and clone resumes do not install. Keep their installed
+        // layout and its fingerprint until a deployment can refresh both.
+        if (initialize) {
+          s.development_source = fingerprint;
+          this.save();
+        }
+        volumes[volume] = s.Spec.dev.target;
         phase(ctx, "copying development source");
         await this.runtime.sync(
           ctx,
@@ -848,16 +900,28 @@ export class Manager {
               ? "installing development dependencies"
               : "running initialization/migration",
           );
-          await this.runtime.run(ctx, {
+          const installing = command === s.Spec.dev?.install;
+          const task = {
             ...spec,
             name: `${s.Container}-task`,
             service: {
               ...s.Spec,
               command,
-              working_dir: command === s.Spec.dev?.install ? s.Spec.dev.target : s.Spec.working_dir,
+              working_dir: installing ? s.Spec.dev?.target : s.Spec.working_dir,
             },
             task: true,
-          });
+            ...(installing ? { timeout: 1_800_000 } : {}),
+          };
+          if (installing)
+            await this.installDependencies(
+              ctx,
+              env,
+              s,
+              task,
+              this.serviceEnv(env, s),
+              source?.directory,
+            );
+          else await this.runtime.run(ctx, task);
         }
       }
       phase(ctx, "starting");
@@ -882,6 +946,106 @@ export class Manager {
           );
       }
     }
+  }
+  private async installDependencies(
+    ctx: Context,
+    env: Environment,
+    service: ServiceState,
+    task: RunSpec,
+    values: Record<string, string>,
+    sourceDirectory?: string,
+  ) {
+    const cache = installCacheEnvironment(task.service.command ?? [], values);
+    const configured =
+      sourceDirectory &&
+      [".npmrc", "bunfig.toml"].some((file) => {
+        const path = join(sourceDirectory, file);
+        if (!existsSync(path)) return false;
+        const contents = readFileSync(path, "utf8");
+        return file === ".npmrc"
+          ? /^\s*(store-dir|cache)\s*=/m.test(contents)
+          : /\[install\.cache\]/.test(contents);
+      });
+    const overlaps = Object.values(task.volumes).some(
+      (target) => inside(target, installCacheTarget) || inside(installCacheTarget, target),
+    );
+    if (!cache || overlaps || configured) {
+      await this.runtime.run(ctx, task);
+      return;
+    }
+    // Downloaded packages can be reused when app source changes. Scope built
+    // runtimes by their Dockerfile recipe; installed source still uses the full
+    // build fingerprint for compatibility and stays isolated per environment.
+    const runtime = service.Spec.build
+      ? `dockerfile-${hash(readFileSync(safePath(env.Root, service.Spec.dockerfile || join(service.Spec.build, "Dockerfile"))))}`
+      : service.Image;
+    const volume = `${this.store.namespace()}-cache-${hash(JSON.stringify([env.Identity.Project, runtime, cache.manager])).slice(0, 16)}`;
+    phase(ctx, `waiting for shared ${cache.manager} download cache`);
+    await this.dependencyLocks.use([volume], ctx.signal, async () => {
+      if (this.unavailableCaches.has(volume))
+        fail(
+          "Dependency cache task cleanup failed; restart the hub after removing its task container",
+        );
+      await this.runtime.volume(ctx, volume);
+      const started = performance.now();
+      phase(
+        ctx,
+        `installing development dependencies using shared ${cache.manager} cache ${volume}`,
+      );
+      const corepackHome =
+        task.service.command?.[0] === "corepack" &&
+        service.raw_environment?.COREPACK_HOME === undefined
+          ? values.COREPACK_HOME
+          : undefined;
+      const command = task.service.command ?? [];
+      if (corepackHome) cache.values.COREPACK_HOME = `${installCacheTarget}/corepack`;
+      const envFile = privateEnv(join(this.store.home, "tmp"), cache.values);
+      let failure: { error: unknown } | undefined;
+      try {
+        service.dependency_cache = volume;
+        this.save();
+        await this.runtime.run(ctx, {
+          ...task,
+          envFile,
+          service: corepackHome
+            ? {
+                ...task.service,
+                command: [
+                  "sh",
+                  "-eu",
+                  "-c",
+                  'destination=$1; shift; "$@"; mkdir -p "$destination"; cp -a "$COREPACK_HOME/." "$destination/"',
+                  "install",
+                  corepackHome,
+                  ...command,
+                ],
+              }
+            : task.service,
+          volumes: { ...task.volumes, [volume]: installCacheTarget },
+        });
+      } catch (error) {
+        failure = { error };
+      } finally {
+        removeFile(envFile);
+      }
+      // A timeout can leave the guest alive after the host container CLI exits.
+      // Never lend its native disk to another guest before removing that task.
+      try {
+        await this.runtime.remove(context(AbortSignal.timeout(15_000), ctx.log), task.name);
+      } catch (error) {
+        this.unavailableCaches.add(volume);
+        if (failure)
+          phase(ctx, `dependency installation failed before cleanup: ${message(failure.error)}`);
+        throw error;
+      }
+      delete service.dependency_cache;
+      this.save();
+      if (failure) throw failure.error;
+      phase(
+        ctx,
+        `development dependencies installed in ${((performance.now() - started) / 1000).toFixed(1)}s`,
+      );
+    });
   }
   async waitReady(parent: Context, s: ServiceState) {
     s.ready = false;
@@ -1039,6 +1203,22 @@ export class Manager {
     return removed;
   }
   async recover(ctx: Context) {
+    // Recover cache leases before accepting work in any environment, including
+    // failed deployments. A killed host CLI can leave a native guest running.
+    for (const env of Object.values(this.state.Environments)) {
+      for (const service of Object.values(env.Services)) {
+        const cache = service.dependency_cache;
+        if (!cache) continue;
+        try {
+          await this.runtime.remove(ctx, `${service.Container}-task`);
+          delete service.dependency_cache;
+        } catch (error) {
+          this.unavailableCaches.add(cache);
+          phase(ctx, `${service.Name}: dependency cache cleanup failed: ${message(error)}`);
+        }
+      }
+    }
+    this.save();
     const blocked = await recoverClones(this, ctx);
     for (const env of Object.values(this.state.Environments)) {
       for (const reservation of Object.values(env.tunnels ?? {})) {

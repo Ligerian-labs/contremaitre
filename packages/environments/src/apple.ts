@@ -32,6 +32,7 @@ export interface RunSpec {
   volumes: Record<string, string>;
   envFile: string;
   task?: boolean;
+  timeout?: number;
   stdin?: Readable;
 }
 export interface Runtime {
@@ -193,7 +194,7 @@ export class Apple implements Runtime {
     await this.output(
       ctx,
       args,
-      s.task ? { stdin: s.stdin, stdout: ctx.log, stderr: ctx.log } : {},
+      s.task ? { stdin: s.stdin, stdout: ctx.log, stderr: ctx.log, timeout: s.timeout } : {},
     );
   }
   async sync(

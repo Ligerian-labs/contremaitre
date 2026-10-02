@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import assert from "node:assert/strict";
 import {
   existsSync,
   mkdirSync,
@@ -263,6 +264,110 @@ test("source shape changes and a failed scan do not lose pending edits", async (
     rmSync(join(root, "z-escape"));
     expect((await source.refresh(context())).changed).toContain("shape");
   } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("a failed development install retains its source volume across retry and manager restart", async () => {
+  const home = mkdtempSync(join(tmpdir(), "cm-dev-retry-"));
+  const root = join(home, "project");
+  mkdirSync(root);
+  writeFileSync(join(root, "package.json"), "{}");
+  const manifest = parseManifest(`version: 1
+project: retry
+services:
+  api:
+    image: node:24-bookworm-slim
+    working_dir: /app
+    command: [node, main.js]
+    ready: ["true"]
+    dev: {source: '.', target: /app, install: [corepack, pnpm, install]}
+`);
+  const identity = newIdentity("retry", root, "main");
+  const runtime = new FakeRuntime();
+  let manager = new Manager(new Store(join(home, "state")), runtime);
+  try {
+    runtime.failTask = true;
+    await expect(
+      manager.deploy(context(), { root, identity, manifest, request: {} }),
+    ).rejects.toThrow("task failed");
+    const sourceVolume = `${manager.resolve(identity.ID).Services.api.Container}-source`;
+    const resets = runtime.calls.filter((c) => c === `remove volume ${sourceVolume}`).length;
+    manager = new Manager(new Store(join(home, "state")), runtime);
+    runtime.failTask = false;
+    await manager.deploy(context(), { root, identity, manifest, request: {} });
+    expect(runtime.calls.filter((c) => c === `remove volume ${sourceVolume}`).length).toBe(resets);
+    await manager.deploy(context(), { root, identity, manifest, request: { rebuild: true } });
+    expect(runtime.calls.filter((c) => c === `remove volume ${sourceVolume}`).length).toBe(
+      resets + 1,
+    );
+  } finally {
+    await manager.stopDevelopment();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("standard installs share downloads between environments without sharing source volumes", async () => {
+  const home = mkdtempSync(join(tmpdir(), "cm-dev-cache-"));
+  const root = join(home, "project");
+  mkdirSync(root);
+  writeFileSync(join(root, "package.json"), "{}");
+  const manifest = parseManifest(`version: 1
+project: cache
+services:
+  api:
+    image: node:24-bookworm-slim
+    working_dir: /app
+    command: [node, main.js]
+    ready: ["true"]
+    dev: {source: '.', target: /app, install: [corepack, pnpm, install]}
+`);
+  const runtime = new FakeRuntime();
+  const manager = new Manager(new Store(join(home, "state")), runtime);
+  const installs: Array<{ volumes: Record<string, string>; env: string }> = [];
+  const start = runtime.run.bind(runtime);
+  runtime.run = async (ctx, spec) => {
+    if (spec.service.command?.includes("install"))
+      installs.push({ volumes: { ...spec.volumes }, env: readFileSync(spec.envFile, "utf8") });
+    await start(ctx, spec);
+  };
+  try {
+    for (const branch of ["main", "feature"])
+      await manager.deploy(context(), {
+        root,
+        identity: newIdentity("cache", root, branch),
+        manifest,
+        request: {},
+      });
+    const caches = installs.map((x) =>
+      Object.entries(x.volumes).filter(([, target]) => target === "/tmp/contremaitre-cache"),
+    );
+    expect(caches[0]).toHaveLength(1);
+    expect(caches[1]).toEqual(caches[0]);
+    const [first, second] = installs;
+    const shared = caches[0]?.[0]?.[0];
+    assert(first && second && shared);
+    expect(Object.keys(first.volumes).find((x) => x.endsWith("-source"))).not.toBe(
+      Object.keys(second.volumes).find((x) => x.endsWith("-source")),
+    );
+    expect(first.env).toContain("npm_config_store_dir=/tmp/contremaitre-cache/pnpm");
+    expect(first.env).toContain("COREPACK_HOME=/tmp/contremaitre-cache/corepack");
+    expect(first.env).toContain("XDG_CACHE_HOME=/tmp/contremaitre-cache/metadata");
+    manifest.services.api = { ...manifest.services.api, image: "other-runtime" };
+    await manager.deploy(context(), {
+      root,
+      identity: newIdentity("cache", root, "other"),
+      manifest,
+      request: {},
+    });
+    const third = installs[2];
+    assert(third);
+    expect(
+      Object.entries(third.volumes).find(([, target]) => target === "/tmp/contremaitre-cache")?.[0],
+    ).not.toBe(shared);
+    for (const env of manager.list()) expect(env.Volumes).not.toContain(shared);
+  } finally {
+    await manager.stopDevelopment();
     rmSync(home, { recursive: true, force: true });
   }
 });

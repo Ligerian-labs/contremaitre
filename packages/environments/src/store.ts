@@ -53,6 +53,8 @@ export function publicEnvironment(env: Environment): Environment {
   for (const s of Object.values(out.Services)) {
     delete s.raw_environment;
     delete s.deployment;
+    delete s.development_source;
+    delete s.dependency_cache;
     s.Spec = { ...s.Spec, environment: undefined, env_file: "" };
   }
   return out;
