@@ -351,7 +351,7 @@ services:
       Object.keys(second.volumes).find((x) => x.endsWith("-source")),
     );
     expect(first.env).toContain("npm_config_store_dir=/tmp/contremaitre-cache/pnpm");
-    expect(first.env).toContain("COREPACK_HOME=/app/.cache/corepack");
+    expect(first.env).toContain("COREPACK_HOME=/tmp/contremaitre-cache/corepack");
     expect(first.env).toContain("XDG_CACHE_HOME=/tmp/contremaitre-cache/metadata");
     manifest.services.api = { ...manifest.services.api, image: "other-runtime" };
     await manager.deploy(context(), {

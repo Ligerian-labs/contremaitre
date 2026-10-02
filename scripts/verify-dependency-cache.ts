@@ -106,6 +106,11 @@ try {
     "/app/isolation-sentinel",
   ]);
   await runtime.exec(ctx, warm.Services.api.Container, [
+    "sh",
+    "-c",
+    "COREPACK_ENABLE_NETWORK=0 corepack pnpm --version",
+  ]);
+  await runtime.exec(ctx, warm.Services.api.Container, [
     "node",
     "-e",
     "if(!require('is-number')(42))process.exit(1)",
@@ -118,12 +123,14 @@ try {
     "-c",
     "echo reset > /app/rebuild-sentinel",
   ]);
+  const rebuildStarted = performance.now();
   await manager.deploy(ctx, {
     root,
     identity: warm.Identity,
     manifest,
     request: { rebuild: true },
   });
+  timings.rebuild = (performance.now() - rebuildStarted) / 1000;
   await runtime.exec(ctx, warm.Services.api.Container, [
     "test",
     "!",
@@ -139,6 +146,7 @@ try {
       shared_cache_volumes: [...caches],
       retry_source_retained: true,
       offline_reuse: true,
+      corepack_startup_offline: true,
       source_isolation: true,
       rebuild_refreshes_source: true,
     }),

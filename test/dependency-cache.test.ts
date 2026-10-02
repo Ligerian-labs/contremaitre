@@ -221,3 +221,24 @@ test("hub recovery removes a persisted installer lease before another environmen
     await f.clean();
   }
 });
+
+test("Corepack installers share bootstrap downloads while app containers use their local copy", async () => {
+  const f = fixture();
+  const start = f.runtime.run.bind(f.runtime);
+  f.runtime.run = async (ctx, spec) => {
+    const env = readFileSync(spec.envFile, "utf8");
+    if (spec.task) {
+      expect(env).toContain("COREPACK_HOME=/tmp/contremaitre-cache/corepack");
+      expect(spec.service.command).toContain("/app/.cache/corepack");
+    } else {
+      expect(env).toContain("COREPACK_HOME=/app/.cache/corepack");
+      expect(Object.values(spec.volumes)).not.toContain("/tmp/contremaitre-cache");
+    }
+    await start(ctx, spec);
+  };
+  try {
+    await f.deploy("main");
+  } finally {
+    await f.clean();
+  }
+});

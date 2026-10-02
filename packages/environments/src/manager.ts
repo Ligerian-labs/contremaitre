@@ -949,12 +949,19 @@ export class Manager {
           "Dependency cache task cleanup failed; restart the hub after removing its task container",
         );
       await this.runtime.volume(ctx, volume);
-      const envFile = privateEnv(join(this.store.home, "tmp"), cache.values);
       const started = performance.now();
       phase(
         ctx,
         `installing development dependencies using shared ${cache.manager} cache ${volume}`,
       );
+      const corepackHome =
+        task.service.command?.[0] === "corepack" &&
+        service.raw_environment?.COREPACK_HOME === undefined
+          ? values.COREPACK_HOME
+          : undefined;
+      const command = task.service.command ?? [];
+      if (corepackHome) cache.values.COREPACK_HOME = `${installCacheTarget}/corepack`;
+      const envFile = privateEnv(join(this.store.home, "tmp"), cache.values);
       let failure: { error: unknown } | undefined;
       try {
         service.dependency_cache = volume;
@@ -962,6 +969,20 @@ export class Manager {
         await this.runtime.run(ctx, {
           ...task,
           envFile,
+          service: corepackHome
+            ? {
+                ...task.service,
+                command: [
+                  "sh",
+                  "-eu",
+                  "-c",
+                  'destination=$1; shift; "$@"; mkdir -p "$destination"; cp -a "$COREPACK_HOME/." "$destination/"',
+                  "install",
+                  corepackHome,
+                  ...command,
+                ],
+              }
+            : task.service,
           volumes: { ...task.volumes, [volume]: installCacheTarget },
         });
       } catch (error) {
