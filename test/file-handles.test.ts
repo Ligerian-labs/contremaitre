@@ -12,13 +12,16 @@ import { context } from "@contremaitre/execution/context";
 import { sourceIdentity } from "@contremaitre/verification/source";
 import { copyTree } from "../packages/environments/src/clone.js";
 
-function openFiles(root: string) {
+function expectClosedFiles(...roots: string[]) {
   // Count actual OS handles: FileHandle.close() can succeed while Bun leaks a stream's fd.
   const result = spawnSync("/usr/sbin/lsof", ["-nP", "-p", String(process.pid), "-Fn"], {
     encoding: "utf8",
   });
   expect(result.status).toBe(0);
-  return result.stdout.split("\n").filter((line) => line.startsWith(`n${root}/`));
+  // Adjacent root checks share one snapshot, with no file operations between them.
+  const files = result.stdout.split("\n");
+  for (const root of roots)
+    expect(files.filter((line) => line.startsWith(`n${root}/`))).toEqual([]);
 }
 
 for (const operation of [
@@ -64,11 +67,10 @@ for (const operation of [
         );
         await writeFile(join(root, "Dockerfile"), "FROM scratch\nCOPY . /app\n");
         await writeFile(join(root, "input"), contents);
-        expect(openFiles(root)).toEqual([]);
+        expectClosedFiles(root);
         const original = await read();
         for (let i = 0; i < 3; i++) expect(await read()).toBe(original);
-        expect(openFiles(root)).toEqual([]);
-        expect(openFiles(cache)).toEqual([]);
+        expectClosedFiles(root, cache);
 
         // Exercise the last, partial buffer as well as full chunks.
         contents[contents.length - 1] = 98;
@@ -78,8 +80,7 @@ for (const operation of [
         await expect(read()).rejects.toThrow(
           operation === "persistent files" ? "Symlinks" : "escapes",
         );
-        expect(openFiles(root)).toEqual([]);
-        expect(openFiles(cache)).toEqual([]);
+        expectClosedFiles(root, cache);
       } finally {
         await rm(root, { recursive: true, force: true });
         await rm(cache, { recursive: true, force: true });
