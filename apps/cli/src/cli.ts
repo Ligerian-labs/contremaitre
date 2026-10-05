@@ -32,6 +32,7 @@ import { formatEnvironments, selectEnvironments } from "./list.js";
 import { onboard, terminalOnboarding } from "./saas.js";
 import { tunnel } from "./tunnel.js";
 import { tunnelLogs } from "./tunnel-logs.js";
+import { formatUpdate, updateBinary } from "./update.js";
 import { version } from "./version.js";
 
 export { normalizeArguments } from "./help.js";
@@ -112,6 +113,24 @@ export function makeRoot(passthrough: readonly string[] = []) {
             return;
           }
           switch (action) {
+            case "update": {
+              if (args.length) fail("update does not accept positional arguments");
+              if (!o.updateCheck && !Bun.main.startsWith("/$bunfs/"))
+                fail("update requires the compiled CLI; use --check when running from source");
+              if (!o.updateCheck && process.getuid?.() === 0)
+                fail("Run contremaitre update as your normal user, without sudo");
+              const result = await updateBinary(
+                context(AbortSignal.any([signal, AbortSignal.timeout(400_000)]), ctx.log),
+                {
+                  currentVersion: version,
+                  executable: process.execPath,
+                  home,
+                  check: o.updateCheck,
+                },
+              );
+              output(o.json, o.json ? result : formatUpdate(result));
+              return;
+            }
             case "agents":
               if (args.length === 2 && args[0] === "export") {
                 if (o.agent || o.global) fail("agents export does not accept --agent or --global");

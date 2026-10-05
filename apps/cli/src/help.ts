@@ -52,6 +52,12 @@ const flags = {
   ),
   run: flag("run", Options.text("run"), "", "Verification or deployment operation ID.", "ID"),
   check: flag("check", Options.text("check"), "", "Read diagnostics for this check.", "NAME"),
+  updateCheck: flag(
+    "check",
+    Options.boolean("check"),
+    false,
+    "Check the latest release without downloading or restarting the hub.",
+  ),
   timeout: flag(
     "timeout",
     Options.integer("timeout"),
@@ -444,6 +450,15 @@ export const commands: readonly CommandHelp[] = [
     examples: ["contremaitre cancel OPERATION_ID", "contremaitre cancel OPERATION_ID --json"],
   },
   {
+    name: "update",
+    group: "Hub and tools",
+    description: "Update this executable to the latest release",
+    details:
+      "Install the latest stable GitHub release, including major versions, after verifying its checksum. Requires the compiled CLI and curl. Already-current versions are left untouched and newer versions are never downgraded. A running hub restarts without prompting, ending active operations and tunnel sessions; a stopped hub stays stopped. --check only reports availability and also works from source.",
+    flags: ["updateCheck", "home", "json"],
+    examples: ["contremaitre update", "contremaitre update --check --json"],
+  },
+  {
     name: "self-install",
     group: "Hub and tools",
     description: "Install this binary and upgrade a running hub",
@@ -564,6 +579,7 @@ export function optionsFor(command: Pick<CommandHelp, "flags">) {
     profile: option("profile", flags.profile),
     run: option("run", flags.run),
     check: option("check", flags.check),
+    updateCheck: option("updateCheck", flags.updateCheck),
     timeout: option("timeout", flags.timeout),
   };
 }
@@ -593,14 +609,16 @@ export function normalizeArguments(input: readonly string[]) {
   const separator = input.indexOf("--");
   const command = separator < 0 ? [] : input.slice(separator + 1);
   const args = [...(separator < 0 ? input : input.slice(0, separator))];
-  function actionIndex() {
+  function actionIndex(update = false) {
     for (let i = 0; i < args.length; i++) {
-      if (valuedFlags.has(args[i])) i++;
+      if (valuedFlags.has(args[i]) && !(update && args[i] === "--check")) i++;
       else if (!args[i].startsWith("-")) return i;
     }
     return -1;
   }
   let index = actionIndex();
+  // diagnose's --check takes a name; update's boolean can precede its command.
+  if (index < 0 && args.includes("update")) index = actionIndex(true);
   if (index >= 0 && args[index] === "help") {
     args.splice(index, 1);
     args.push("--help");
