@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -8,6 +8,7 @@ import { context, decode } from "@contremaitre/execution/context";
 import { sleep } from "@contremaitre/execution/sleep";
 import { operationSchema } from "@contremaitre/operations/operations";
 import { agentAssets } from "../apps/cli/src/agent-assets.js";
+import { version } from "../apps/cli/src/version.js";
 
 const signal = AbortSignal.timeout(60_000),
   ctx = context(signal),
@@ -20,6 +21,28 @@ const signal = AbortSignal.timeout(60_000),
 await mkdir(project);
 await mkdir(fakebin);
 await writeFile(join(fakebin, "container"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+await writeFile(
+  join(fakebin, "curl"),
+  `#!/bin/sh
+out=''
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) out=$2; shift ;;
+    https://*) url=$1 ;;
+  esac
+  shift
+done
+printf '%s\\n' "$url" >> "$UPDATE_REQUESTS"
+case "$url" in
+  */releases/latest) printf '%s' "https://github.com/Ligerian-labs/contremaitre/releases/tag/v$UPDATE_RELEASE" ;;
+  */releases/download/v"$UPDATE_RELEASE"/contremaitre-darwin-arm64.sha256)
+    shasum -a 256 "$UPDATE_BINARY" | awk '{print $1 "  contremaitre-darwin-arm64"}' > "$out" ;;
+  */releases/download/v"$UPDATE_RELEASE"/contremaitre-darwin-arm64) cp "$UPDATE_BINARY" "$out" ;;
+  *) exit 43 ;;
+esac
+`,
+  { mode: 0o700 },
+);
 await writeFile(
   join(project, ".contremaitre.yaml"),
   "version: 1\nproject: packaging\ndriver: {executable: driver, timeout_seconds: 60}\n",
@@ -87,6 +110,39 @@ async function boot() {
     await sleep(100, signal);
   }
   throw Error("Hub startup timeout");
+}
+async function update(release: string, check = false) {
+  const command = Bun.spawn(
+    [
+      join(installHome, ".local/bin/contremaitre"),
+      "update",
+      "--json",
+      ...(check ? ["--check"] : []),
+    ],
+    {
+      env: {
+        ...process.env,
+        CONTREMAITRE_HOME: home,
+        PATH: `${fakebin}:${process.env.PATH}`,
+        UPDATE_RELEASE: release,
+        UPDATE_BINARY: binary,
+        UPDATE_REQUESTS: join(dir, "update-requests"),
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  );
+  const [code, stdout, stderr] = await Promise.all([
+    command.exited,
+    new Response(command.stdout).text(),
+    new Response(command.stderr).text(),
+  ]);
+  assert.equal(code, 0, `${stdout}\n${stderr}`);
+  const result = JSON.parse(stdout);
+  assert.equal(result.version, 1);
+  assert.equal(result.data.current_version, version);
+  assert.equal(result.data.latest_version, release);
+  return result.data.status as string;
 }
 try {
   await makeInstall();
@@ -240,8 +296,38 @@ try {
   assert.equal(((await call(ctx, home, "health")) as { public_port: number }).public_port, port);
   const environments = (await call(ctx, home, "list")) as { Status: string }[];
   assert.equal(environments[0].Status, "running", "upgrade must preserve running environments");
+  const installed = join(installHome, ".local/bin/contremaitre");
+  const inode = (await stat(installed)).ino;
+  const stableVersion = version.split("-")[0];
+  assert.equal(
+    await update(stableVersion, stableVersion !== version),
+    stableVersion === version ? "up-to-date" : "update-available",
+  );
+  assert.equal(await update("999.0.0", true), "update-available");
+  assert.equal(
+    (await stat(installed)).ino,
+    inode,
+    "current-version and check must leave the binary intact",
+  );
+  assert.equal((await readFile(join(dir, "update-requests"), "utf8")).trim().split("\n").length, 2);
+  const unchangedOwner = Bun.spawn(["lsof", "-t", join(home, "daemon.lock")], { stdout: "pipe" });
+  assert.equal(Number((await new Response(unchangedOwner.stdout).text()).trim()), upgradedPid);
+  assert.equal(await unchangedOwner.exited, 0);
+  const beforeUpdatePid = upgradedPid;
+  assert.equal(await update("999.0.0"), "updated");
+  const updatedOwner = Bun.spawn(["lsof", "-t", join(home, "daemon.lock")], { stdout: "pipe" });
+  upgradedPid = Number((await new Response(updatedOwner.stdout).text()).trim());
+  assert.equal(await updatedOwner.exited, 0);
+  assert.ok(
+    upgradedPid > 0 && upgradedPid !== beforeUpdatePid,
+    "update must restart the running hub",
+  );
+  assert.notEqual((await stat(installed)).ino, inode);
+  assert.equal(await health(ctx, home), true);
+  assert.equal(((await call(ctx, home, "health")) as { public_port: number }).public_port, port);
+  assert.equal(((await call(ctx, home, "list")) as { Status: string }[])[0].Status, "running");
   console.log(
-    "Standalone help, agent installation, flag validation, Unix socket, duplicate requests, SIGKILL recovery, owned-process cleanup, SIGTERM restart and source/downloaded CLI hub upgrades passed",
+    "Standalone help, agent installation, flag validation, Unix socket, duplicate requests, SIGKILL recovery, owned-process cleanup, SIGTERM restart, source/downloaded CLI hub upgrades and release update/check passed",
   );
 } finally {
   if (upgradedPid) {

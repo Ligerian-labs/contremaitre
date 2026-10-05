@@ -49,7 +49,11 @@ contremaitre start
 
 You need [Homebrew](https://brew.sh) for these prerequisites. `mkcert -install` trusts a local development certificate authority. The HTTPS service requests administrator approval to forward port 443 in the background. Run the installer, hub and applications as your normal user. See [HTTPS setup and troubleshooting](docs/local-https.md).
 
-Run the same installer command to update. It automatically restarts a running hub with the new binary, preserving its HTTP or HTTPS ports and running environments. Active operations and tunnel sessions end, and local routing pauses during the restart. A stopped hub stays stopped. Set `CONTREMAITRE_HOME` when upgrading a hub that uses a custom data directory.
+Update an installed CLI with `contremaitre update`. It checks the latest stable GitHub release, including major versions, verifies the download checksum and replaces the executable you invoked. Custom installation paths and symlinks are supported. If already current, it reports that without downloading or restarting; newer development versions are never downgraded. The download installer also remains available for updates.
+
+An update automatically restarts a running hub with the new binary, preserving its HTTP or HTTPS ports and running environments. Active operations and tunnel sessions end, and local routing pauses during the restart. A stopped hub stays stopped. Set `CONTREMAITRE_HOME` or pass `--home PATH` when updating a hub that uses a custom data directory. Run as your normal user, without sudo.
+
+To check availability without installing or restarting, run `contremaitre update --check`. Add `--json` for a structured result with `current_version`, `latest_version` and `status`. Status is `up-to-date`, `update-available`, `ahead` or `updated`. Checks exit successfully even when an update is available. Failed downloads leave the installed CLI untouched. If installation succeeds but the hub restart fails, the command exits with an error and prints a recovery command.
 
 For a specific release or installation directory, pass environment variables to `sh`:
 

@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     "./install": "./src/install.ts",
+    "./update": "./src/update.ts",
     "./init": "./src/init.ts",
     "./cli": "./src/cli.ts",
     "./client": "./src/client.ts",

@@ -28,7 +28,7 @@ test("preserves exec passthrough and global flag ordering", async () => {
 const cliPath = fileURLToPath(new URL("../apps/cli/src/cli.ts", import.meta.url));
 const cliDirectory = mkdtempSync(join(tmpdir(), "cm-cli-help-"));
 afterAll(() => rmSync(cliDirectory, { recursive: true, force: true }));
-async function cli(args: string[], columns = 80) {
+async function cli(args: string[], columns = 80, env: NodeJS.ProcessEnv = {}) {
   const child = Bun.spawn([process.execPath, cliPath, ...args], {
     cwd: cliDirectory,
     env: {
@@ -36,6 +36,7 @@ async function cli(args: string[], columns = 80) {
       CONTREMAITRE_HOME: join(cliDirectory, "home"),
       NO_COLOR: "1",
       COLUMNS: String(columns),
+      ...env,
     },
     stdout: "pipe",
     stderr: "pipe",
@@ -77,6 +78,7 @@ const commandNames = [
   "init",
   "start",
   "self-install",
+  "update",
   "serve",
   "deploy",
   "attach",
@@ -105,6 +107,53 @@ test("self-install rejects source execution before copying the Bun interpreter",
   expect(result.code).not.toBe(0);
   expect(result.stderr).toContain("requires the compiled CLI");
   expect(existsSync(join(destination, "contremaitre"))).toBe(false);
+});
+
+test("update documents a read-only check and rejects source execution before replacing Bun", async () => {
+  const help = await cli(["update", "--help"]);
+  expect(help.code).toBe(0);
+  expect(help.stdout).toContain("--check");
+  expect(help.stdout).toContain("--json");
+  expect(help.stdout).toContain("--home");
+  expect(help.stdout).not.toContain("--check NAME");
+  const result = await cli(["update", "--json"]);
+  expect(result.code).not.toBe(0);
+  expect(JSON.parse(result.stdout).error).toContain("requires the compiled CLI");
+  expect(result.stderr).toBe("");
+  expect(normalizeArguments(["--check", "update"]).args).toEqual(["update", "--check"]);
+  expect(normalizeArguments(["--check", "smoke", "diagnose"]).args).toEqual([
+    "diagnose",
+    "--check",
+    "smoke",
+  ]);
+  expect((await cli(["diagnose", "--help"])).stdout).toContain("--check NAME");
+});
+
+test("source execution supports read-only release checks with one JSON result", async () => {
+  const curl = join(cliDirectory, "curl");
+  const latest = version.split("-")[0];
+  writeFileSync(
+    curl,
+    `#!/bin/sh\nprintf '%s' 'https://github.com/Ligerian-labs/contremaitre/releases/tag/v${latest}'\n`,
+    { mode: 0o700 },
+  );
+  try {
+    const result = await cli(["--check", "update", "--json"], 80, {
+      PATH: `${cliDirectory}:${process.env.PATH}`,
+    });
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(JSON.parse(result.stdout)).toEqual({
+      version: 1,
+      data: {
+        current_version: version,
+        latest_version: latest,
+        status: latest === version ? "up-to-date" : "update-available",
+      },
+    });
+  } finally {
+    rmSync(curl, { force: true });
+  }
 });
 
 test("tunnel documents SaaS login and explicit workspace selection", async () => {
@@ -136,7 +185,7 @@ test("root help is a compact overview of every command, also shown without argum
   expect(help.stdout).toContain("Usage: contremaitre <command> [flags]");
   for (const name of commandNames) expect(help.stdout).toMatch(new RegExp(`\\b${name}\\b`));
   const lines = help.stdout.trimEnd().split("\n");
-  expect(lines.length).toBeLessThanOrEqual(36);
+  expect(lines.length).toBeLessThanOrEqual(37);
   expect(Math.max(...lines.map((line) => line.length))).toBeLessThanOrEqual(80);
   expect(help.stdout).not.toContain("This setting is optional");
   expect(help.stdout).not.toContain("\u001b[");
