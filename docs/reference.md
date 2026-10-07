@@ -155,7 +155,9 @@ Identity includes the project name, canonical workspace path, and branch/bookmar
 
 Git uses the current branch, or a detached commit label. Jujutsu uses its nearest unambiguous ancestor bookmark, falling back to `workspace` when no bookmark exists. Multiple bookmarks require `--branch NAME`. Unbookmarked changes in the same workspace do not create an environment per change. `--branch` is an explicit context override, not a VCS mutation.
 
-URLs include a workspace suffix and hash, avoiding collisions after branch-name normalization. The alphabetically first HTTP endpoint gets the environment URL; other endpoints get their name as an extra prefix. A service may expose several named endpoints with `endpoints: {api: 8000, web: 4200}`. Every named port must listen before that container becomes ready, including when a custom readiness command is present. Adding a service that sorts earlier changes that default assignment, so use service-specific configuration deliberately.
+New environment names and URLs combine the branch and workspace name without a hash, for example `feature-login-app.shop.localhost`. If that normalized name is already taken in the same hub, the new environment gets a hash suffix. Existing names and URLs stay unchanged across redeploys and hub restarts, including environments created by earlier releases. Stopped environments retain their names until deleted.
+
+The alphabetically first HTTP endpoint gets the environment URL; other endpoints get their name as an extra prefix. A service may expose several named endpoints with `endpoints: {api: 8000, web: 4200}`. Every named port must listen before that container becomes ready, including when a custom readiness command is present. Adding a service that sorts earlier changes that default assignment, so use service-specific configuration deliberately.
 
 The first deployed `main` branch becomes the project's clone source. Use `deploy --main` to designate a source initially, or `contremaitre main --env ENV` to change it explicitly. Only one environment per project is designated main. It also gets `main.PROJECT.localhost`.
 
