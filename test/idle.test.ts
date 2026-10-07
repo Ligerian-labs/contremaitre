@@ -60,9 +60,9 @@ test("idle expiry stops at the boundary, preserves data, and explicit deploy res
     expect(env.Status).toBe("running");
     f.advance(1);
     await Promise.all([f.hub.idle.sweep(), f.hub.idle.sweep()]);
-    expect(env.Status).toBe("stopped");
     expect(readFileSync(sentinel, "utf8")).toBe("keep");
     expect(f.runtime.calls.some((c) => c.startsWith("remove volume "))).toBe(false);
+    expect(env.Status).toBe("stopped");
     await call(context(), f.home, "deploy", { root: env.Root, branch: "main" });
     expect(env.Status).toBe("running");
   } finally {
@@ -404,5 +404,50 @@ test("daemon timer sweeps automatically and stops scheduling after close", async
   } finally {
     await hub.close();
     rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("a foreground connection outliving the idle interval remains protected after lock wait", async () => {
+  const f = await fixture();
+  let release!: () => void;
+  let lease: Awaited<ReturnType<typeof keepActive>> | undefined;
+  try {
+    const env = await f.deploy("held-connection");
+    let acquired!: () => void;
+    const locked = new Promise<void>((resolve) => {
+      acquired = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const holding = f.hub.operations.locks.use(
+      [env.Identity.ID],
+      new AbortController().signal,
+      async () => {
+        acquired();
+        await gate;
+      },
+    );
+    await locked;
+    f.advance(10_000);
+    const sweep = f.hub.idle.sweep();
+    lease = await keepActive(context(), f.home, env.Identity.ID);
+    // No new requests arrive while this connection remains open and the lock is held.
+    f.advance(10_000);
+    release();
+    await holding;
+    await sweep;
+    expect(env.Status).toBe("running");
+    f.advance(1);
+    lease.close();
+    const expected = new Date(f.hub.idle.now()).toISOString();
+    await eventually(() => env.last_activity_at === expected);
+    f.advance(10_000);
+    await f.hub.idle.sweep();
+    expect(env.Status).toBe("stopped");
+  } finally {
+    release?.();
+    lease?.close();
+    await f.close();
   }
 });

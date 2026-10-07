@@ -32,6 +32,10 @@ Run deploy or ensure after changing the setting. The resolved policy applies to 
 
 Environment-specific CLI requests and HTTP/HTTPS requests through Contremaitre reset activity. Open HTTP responses and WebSockets, foreground `exec`, `logs` and TCP `proxy` commands, queued/running operations and their clone sources, and foreground sharing sessions keep an environment alive. A closed connection starts a fresh idle window. Global `list`, `operations` and hub health checks do not keep environments alive.
 
+Foreground `exec`, `logs` and TCP `proxy` commands depend on the hub's activity connection. A hub restart or upgrade ends these sessions. The supported installer/update path restarts the hub; restart it before using a newly built CLI against an older daemon.
+
+HTTP and HTTPS share the hub proxy's limits, including five seconds to connect to an upstream and sixty seconds for response headers. Long streams and WebSockets can remain active after headers arrive. An endpoint that waits longer before sending headers needs an earlier response or a direct connection outside the proxy.
+
 Internal container traffic, direct connections that bypass Contremaitre, source-file edits and background jobs do not count as activity. Repeated application requests such as browser polling do count. Disable expiry when testing those background behaviors.
 
 The hub checks once per minute, so shutdown can occur up to a minute after the timeout, or later while shutdown work is queued. Shutdown errors appear as `contremaitre.environment.idle_stop_failed` in the daemon log and retry on subsequent checks. `contremaitre list --json` includes `last_activity_at` and the stored `idle_timeout_seconds` when configured. Activity timestamps are checkpointed during the sweep rather than written for every request.
