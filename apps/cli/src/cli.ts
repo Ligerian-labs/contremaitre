@@ -11,7 +11,7 @@ import { BunContext, BunRuntime } from "@effect/platform-bun";
 import { Args, Command, defineCommand, withSubcommands } from "@structure-ai/cli";
 import { Effect, Exit } from "effect";
 import { AgentResultError, agentCommand } from "./agents.js";
-import { attach, call, deploymentLogs, launch, projectRoot } from "./client.js";
+import { attach, call, deploymentLogs, keepActive, launch, projectRoot } from "./client.js";
 import { deploy } from "./deploy.js";
 import { commandFailure } from "./errors.js";
 import {
@@ -320,41 +320,47 @@ export function makeRoot(passthrough: readonly string[] = []) {
                 },
                 timeout: 2_147_483_647,
               };
-              if (env.driver) {
-                await driverProcess(ctx, env, name, undefined, args[0], command, io);
+              const activity = await keepActive(ctx, home, env.Identity.ID);
+              const activeCtx = { ...ctx, signal: activity.signal };
+              try {
+                if (env.driver) {
+                  await driverProcess(activeCtx, env, name, undefined, args[0], command, io);
+                  return;
+                }
+                const runtime = new Apple();
+                if (name === "exec") {
+                  await runtime.exec(activeCtx, s.Container, command, io);
+                  return;
+                }
+                if (name === "logs") {
+                  await runtime.output(activeCtx, ["logs", s.Container], {
+                    stdout: io.stdout,
+                    stderr: io.stderr,
+                  });
+                  return;
+                }
+                if (command.length !== 1) fail("proxy requires [LOCAL:]REMOTE");
+                const parts = command[0].split(":");
+                if (parts.length > 2 || parts.some((p) => !/^\d+$/.test(p)))
+                  fail("Invalid port mapping");
+                const local = parts.length === 2 ? Number(parts[0]) : 0,
+                  remote = Number(parts.at(-1));
+                if (local > 65535 || remote < 1 || remote > 65535) fail("Invalid port mapping");
+                await tcpProxy(
+                  activeCtx,
+                  local,
+                  remote,
+                  async () => {
+                    const value = await runtime.inspect(activeCtx, s.Container);
+                    if (!value?.Running) fail("Service is not running");
+                    return value.IP;
+                  },
+                  (port) => output(o.json, { address: `127.0.0.1:${port}`, remote_port: remote }),
+                );
                 return;
+              } finally {
+                activity.close();
               }
-              const runtime = new Apple();
-              if (name === "exec") {
-                await runtime.exec(ctx, s.Container, command, io);
-                return;
-              }
-              if (name === "logs") {
-                await runtime.output(ctx, ["logs", s.Container], {
-                  stdout: io.stdout,
-                  stderr: io.stderr,
-                });
-                return;
-              }
-              if (command.length !== 1) fail("proxy requires [LOCAL:]REMOTE");
-              const parts = command[0].split(":");
-              if (parts.length > 2 || parts.some((p) => !/^\d+$/.test(p)))
-                fail("Invalid port mapping");
-              const local = parts.length === 2 ? Number(parts[0]) : 0,
-                remote = Number(parts.at(-1));
-              if (local > 65535 || remote < 1 || remote > 65535) fail("Invalid port mapping");
-              await tcpProxy(
-                ctx,
-                local,
-                remote,
-                async () => {
-                  const value = await runtime.inspect(ctx, s.Container);
-                  if (!value?.Running) fail("Service is not running");
-                  return value.IP;
-                },
-                (port) => output(o.json, { address: `127.0.0.1:${port}`, remote_port: remote }),
-              );
-              return;
             }
             case "forward-https":
               if (o.httpsPort < 1024 || o.httpsPort > 65535)

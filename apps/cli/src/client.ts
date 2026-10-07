@@ -59,6 +59,52 @@ export async function call(
     req.end(action === "health" ? undefined : JSON.stringify(payload));
   });
 }
+/** A socket-scoped pin for foreground exec/logs/TCP proxy. A crashed client releases it. */
+export async function keepActive(ctx: Context, home: string, environmentId: string) {
+  const lifetime = new AbortController();
+  const signal = AbortSignal.any([ctx.signal, lifetime.signal]);
+  await new Promise<void>((resolve, reject) => {
+    const req = request(
+      {
+        socketPath: join(home, "hub.sock"),
+        agent: false,
+        path: "/v1/activity",
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal,
+      },
+      (res) => {
+        clearTimeout(deadline);
+        if (res.statusCode !== 200) {
+          res.resume();
+          req.destroy();
+          reject(
+            new HubError({
+              message: "Cannot keep environment active; run contremaitre ensure",
+              classification: "transient",
+            }),
+          );
+          return;
+        }
+        res.on("end", () => lifetime.abort(Error("Hub activity connection closed")));
+        res.on("error", (error) => lifetime.abort(error));
+        res.resume();
+        resolve();
+      },
+    );
+    const deadline = setTimeout(
+      () => req.destroy(Error("Hub activity connection timed out")),
+      5000,
+    );
+    req.on("error", (error) => {
+      clearTimeout(deadline);
+      lifetime.abort(error);
+      reject(error);
+    });
+    req.end(JSON.stringify({ env: environmentId }));
+  });
+  return { signal, close: () => lifetime.abort() };
+}
 export async function health(ctx: Context, home: string): Promise<boolean> {
   try {
     await call(ctx, home, "health", {}, 1000);

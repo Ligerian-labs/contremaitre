@@ -22,8 +22,10 @@ export class AgentWorkflow {
     this.evidence = new Evidence(manager.store.home);
   }
   async environment(ctx: Context, req: Request) {
-    return this.manager.resolve(
-      req.env || (await this.manager.current(ctx, req.root ?? process.cwd(), req.branch)).ID,
+    return this.manager.use(
+      this.manager.resolve(
+        req.env || (await this.manager.current(ctx, req.root ?? process.cwd(), req.branch)).ID,
+      ),
     );
   }
   urls(env: Environment) {
@@ -90,6 +92,8 @@ export class AgentWorkflow {
         if (before.fingerprint !== after.fingerprint)
           fail("Source changed during ensure; run contremaitre ensure again");
         if (!env) fail("Environment missing after ensure");
+        env.idle_timeout_seconds = prepared.manifest.idle_timeout_seconds;
+        this.manager.use(env);
         env.source = after;
         this.manager.save();
         const result = {

@@ -57,9 +57,11 @@ export const verificationSchema = Schema.Struct({
   exclude: Schema.optional(Schema.Array(Schema.String)),
 });
 export type VerificationConfig = Schema.Schema.Type<typeof verificationSchema>;
+export const idleTimeoutSchema = Schema.Int.pipe(Schema.between(0, 2_147_483));
 export interface Manifest {
   version: 1;
   project: string;
+  idle_timeout_seconds?: number;
   services: Record<string, Service>;
   driver?: Driver;
   verification?: VerificationConfig;

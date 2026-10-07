@@ -49,6 +49,10 @@ interface Active {
 export class Operations {
   private readonly records = new Map<string, Operation>();
   private readonly active = new Map<string, Active>();
+  private readonly reservations = new Map<string, string[]>();
+  busy(environmentId: string): boolean {
+    return [...this.reservations.values()].some((ids) => ids.includes(environmentId));
+  }
   private readonly byEnvironment = new Map<string, string>();
   private readonly slots: Semaphore;
   private accepting = true;
@@ -170,6 +174,7 @@ export class Operations {
     this.save(op);
     atomicWrite(join(this.directory, `${id}.log`), "");
     this.byEnvironment.set(environmentId, id);
+    this.reservations.set(id, [...new Set([environmentId, ...lockIds])]);
     const controller = new AbortController();
     const logs = join(this.directory, `${id}.logs`);
     mkdirSync(logs, { mode: 0o700 });
@@ -226,6 +231,7 @@ export class Operations {
         phase(ctx, `Operation ${status}: ${error}`);
       } finally {
         this.active.delete(id);
+        this.reservations.delete(id);
         this.byEnvironment.delete(environmentId);
         this.trim();
       }

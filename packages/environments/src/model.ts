@@ -6,6 +6,7 @@ import {
   serviceEndpoints,
 } from "@contremaitre/projects/model";
 import { Schema } from "effect";
+export const defaultIdleTimeoutSeconds = 7200;
 export interface BuildRecord {
   digest: string;
   image: string;
@@ -51,6 +52,8 @@ export interface Environment {
   CloneComplete: boolean;
   CreatedAt: string;
   UpdatedAt: string;
+  idle_timeout_seconds?: number;
+  last_activity_at?: string;
   tunnels?: Record<string, TunnelReservation>;
   tunnel_configuration?: { urls: Record<string, string>; pending: string[] };
   driver?: Driver;

@@ -133,6 +133,11 @@ export class Manager {
   readonly state: State;
   tunnels?: TunnelHooks;
   onSave: () => void = () => {};
+  onUse: (env: Environment) => void = () => {};
+  use(env: Environment): Environment {
+    this.onUse(env);
+    return env;
+  }
   constructor(
     readonly store: Store,
     readonly runtime: Runtime,
@@ -278,6 +283,8 @@ export class Manager {
       } finally {
         this.pendingIdentities.delete(identity.ID);
       }
+      env.idle_timeout_seconds = manifest.idle_timeout_seconds;
+      this.use(env);
       const driver = serviceContext(ctx, "driver");
       delete env.source;
       env.generation = randomUUID();
@@ -301,6 +308,8 @@ export class Manager {
     delete env.source;
     env.generation = randomUUID();
     this.save();
+    env.idle_timeout_seconds = manifest.idle_timeout_seconds;
+    this.use(env);
     const e = env,
       previousStatus = e.Status;
     let mutated = false;

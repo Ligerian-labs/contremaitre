@@ -129,7 +129,9 @@ export class Hub extends EffectContext.Tag("contremaitre/Hub")<
   }
 >() {}
 async function resolveRequest(m: Manager, ctx: Context, req: Request) {
-  return m.resolve(req.env || (await m.current(ctx, req.root ?? process.cwd(), req.branch)).ID);
+  return m.use(
+    m.resolve(req.env || (await m.current(ctx, req.root ?? process.cwd(), req.branch)).ID),
+  );
 }
 const registry = HandlerRegistry.layer(
   CommandHandler.make(Ensure, (req) =>

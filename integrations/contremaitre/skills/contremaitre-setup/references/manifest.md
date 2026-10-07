@@ -77,3 +77,7 @@ Native service checks need `sh`, `env`, `mkdir`, `cat`, `rm`, `sleep`, `setsid` 
 Missing profiles return `not-configured`, not success. A successful command only proves its assertions. Inspect a screenshot before claiming visual verification.
 
 If the project already uses a deployment driver, preserve it. `driver` and native `services` are mutually exclusive. Read the project's driver contract before changing its configuration; do not convert a Kubernetes stack into native services as an incidental setup step.
+
+## Automatic shutdown
+
+Environments stop after 7200 idle seconds by default and retain data. Both config formats accept top-level `idle_timeout_seconds`, an integer from 0 to 2147483. Set it to 0 for background-task testing or workloads accessed outside Contremaitre; run deploy or ensure to apply the changed policy. Environment-specific CLI requests and proxied HTTP/HTTPS traffic reset activity. Active operations, foreground exec/logs/TCP proxy commands, open requests/WebSockets and foreground sharing sessions keep environments running. Global listings, hub health checks, source edits, internal traffic and background jobs do not count. The hub checks every minute and grants a full window after restart. Resume a stopped environment with ensure or deploy.

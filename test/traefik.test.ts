@@ -200,8 +200,10 @@ test.skipIf(!Bun.which("traefik") || !Bun.which("mkcert"))(
       await proxy.close();
       proxy = undefined;
       const hubHome = join(home, "hub");
+      let idleTime = Date.now();
       hub = await startServer({
         home: hubHome,
+        now: () => idleTime,
         port: 8080,
         httpsPort: port,
         runtime: new FakeRuntime(),
@@ -216,9 +218,19 @@ test.skipIf(!Bun.which("traefik") || !Bun.which("mkcert"))(
           `version: 1\nproject: hub-test\nservices:\n  web: {image: app, http: true, port: ${up}, ready: ["true"]}\n`,
         ),
       });
-      await eventually(identity.Host, 200);
+      const environment = hub.manager.resolve(identity.ID);
+      environment.idle_timeout_seconds = 10;
+      idleTime += 9000;
+      const httpsReply = await eventually(identity.Host, 200);
+      expect(JSON.parse(httpsReply.body)["x-forwarded-proto"]).toBe("https");
+      expect(environment.last_activity_at).toBe(new Date(idleTime).toISOString());
+      idleTime += 1000;
+      await hub.idle.sweep();
+      expect(environment.Status).toBe("running");
       await eventually("main.hub-test.localhost", 200);
-      await hub.manager.down(context(), hub.manager.resolve(identity.ID));
+      idleTime += 10_000;
+      await hub.idle.sweep();
+      expect(environment.Status).toBe("stopped");
       await eventually(identity.Host, 503);
       const records = readdirSync(join(hubHome, "processes")).filter((name) =>
         name.endsWith(".json"),
