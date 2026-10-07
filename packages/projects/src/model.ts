@@ -79,17 +79,29 @@ export const slug = (value: string): string =>
     .replace(/^-+|-+$/g, "")
     .slice(0, 40)
     .replace(/-+$/g, "") || "workspace";
-export function newIdentity(project: string, workspace: string, branch: string): Identity {
+export function newIdentity(
+  project: string,
+  workspace: string,
+  branch: string,
+  existing: readonly Identity[] = [],
+): Identity {
   const id = hash(`${project}\0${workspace}\0${branch}`).slice(0, 16);
-  const label =
-    `${slug(branch)}-${slug(basename(workspace))}`.slice(0, 44).replace(/-+$/, "") +
-    `-${id.slice(0, 8)}`;
-  return {
-    Project: project,
-    Workspace: workspace,
-    Branch: branch,
-    ID: id,
-    Name: `${project}/${label}`,
-    Host: `${label}.${slug(project)}.localhost`,
-  };
+  const saved = existing.find((identity) => identity.ID === id);
+  if (saved) return { ...saved };
+  const plain = `${slug(branch)}-${slug(basename(workspace))}`.slice(0, 44).replace(/-+$/, "");
+  let label = plain;
+  for (let attempt = 0; ; attempt++) {
+    const identity = {
+      Project: project,
+      Workspace: workspace,
+      Branch: branch,
+      ID: id,
+      Name: `${project}/${label}`,
+      Host: `${label}.${slug(project)}.localhost`,
+    };
+    if (!existing.some((other) => other.Name === identity.Name || other.Host === identity.Host))
+      return identity;
+    const suffix = attempt === 0 ? id.slice(0, 8) : attempt === 1 ? id : `${id}-${attempt - 1}`;
+    label = `${plain.slice(0, 62 - suffix.length).replace(/-+$/, "")}-${suffix}`;
+  }
 }

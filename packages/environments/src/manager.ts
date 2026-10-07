@@ -26,7 +26,7 @@ import {
   readEnv,
   safePath,
 } from "@contremaitre/projects/config";
-import type { Identity, Manifest } from "@contremaitre/projects/model";
+import { type Identity, type Manifest, newIdentity } from "@contremaitre/projects/model";
 import { type RunSpec, type Runtime, tcpReady } from "./apple.js";
 import { cloneData, cloneDriver, recoverClones } from "./clone.js";
 import {
@@ -59,6 +59,7 @@ export interface TunnelHooks {
   sharing?(id: string): boolean;
 }
 export class Manager {
+  private readonly pendingIdentities = new Map<string, Identity>();
   private readonly dependencyLocks = new EnvironmentLocks();
   private readonly unavailableCaches = new Set<string>();
   private readonly sourceWatchers = new Map<string, { stop: () => Promise<void> }>();
@@ -181,8 +182,14 @@ export class Manager {
   list() {
     return keys(this.state.Environments).map((id) => this.view(this.state.Environments[id]));
   }
+  private namedIdentity(identity: Identity): Identity {
+    return newIdentity(identity.Project, identity.Workspace, identity.Branch, [
+      ...Object.values(this.state.Environments).map((env) => env.Identity),
+      ...this.pendingIdentities.values(),
+    ]);
+  }
   async current(ctx: Context, root: string, branch?: string) {
-    return detectIdentity(ctx, root, projectName(root), branch);
+    return this.namedIdentity(await detectIdentity(ctx, root, projectName(root), branch));
   }
   async prepare(ctx: Context, request: Request): Promise<PreparedDeploy> {
     const root = resolve(request.root ?? process.cwd());
@@ -197,7 +204,9 @@ export class Manager {
         },
       }),
     );
-    const identity = await detectIdentity(ctx, root, manifest.project, request.branch);
+    const identity = this.namedIdentity(
+      await detectIdentity(ctx, root, manifest.project, request.branch),
+    );
     return {
       root,
       manifest,
@@ -208,6 +217,7 @@ export class Manager {
     };
   }
   fresh(identity: Identity, root: string): Environment {
+    identity = this.namedIdentity(identity);
     return {
       Identity: identity,
       Root: root,
@@ -253,15 +263,20 @@ export class Manager {
       fail("Main already designated; use main --env to change it explicitly");
     if (manifest.driver) {
       const candidate = this.fresh(identity, root);
-      snapshotDriver(this.store.home, candidate, manifest.driver);
-      await invokeDriver(ctx, candidate, "preflight");
-      if (!env) {
-        env = candidate;
-        this.state.Environments[identity.ID] = env;
-      } else {
-        env.driver = candidate.driver;
-        env.driver_directory = candidate.driver_directory;
-        env.Root = root;
+      this.pendingIdentities.set(identity.ID, candidate.Identity);
+      try {
+        snapshotDriver(this.store.home, candidate, manifest.driver);
+        await invokeDriver(ctx, candidate, "preflight");
+        if (!env) {
+          env = candidate;
+          this.state.Environments[identity.ID] = env;
+        } else {
+          env.driver = candidate.driver;
+          env.driver_directory = candidate.driver_directory;
+          env.Root = root;
+        }
+      } finally {
+        this.pendingIdentities.delete(identity.ID);
       }
       const driver = serviceContext(ctx, "driver");
       delete env.source;
