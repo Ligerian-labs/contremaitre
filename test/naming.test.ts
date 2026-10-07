@@ -49,12 +49,19 @@ test("new deployments use readable names and queued collisions keep distinct rou
       root: f.root("second"),
       branch: "feature-a",
     });
-    await Promise.all([f.manager.deploy(context(), first), f.manager.deploy(context(), second)]);
+    const logs: string[] = [];
+    const deploymentContext = () =>
+      context(undefined, (data) => logs.push(Buffer.from(data).toString()));
+    await Promise.all([
+      f.manager.deploy(deploymentContext(), first),
+      f.manager.deploy(deploymentContext(), second),
+    ]);
     const a = f.manager.resolve(first.identity.ID),
       b = f.manager.resolve(second.identity.ID);
     expect(a.Identity.Name).toBe("example/feature-a-app");
     expect(a.Identity.Host).toBe("feature-a-app.example.localhost");
     expect(b.Identity.Host).toBe(`feature-a-app-${b.Identity.ID.slice(0, 8)}.example.localhost`);
+    expect(logs.join("")).toContain(`Preparing network for ${b.Identity.Name}`);
     expect(a.Network).not.toBe(b.Network);
     a.Services.web.IP = "127.0.0.2";
     b.Services.web.IP = "127.0.0.3";
@@ -96,6 +103,40 @@ test("legacy deployed names survive prepare and redeploy", async () => {
     expect(restarted.resolve(identity.ID).Identity).toEqual(identity);
     expect(routes(restarted, identity.Host)?.upstream).toBe("http://127.0.0.1:3000");
     expect(routes(restarted, "main.example.localhost")?.upstream).toBe("http://127.0.0.1:3000");
+  } finally {
+    f.clean();
+  }
+});
+
+test("stopped environments reserve their names and keep hashed URLs after restart", async () => {
+  const f = fixture();
+  try {
+    const first = await f.manager.prepare(context(), {
+      root: f.root("first"),
+      branch: "feature",
+    });
+    await f.manager.deploy(context(), first);
+    const original = f.manager.resolve(first.identity.ID);
+    await f.manager.down(context(), original);
+    expect(original.Status).toBe("stopped");
+    const second = await f.manager.prepare(context(), {
+      root: f.root("second"),
+      branch: "feature",
+    });
+    await f.manager.deploy(context(), second);
+    const collision = f.manager.resolve(second.identity.ID);
+    expect(collision.Identity.Host).toBe(
+      `feature-app-${collision.Identity.ID.slice(0, 8)}.example.localhost`,
+    );
+    const saved = { ...collision.Identity };
+    await f.manager.down(context(), collision);
+    await f.manager.down(context(), original, true);
+    const restarted = new Manager(new Store(f.home), f.runtime);
+    expect(await restarted.current(context(), second.root, "feature")).toEqual(saved);
+    const prepared = await restarted.prepare(context(), { root: second.root, branch: "feature" });
+    expect(prepared.identity).toEqual(saved);
+    await restarted.deploy(context(), prepared);
+    expect(restarted.resolve(saved.ID).Identity).toEqual(saved);
   } finally {
     f.clean();
   }

@@ -444,7 +444,7 @@ export class Manager {
       e.Error = "";
       this.save();
       if (mutated) {
-        phase(ctx, `Preparing network for ${identity.Name}`);
+        phase(ctx, `Preparing network for ${e.Identity.Name}`);
         await this.runtime.network(ctx, e.Network);
         // Settle all cleanup calls before proceeding or releasing the environment lock.
         const stopped = await Promise.allSettled(
