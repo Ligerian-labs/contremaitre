@@ -41,6 +41,7 @@ import {
   StopShare,
   Verify,
 } from "./application.js";
+import { IdleShutdown } from "./idle.js";
 export interface ServerOptions {
   home: string;
   port: number;
@@ -49,8 +50,14 @@ export interface ServerOptions {
   concurrency?: number;
   runtime?: Runtime;
   skipSystemStart?: boolean;
+  now?: () => number;
+  idleSweepIntervalMs?: number;
 }
-export function routes(m: Manager, host: string): Route | undefined {
+export function routes(
+  m: Manager,
+  host: string,
+  begin?: (id: string) => () => void,
+): Route | undefined {
   for (const env of Object.values(m.state.Environments)) {
     let first = true;
     const endpoints = httpEndpoints(env);
@@ -68,7 +75,12 @@ export function routes(m: Manager, host: string): Route | undefined {
       if (first && m.state.Main[env.Identity.Project] === env.Identity.ID)
         hosts.push(`main.${env.Identity.Project}.localhost`);
       first = false;
-      if (hosts.includes(host)) return route;
+      if (hosts.includes(host))
+        return {
+          ...route,
+          protocol: m.protocol,
+          activity: begin ? () => begin(env.Identity.ID) : undefined,
+        };
     }
   }
 }
@@ -133,7 +145,9 @@ export async function startServer(
   const store = new Store(options.home),
     unlock = lockHome(store.home);
   let control: Server | undefined, publicServer: Server | undefined;
+  let proxyPort = 0;
   let ops: Operations | undefined, tunnels: TunnelSessions | undefined;
+  let idle: IdleShutdown | undefined;
   let closeReview: (() => Promise<void>) | undefined;
   let closeApp: (() => Promise<void>) | undefined;
   let stopTraefik: (() => Promise<void>) | undefined;
@@ -147,6 +161,7 @@ export async function startServer(
       for (const request of requests) request.abort();
       const errors: unknown[] = [];
       for (const cleanup of [
+        () => idle?.close(),
         () => ops?.shutdown(),
         () => tunnels?.shutdown(),
         () => stopDevelopment?.(),
@@ -190,7 +205,15 @@ export async function startServer(
       ...context(signal, (chunk) => process.stderr.write(chunk)),
       processDirectory: join(store.home, "processes"),
     });
-    const lookup = (host: string) => routes(manager, host);
+    idle = new IdleShutdown(
+      manager,
+      operations,
+      options.now,
+      undefined,
+      options.idleSweepIntervalMs,
+    );
+    const inactivity = idle;
+    const lookup = (host: string) => routes(manager, host, (id) => inactivity.begin(id));
     tunnels = new TunnelSessions(manager, lookup, operations.locks);
     manager.tunnels = tunnels;
     const sharing = tunnels;
@@ -208,6 +231,7 @@ export async function startServer(
     });
     closeApp = () => app.dispose();
     operations.onTransition = (op) => {
+      inactivity.touch(op.environmentId);
       app.runFork(
         Effect.logInfo(`contremaitre.operation.${op.status}`).pipe(
           Effect.annotateLogs({
@@ -264,6 +288,8 @@ export async function startServer(
           return;
         }
         if (action === "operation") {
+          const query = decode(ReadOperation.payload, value, "operation query");
+          inactivity.touch(operations.get(query.id).environmentId);
           const data = await command(
             Effect.flatMap(QueryBus, (b) =>
               b.dispatch(ReadOperation, decode(ReadOperation.payload, value, "operation query")),
@@ -319,6 +345,7 @@ export async function startServer(
         if (action === "agent-result") {
           const { id } = decode(Cancel.payload, value, "operation result request");
           const op = operations.get(id);
+          inactivity.touch(op.environmentId);
           json(res, op.kind === "ensure" ? agents.ensureResult(id) : agents.result(id));
           return;
         }
@@ -330,6 +357,16 @@ export async function startServer(
           return;
         }
         const payload = decode(requestSchema, value, "request");
+        if (action === "activity") {
+          const env = payload.env
+            ? manager.resolve(payload.env)
+            : fail("Activity requires an environment");
+          const release = inactivity.begin(env.Identity.ID);
+          res.once("close", release);
+          res.writeHead(200, { "Content-Type": "application/x-ndjson" });
+          res.flushHeaders();
+          return;
+        }
         if (action === "deployment") {
           const id = payload.env
             ? manager.resolve(payload.env).Identity.ID
@@ -340,6 +377,7 @@ export async function startServer(
                   payload.branch,
                 )
               ).ID;
+          inactivity.touch(id);
           json(res, operations.latestDeployment(id));
           return;
         }
@@ -450,6 +488,7 @@ export async function startServer(
             return;
           case "stop": {
             ready = false;
+            await inactivity.close();
             try {
               const errors: string[] = [];
               try {
@@ -495,8 +534,11 @@ export async function startServer(
     chmodSync(socket, 0o600);
     if (options.httpsPort === undefined) {
       publicServer = proxyServer(lookup);
-      await listen(publicServer, options.port);
+      proxyPort = await listen(publicServer, options.port);
     } else {
+      publicServer = proxyServer(lookup);
+      const bridgePort = await listen(publicServer, 0);
+      proxyPort = bridgePort;
       const snapshot = (): LocalRoute[] => {
         const hosts = new Set<string>();
         for (const env of Object.values(manager.state.Environments)) {
@@ -507,7 +549,7 @@ export async function startServer(
         }
         return [...hosts].sort().flatMap((host) => {
           const route = lookup(host);
-          return route ? [{ host, upstream: route.upstream }] : [];
+          return route ? [{ host, upstream: `http://127.0.0.1:${bridgePort}` }] : [];
         });
       };
       const traefik = await startTraefik(
@@ -531,7 +573,10 @@ export async function startServer(
       manager.onSave = traefik.update;
     }
     ready = true;
+    inactivity.start();
     return {
+      idle: inactivity,
+      proxyPort,
       manager,
       operations,
       agents,

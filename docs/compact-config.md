@@ -15,6 +15,27 @@ apps:
 
 `app` names a container. `.` is the application directory relative to the repository. The lock supplies the image, startup command, installation command, source synchronization and endpoints. Version may be omitted or set to `2`. Existing version 1 manifests remain supported and need no lock.
 
+## Automatic shutdown
+
+Environments stop after two hours without activity by default. Stops preserve their data and identity. Run `contremaitre ensure` or `contremaitre deploy` to resume one; visiting an offline URL returns 503.
+
+Set `idle_timeout_seconds` at the top level of either config format. It accepts integer seconds from `0` to `2147483`. Use `3600` for one hour, or `0` to keep background workers running:
+
+```yaml
+project: example
+idle_timeout_seconds: 0
+apps:
+  app: .
+```
+
+Run deploy or ensure after changing the setting. The resolved policy applies to that environment until its next deploy or ensure. Existing environments without a stored setting use 7200 seconds. A daemon restart grants a fresh full window.
+
+Environment-specific CLI requests and HTTP/HTTPS requests through Contremaitre reset activity. Open HTTP responses and WebSockets, foreground `exec`, `logs` and TCP `proxy` commands, queued/running operations and their clone sources, and foreground sharing sessions keep an environment alive. A closed connection starts a fresh idle window. Global `list`, `operations` and hub health checks do not keep environments alive.
+
+Internal container traffic, direct connections that bypass Contremaitre, source-file edits and background jobs do not count as activity. Repeated application requests such as browser polling do count. Disable expiry when testing those background behaviors.
+
+The hub checks once per minute, so shutdown can occur up to a minute after the timeout, or later while shutdown work is queued. Shutdown errors appear as `contremaitre.environment.idle_stop_failed` in the daemon log and retry on subsequent checks. `contremaitre list --json` includes `last_activity_at` and the stored `idle_timeout_seconds` when configured. Activity timestamps are checkpointed during the sweep rather than written for every request.
+
 ## Overrides and application wiring
 
 Use an object when an app needs overrides. Its `path` defaults to `.`:

@@ -152,6 +152,8 @@ contremaitre down                      # Stop this environment, retain its data
 
 Use your manifest's service name in place of `web`. Run `contremaitre --help` for the full command list.
 
+Environments automatically stop after two idle hours and retain their data. Set top-level `idle_timeout_seconds: 3600` for one hour or `idle_timeout_seconds: 0` to keep background workers running, then run deploy or ensure. CLI use and proxied traffic reset activity; active commands and sharing sessions keep environments alive. [Shutdown policy and activity rules](docs/compact-config.md#automatic-shutdown).
+
 ## What to expect
 
 Contremaitre is in early development. The local runtime supports managed PostgreSQL 17, Redis, application containers, data forks, local HTTPS, and source sync. See the [recorded runtime verification](docs/structure-verification.md) for the tested setup and its limits.

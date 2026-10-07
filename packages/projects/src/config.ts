@@ -7,6 +7,7 @@ import { parseAllDocuments } from "yaml";
 import {
   driverSchema,
   type Identity,
+  idleTimeoutSchema,
   type Manifest,
   newIdentity,
   type Service,
@@ -35,6 +36,7 @@ export function serviceDefaults(original: Service): Service {
 const manifestSchema = Schema.Struct({
   version: Schema.Literal(1),
   project: Schema.String,
+  idle_timeout_seconds: Schema.optional(idleTimeoutSchema),
   services: Schema.optional(Schema.Record({ key: Schema.String, value: serviceSchema })),
   driver: Schema.optional(driverSchema),
   verification: Schema.optional(verificationSchema),
@@ -132,6 +134,7 @@ export function parseManifest(text: string): Manifest {
       services,
       driver: { ...d, timeout_seconds: timeout },
       verification,
+      idle_timeout_seconds: parsed.idle_timeout_seconds,
     };
   }
   for (const [name, original] of Object.entries(parsed.services ?? {})) {
@@ -209,7 +212,13 @@ export function parseManifest(text: string): Manifest {
   }
   if (!keys(services).length) fail("At least one service is required");
   order(services);
-  return { version: 1, project: parsed.project, services, verification };
+  return {
+    version: 1,
+    project: parsed.project,
+    services,
+    verification,
+    idle_timeout_seconds: parsed.idle_timeout_seconds,
+  };
 }
 export function loadManifest(root: string, options: LoadOptions = {}): Manifest {
   return loadProject(root, options);

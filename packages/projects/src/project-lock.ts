@@ -5,12 +5,19 @@ import { atomicWrite } from "@contremaitre/execution/files";
 import { Schema } from "effect";
 import { parseAllDocuments, stringify } from "yaml";
 import { inside, parseManifest, prepareManifest, serviceDefaults, validName } from "./config.js";
-import { type Manifest, type Service, serviceSchema, verificationSchema } from "./model.js";
+import {
+  idleTimeoutSchema,
+  type Manifest,
+  type Service,
+  serviceSchema,
+  verificationSchema,
+} from "./model.js";
 
 const appSchema = Schema.Struct({ ...serviceSchema.fields, path: Schema.optional(Schema.String) });
 const projectSchema = Schema.Struct({
   version: Schema.optional(Schema.Literal(2)),
   project: Schema.String,
+  idle_timeout_seconds: Schema.optional(idleTimeoutSchema),
   apps: Schema.Record({ key: Schema.String, value: Schema.Union(Schema.String, appSchema) }),
   services: Schema.optional(Schema.Record({ key: Schema.String, value: serviceSchema })),
   verification: Schema.optional(verificationSchema),
@@ -160,6 +167,7 @@ export function resolveProject(
     stringify({
       version: 1,
       project: project.project,
+      idle_timeout_seconds: project.idle_timeout_seconds,
       services,
       verification: project.verification,
     }),

@@ -7,6 +7,8 @@ export interface Route {
   upstream: string;
   publicHost?: string;
   localHost?: string;
+  protocol?: "http" | "https";
+  activity?: () => () => void;
 }
 export type Lookup = (host: string) => Route | undefined;
 const hopHeaders = [
@@ -31,7 +33,7 @@ export function forwardedHeaders(req: IncomingMessage, route: Route, upgrade = f
     ? route.localHost || new URL(route.upstream).host
     : req.headers.host;
   headers["x-forwarded-host"] = route.publicHost || headers.host;
-  headers["x-forwarded-proto"] = route.publicHost ? "https" : "http";
+  headers["x-forwarded-proto"] = route.publicHost ? "https" : (route.protocol ?? "http");
   headers["x-forwarded-for"] = req.socket.remoteAddress ?? "127.0.0.1";
   if (upgrade) {
     headers.connection = "Upgrade";
@@ -56,6 +58,8 @@ export function proxyServer(lookup: Lookup, fixed?: () => Route | undefined): Se
       res.end("Environment is offline\n");
       return;
     }
+    const release = route.activity?.();
+    res.once("close", () => release?.());
     const target = new URL(route.upstream),
       up = request(
         {
@@ -109,6 +113,10 @@ export function proxyServer(lookup: Lookup, fixed?: () => Route | undefined): Se
       socket.end(`HTTP/1.1 ${route ? 503 : 404} Unavailable\r\nConnection: close\r\n\r\n`);
       return;
     }
+    const release = route.activity?.();
+    socket.once("close", () => release?.());
+    // Upgraded sockets can remain half-open after a client disconnects.
+    socket.once("end", () => socket.destroy());
     const target = new URL(route.upstream),
       up = request({
         hostname: target.hostname.replace(/^\[|\]$/g, ""),
