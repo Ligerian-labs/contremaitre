@@ -1322,12 +1322,15 @@ export class Manager {
     return removed;
   }
   /** Services whose address a service's configuration contains: dependencies and address references. */
-  private references(env: Environment, s: ServiceState): string[] {
-    const endpoints = httpEndpoints(env);
+  private references(s: ServiceState): string[] {
     const names = new Set(s.Spec.depends_on ?? []);
+    // Match serviceEnv: built-in URL tokens resolve before service references.
     for (const value of Object.values({ ...s.raw_environment, ...s.Spec.environment }))
-      for (const [, name] of value.matchAll(/\{\{([a-z][a-z0-9-]*)\.(?:host|port|url)\}\}/g))
-        names.add(endpoints[name]?.service.Name ?? name);
+      for (const [, name] of value
+        .replaceAll("{{contremaitre.url}}", "")
+        .replaceAll("{{contremaitre.local_url}}", "")
+        .matchAll(/\{\{([a-z][a-z0-9-]*)\.(?:host|port|url)\}\}/g))
+        names.add(name);
     names.delete(s.Name);
     return [...names];
   }
@@ -1447,8 +1450,7 @@ export class Manager {
         for (const name of names) {
           const s = env.Services[name];
           try {
-            if (!restart.has(name) && !this.references(env, s).some((dep) => moved.has(dep)))
-              continue;
+            if (!restart.has(name) && !this.references(s).some((dep) => moved.has(dep))) continue;
             phase(ctx, `${env.Identity.Name}: restarting ${name}`);
             const ports = JSON.stringify(s.Ports ?? {});
             await this.stopDevelopment(s.Container);

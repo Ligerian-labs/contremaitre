@@ -12,7 +12,12 @@ import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Manager, type PreparedDeploy } from "@contremaitre/environments/manager";
-import { addressURL, type ServiceState, serviceAddress } from "@contremaitre/environments/model";
+import {
+  addressURL,
+  type Environment,
+  type ServiceState,
+  serviceAddress,
+} from "@contremaitre/environments/model";
 import {
   type CloneSide,
   type Inspection,
@@ -42,6 +47,8 @@ class FakeHostRuntime implements ServiceRuntime {
   readyChecks: string[] = [];
   digest = "component";
   failBuilds = new Set<string>();
+  failRuns = new Set<string>();
+  started: string[] = [];
   async preflight() {
     this.calls.push("preflight");
   }
@@ -52,6 +59,7 @@ class FakeHostRuntime implements ServiceRuntime {
   }
   async run(_ctx: Context, spec: RunSpec) {
     this.calls.push(`run ${spec.name}`);
+    if (this.failRuns.has(spec.name)) throw Error("process failed to start");
     this.specs.set(spec.name, {
       ...spec,
       environment: readFileSync(spec.envFile, "utf8"),
@@ -65,6 +73,7 @@ class FakeHostRuntime implements ServiceRuntime {
         }),
       );
     this.servers.set(spec.name, servers);
+    this.started.push(spec.name);
   }
   async inspect(_ctx: Context, name: string): Promise<Inspection | undefined> {
     return this.servers.has(name) ? { Host: "127.0.0.1", Running: true } : undefined;
@@ -376,25 +385,6 @@ test("cloning between different Postgres runtimes fails clearly", async () => {
     await f.clean();
   }
 });
-test("hub recovery restarts stopped host-process services in dependency order", async () => {
-  const f = fixture();
-  try {
-    const p = f.prepare();
-    await f.manager.deploy(context(), p);
-    const env = f.manager.resolve(p.identity.ID);
-    await f.host.closeAll();
-    f.host.calls = [];
-    await f.manager.recover(context());
-    expect(env.Status).toBe("running");
-    expect(f.host.calls.filter((c) => c.startsWith("run "))).toEqual([
-      `run ${env.Services.db.Container}`,
-      `run ${env.Services.web.Container}`,
-    ]);
-    expect(env.Services.web.Host).toBe("127.0.0.1");
-  } finally {
-    await f.clean();
-  }
-});
 test("a rebuilt WASM artifact at the same path replaces the running service", async () => {
   const f = fixture(mixed.replace("    dev: {source: src}\n", ""));
   try {
@@ -410,37 +400,6 @@ test("a rebuilt WASM artifact at the same path replaces the running service", as
     expect(f.host.calls).toContain(`run ${env.Services.web.Container}`);
     expect(f.host.calls).not.toContain(`run ${env.Services.db.Container}`);
   } finally {
-    await f.clean();
-  }
-});
-test("recovery restarts running dependents when a dependency moves to a new port", async () => {
-  const f = fixture();
-  let blocker: Server | undefined;
-  try {
-    const p = f.prepare();
-    await f.manager.deploy(context(), p);
-    const env = f.manager.resolve(p.identity.ID),
-      { db, web } = env.Services,
-      previous = db.Ports?.["5432"] ?? 0;
-    await f.host.close(db.Container);
-    blocker = await new Promise<Server>((resolve) => {
-      const server = createServer();
-      server.listen(previous, "127.0.0.1", () => resolve(server));
-    });
-    f.host.calls = [];
-    await f.manager.recover(context());
-    const moved = db.Ports?.["5432"] ?? 0;
-    expect(moved).not.toBe(previous);
-    expect(env.Status).toBe("running");
-    expect(f.host.calls).toContain(`run ${web.Container}`);
-    const run = f.host.specs.get(web.Container) as RunSpec & { environment: string };
-    expect(run.environment).toContain(`@127.0.0.1:${moved}/app`);
-    // The refreshed fingerprint lets the next deployment retain both services.
-    f.host.calls = [];
-    await f.manager.deploy(context(), p);
-    expect(f.host.calls.filter((c) => c === `run ${db.Container}`)).toEqual([]);
-  } finally {
-    await new Promise<void>((resolve) => (blocker ? blocker.close(() => resolve()) : resolve()));
     await f.clean();
   }
 });
@@ -468,82 +427,117 @@ test("Apple deployment fingerprints keep their pre-runtime shape", async () => {
     await f.clean();
   }
 });
-test("recovery refreshes transitive consumers of a moved address and keeps them retained", async () => {
-  const f = fixture(`version: 1
+interface RecoveryCase {
+  name: string;
+  manifest: string;
+  /** Leave the environment as a crashed hub would, after a successful deployment. */
+  crash: (
+    f: ReturnType<typeof fixture>,
+    env: Environment,
+    occupy: (port: number) => Promise<void>,
+  ) => Promise<void>;
+  status: string;
+  error?: string;
+  /** Host services started by recovery, in order. */
+  restarted: string[];
+  /** Expected environment text per service after recovery; PORT is db's current port. */
+  environment?: Record<string, string>;
+  /** A second recovery and a redeploy start nothing. */
+  retained?: boolean;
+}
+const pair = `version: 1
+project: example
+services:
+  db: {kind: postgres, runtime: wasm}
+  web: {runtime: wasm, wasm: {component: web.wasm}, port: 8080, depends_on: [db], environment: {DATABASE_URL: '{{db.url}}'}}
+`;
+const chain = `version: 1
 project: example
 services:
   db: {kind: postgres, runtime: wasm}
   relay: {runtime: wasm, wasm: {component: relay.wasm}, port: 8080, depends_on: [db]}
-  web:
-    runtime: wasm
-    wasm: {component: web.wasm}
-    port: 8081
-    depends_on: [relay]
-    environment: {DATABASE_URL: '{{db.url}}'}
-`);
-  let blocker: Server | undefined;
-  try {
-    const p = f.prepare();
-    await f.manager.deploy(context(), p);
-    const env = f.manager.resolve(p.identity.ID),
-      { db, web } = env.Services,
-      previous = db.Ports?.["5432"] ?? 0;
-    await f.host.close(db.Container);
-    blocker = await new Promise<Server>((resolve) => {
-      const server = createServer();
-      server.listen(previous, "127.0.0.1", () => resolve(server));
-    });
-    f.host.calls = [];
-    await f.manager.recover(context());
-    const moved = db.Ports?.["5432"] ?? 0;
-    expect(moved).not.toBe(previous);
-    expect(env.Status).toBe("running");
-    const run = f.host.specs.get(web.Container) as RunSpec & { environment: string };
-    expect(run.environment).toContain(`@127.0.0.1:${moved}/app`);
-    // Recorded fingerprints match the refreshed processes, so nothing restarts again.
-    f.host.calls = [];
-    await f.manager.recover(context());
-    await f.manager.deploy(context(), p);
-    expect(f.host.calls.filter((c) => /^(stop|run) /.test(c))).toEqual([]);
-  } finally {
-    await new Promise<void>((resolve) => (blocker ? blocker.close(() => resolve()) : resolve()));
-    await f.clean();
-  }
-});
-test("recovery leaves services that reference no moved address untouched", async () => {
-  const f = fixture(`version: 1
+  web: {runtime: wasm, wasm: {component: web.wasm}, port: 8081, depends_on: [relay], environment: {DATABASE_URL: '{{db.url}}'}}
+`;
+const moveService = async (
+  f: ReturnType<typeof fixture>,
+  env: Environment,
+  occupy: (port: number) => Promise<void>,
+  name = "db",
+) => {
+  await f.host.close(env.Services[name].Container);
+  await occupy(env.Services[name].Ports?.["5432"] ?? 0);
+};
+const recoveryCases: RecoveryCase[] = [
+  {
+    name: "stopped host services restart in dependency order",
+    manifest: mixed,
+    crash: (f) => f.host.closeAll(),
+    status: "running",
+    restarted: ["db", "web"],
+  },
+  {
+    name: "a dependency back on its port leaves consumers running",
+    manifest: pair,
+    crash: (f, env) => f.host.close(env.Services.db.Container),
+    status: "running",
+    restarted: ["db"],
+    retained: true,
+  },
+  {
+    name: "a moved dependency restarts its direct consumer with the new address",
+    manifest: pair,
+    crash: moveService,
+    status: "running",
+    restarted: ["db", "web"],
+    environment: { web: "@127.0.0.1:PORT/app" },
+    retained: true,
+  },
+  {
+    name: "a moved dependency reaches transitive address consumers",
+    manifest: chain,
+    crash: moveService,
+    status: "running",
+    restarted: ["db", "relay", "web"],
+    environment: { web: "@127.0.0.1:PORT/app" },
+    retained: true,
+  },
+  {
+    name: "built-in URL tokens do not reference a service named contremaitre",
+    manifest: `version: 1
+project: example
+services:
+  contremaitre: {kind: postgres, runtime: wasm}
+  web: {runtime: wasm, wasm: {component: web.wasm}, port: 8080, http: true, environment: {SELF: '{{contremaitre.url}}'}}
+  site: {image: nginx, port: 80, http: true, ready: ["true"], environment: {SELF: '{{contremaitre.url}}'}}
+`,
+    crash: (f, env, occupy) => moveService(f, env, occupy, "contremaitre"),
+    status: "running",
+    restarted: ["contremaitre"],
+    retained: true,
+  },
+  {
+    name: "an artifact recorded by a failed deployment stays inactive",
+    manifest: `version: 1
 project: example
 services:
   db: {kind: postgres, runtime: wasm}
   one: {runtime: wasm, wasm: {component: one.wasm}, port: 8080}
-  two: {runtime: wasm, wasm: {component: two.wasm}, port: 8081, environment: {DATABASE_URL: '{{db.url}}'}, depends_on: [db]}
-`);
-  try {
-    const p = f.prepare();
-    await f.manager.deploy(context(), p);
-    const env = f.manager.resolve(p.identity.ID),
-      { db, one, two } = env.Services;
-    // A failed deployment can record a newer artifact for one service without replacing it.
-    f.host.digest = "v2";
-    f.host.failBuilds.add("two");
-    await expect(f.manager.deploy(context(), p)).rejects.toThrow("two build failed");
-    expect(env.Status).toBe("running");
-    await f.host.close(db.Container);
-    f.host.calls = [];
-    await f.manager.recover(context());
-    expect(env.Status).toBe("running");
-    expect(f.host.calls.filter((c) => /^(stop|run) /.test(c))).toEqual([
-      `stop ${db.Container}`,
-      `run ${db.Container}`,
-    ]);
-    expect(f.host.calls).not.toContain(`run ${one.Container}`);
-    expect(f.host.calls).not.toContain(`run ${two.Container}`);
-  } finally {
-    await f.clean();
-  }
-});
-test("recovery marks a missing Apple dependency failed without aborting", async () => {
-  const f = fixture(`version: 1
+  two: {runtime: wasm, wasm: {component: two.wasm}, port: 8081, depends_on: [db], environment: {DATABASE_URL: '{{db.url}}'}}
+`,
+    crash: async (f, env) => {
+      f.host.digest = "v2";
+      f.host.failBuilds.add("two");
+      await expect(f.manager.deploy(context(), f.prepare())).rejects.toThrow("two build failed");
+      await f.host.close(env.Services.db.Container);
+    },
+    status: "running",
+    // The failed deployment's error stays recorded; recovery doesn't clear it.
+    error: "two: two build failed",
+    restarted: ["db"],
+  },
+  {
+    name: "a missing Apple dependency fails the environment without aborting recovery",
+    manifest: `version: 1
 project: example
 services:
   apple-db: {kind: postgres}
@@ -554,17 +548,86 @@ services:
     port: 8080
     depends_on: [apple-db, db]
     environment: {APPLE_URL: '{{apple-db.url}}', DATABASE_URL: '{{db.url}}'}
-`);
-  try {
-    const p = f.prepare();
-    await f.manager.deploy(context(), p);
-    const env = f.manager.resolve(p.identity.ID);
-    await f.apple.remove(context(), env.Services["apple-db"].Container);
-    await f.host.close(env.Services.db.Container);
-    await f.manager.recover(context());
-    expect(env.Status).toBe("failed");
-    expect(env.Error).toContain("apple-db is not running");
-  } finally {
-    await f.clean();
-  }
-});
+`,
+    crash: async (f, env) => {
+      await f.apple.remove(context(), env.Services["apple-db"].Container);
+      await f.host.close(env.Services.db.Container);
+    },
+    status: "failed",
+    error: "apple-db is not running",
+    restarted: ["db"],
+  },
+  {
+    name: "a failed host restart fails the environment and stops recovery",
+    manifest: pair,
+    crash: async (f, env) => {
+      await f.host.closeAll();
+      f.host.failRuns.add(env.Services.db.Container);
+    },
+    status: "failed",
+    error: "db is not running: process failed to start",
+    restarted: [],
+  },
+  {
+    name: "an interrupted deployment fails without restarting",
+    manifest: pair,
+    crash: async (f, env) => {
+      await f.host.closeAll();
+      env.Status = "deploying";
+    },
+    status: "failed",
+    error: "Interrupted operation",
+    restarted: [],
+  },
+  {
+    name: "a stopped environment stays stopped",
+    manifest: pair,
+    crash: (f, env) => f.manager.down(context(), env),
+    status: "stopped",
+    restarted: [],
+  },
+];
+for (const c of recoveryCases)
+  test(`hub recovery: ${c.name}`, async () => {
+    const f = fixture(c.manifest);
+    const blockers: Server[] = [];
+    const occupy = async (port: number) => {
+      blockers.push(
+        await new Promise<Server>((resolve) => {
+          const server = createServer();
+          server.listen(port, "127.0.0.1", () => resolve(server));
+        }),
+      );
+    };
+    try {
+      const p = f.prepare();
+      await f.manager.deploy(context(), p);
+      const env = f.manager.resolve(p.identity.ID);
+      const container = (name: string) => env.Services[name].Container;
+      await c.crash(f, env, occupy);
+      f.host.started = [];
+      f.apple.calls = [];
+      await f.manager.recover(context());
+      expect(env.Status).toBe(c.status);
+      if (c.error) expect(env.Error).toContain(c.error);
+      else expect(env.Error).toBe("");
+      expect(f.host.started).toEqual(c.restarted.map(container));
+      // Recovery never replaces Apple processes.
+      expect(f.apple.calls.filter((call) => /^(stop|run|remove) /.test(call))).toEqual([]);
+      for (const [name, text] of Object.entries(c.environment ?? {})) {
+        const port = String(env.Services.db.Ports?.["5432"]);
+        const run = f.host.specs.get(container(name)) as RunSpec & { environment: string };
+        expect(run.environment).toContain(text.replace("PORT", port));
+      }
+      if (c.retained) {
+        f.host.started = [];
+        await f.manager.recover(context());
+        await f.manager.deploy(context(), p);
+        expect(f.host.started).toEqual([]);
+      }
+    } finally {
+      for (const server of blockers)
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      await f.clean();
+    }
+  });
