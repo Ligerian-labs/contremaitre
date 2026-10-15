@@ -169,7 +169,7 @@ In a mixed environment, a WASM service can depend on an Apple service: it reache
 
 The first deployment records each service's runtime. Contremaitre never converts a service between runtimes. A deployment that changes a recorded runtime fails before it stops anything. To move a service, remove it from the manifest and deploy, or delete the environment with `contremaitre down --delete-data`; then deploy with the new runtime. Forking Postgres from main requires the same runtime for that service in both environments.
 
-The [WASM app runtime](wasm-backend.md) is available. WASM Postgres is still a placeholder: deployment fails with `WASM postgres runtime not available yet`, and the environment can still be stopped or deleted.
+The [WASM app runtime](wasm-backend.md) is available. WASM Postgres runs on [PGlite](wasm-postgres.md).
 
 Contremaitre gives the shared Apple builder up to 4 CPUs and 8 GB RAM, capped at
 the host CPU count and half its total RAM. Larger existing allocations are
