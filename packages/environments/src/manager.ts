@@ -494,6 +494,8 @@ export class Manager {
             s.Spec.dev ||
             request.rebuild ||
             !e.CloneComplete ||
+            !old.Host ||
+            this.missingDependencyHost(candidate, s) ||
             old.deployment !== this.deploymentFingerprint(candidate, s)
           )
             return false;
@@ -664,6 +666,12 @@ export class Manager {
       this.save();
       throw error;
     }
+  }
+  private missingDependencyHost(env: Environment, s: ServiceState): boolean {
+    const dependencies = new Set(s.Spec.depends_on);
+    for (const name of dependencies)
+      for (const dep of env.Services[name]?.Spec.depends_on ?? []) dependencies.add(dep);
+    return [...dependencies].some((name) => !env.Services[name]?.Host);
   }
   private deploymentFingerprint(env: Environment, s: ServiceState): string {
     // Apple image tags change with every build, so the image identifies its artifact.
