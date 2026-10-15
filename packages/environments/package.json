@@ -15,13 +15,20 @@
     "./store": "./src/store.ts",
     "./tunnel": "./src/tunnel.ts",
     "./tunnel-session": "./src/tunnel-session.ts",
-    "./tunnel-provider": "./src/tunnel-provider.ts"
+    "./tunnel-provider": "./src/tunnel-provider.ts",
+    "./pglite-server": "./src/pglite-server.ts",
+    "./pglite-ready": "./src/pglite-ready.ts",
+    "./pglite-fork": "./src/pglite-fork.ts",
+    "./pglite-data": "./src/pglite-data.ts",
+    "./pglite-runtime": "./src/pglite-runtime.ts"
   },
   "dependencies": {
     "@balena/dockerignore": "1.0.2",
     "@contremaitre/execution": "workspace:*",
     "@contremaitre/projects": "workspace:*",
     "@contremaitre/routing": "workspace:*",
-    "effect": "3.22.1"
+    "effect": "3.22.1",
+    "@electric-sql/pglite": "0.5.10",
+    "@electric-sql/pglite-socket": "0.2.13"
   }
 }

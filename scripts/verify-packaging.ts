@@ -326,6 +326,78 @@ try {
   assert.equal(await health(ctx, home), true);
   assert.equal(((await call(ctx, home, "health")) as { public_port: number }).public_port, port);
   assert.equal(((await call(ctx, home, "list")) as { Status: string }[])[0].Status, "running");
+  // Exercise the compiled PGlite worker and embedded assets through the real hub.
+  {
+    const { SQL } = await import("bun");
+    const postgresProject = join(dir, "postgres-project");
+    await mkdir(postgresProject);
+    await writeFile(
+      join(postgresProject, ".contremaitre.yaml"),
+      "version: 1\nproject: packaging-postgres\nservices:\n  db: {kind: postgres, runtime: wasm}\n",
+    );
+    const deployment = decode(
+      operationSchema,
+      await call(ctx, home, "deploy-async", { root: postgresProject, branch: "main" }),
+      "postgres deployment",
+    );
+    for (;;) {
+      const reply = (await call(ctx, home, "operation", { id: deployment.id })) as {
+        operation: { status: string; error?: string };
+      };
+      if (reply.operation.status === "succeeded") break;
+      assert.ok(
+        !["failed", "cancelled", "interrupted"].includes(reply.operation.status),
+        JSON.stringify(reply),
+      );
+      await sleep(50, signal);
+    }
+    const postgresEnvironment = async () => {
+      const state = JSON.parse(await readFile(join(home, "state.json"), "utf8")) as {
+        Environments: Record<
+          string,
+          {
+            credentials: { db: string };
+            Services: { db: { Ports: Record<string, number> } };
+          }
+        >;
+      };
+      return state.Environments[deployment.environmentId];
+    };
+    const queryPostgres = async (query: string) => {
+      const environment = await postgresEnvironment();
+      const sql = new SQL(
+        `postgresql://app:${environment.credentials.db}@127.0.0.1:${environment.Services.db.Ports["5432"]}/app?sslmode=disable`,
+        { max: 1, prepare: false },
+      );
+      try {
+        return await sql.unsafe(query);
+      } finally {
+        await sql.close();
+      }
+    };
+    await queryPostgres("CREATE TABLE packaging_items (id int PRIMARY KEY)");
+    await queryPostgres("INSERT INTO packaging_items VALUES (42)");
+    assert.ok(upgradedPid);
+    process.kill(upgradedPid, "SIGKILL");
+    for (let i = 0; i < 100; i++) {
+      try {
+        process.kill(upgradedPid, 0);
+      } catch {
+        break;
+      }
+      await sleep(50, signal);
+    }
+    upgradedPid = undefined;
+    await boot();
+    assert.equal((await queryPostgres("SELECT id FROM packaging_items"))[0].id, 42);
+    const dataDirectory = join(home, "data", deployment.environmentId, ".services", "db");
+    await stat(dataDirectory);
+    await call(ctx, home, "down", { env: deployment.environmentId, delete_data: true });
+    await assert.rejects(stat(dataDirectory), { code: "ENOENT" });
+    console.log(
+      "Compiled WASM Postgres deployment, query, SIGKILL recovery and explicit data deletion passed",
+    );
+  }
   console.log(
     "Standalone help, agent installation, flag validation, Unix socket, duplicate requests, SIGKILL recovery, owned-process cleanup, SIGTERM restart, source/downloaded CLI hub upgrades and release update/check passed",
   );

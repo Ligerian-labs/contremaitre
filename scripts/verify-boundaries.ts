@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import ts from "typescript";
 
@@ -32,7 +32,41 @@ function* files(directory: string): Generator<string> {
     else if (entry.name.endsWith(".ts")) yield path;
   }
 }
-function checkImport(workspace: Workspace, file: string, specifier: string) {
+// PGlite omits its binary assets from package exports. Only these file-loader
+// imports may resolve outside src, and their real paths must stay in that dependency.
+function isPgliteFileAsset(
+  workspace: Workspace,
+  file: string,
+  specifier: string,
+  fileAsset: boolean,
+): boolean {
+  if (
+    !fileAsset ||
+    !("@electric-sql/pglite" in workspace.dependencies) ||
+    !/^\.\.\/node_modules\/@electric-sql\/pglite\/dist\/(?:pglite\.wasm|initdb\.wasm|pglite\.data)$/.test(
+      specifier,
+    )
+  )
+    return false;
+  const dependency = realpathSync(join(workspace.directory, "node_modules/@electric-sql/pglite"));
+  return inside(dependency, realpathSync(resolve(dirname(file), specifier)));
+}
+function isFileImport(node: ts.ImportDeclaration | ts.ExportDeclaration): boolean {
+  return (
+    ts.isImportDeclaration(node) &&
+    node.attributes?.token === ts.SyntaxKind.WithKeyword &&
+    Boolean(
+      node.attributes?.elements.some(
+        (attribute) =>
+          attribute.name.text === "type" &&
+          ts.isStringLiteral(attribute.value) &&
+          attribute.value.text === "file",
+      ),
+    )
+  );
+}
+function checkImport(workspace: Workspace, file: string, specifier: string, fileAsset = false) {
+  if (isPgliteFileAsset(workspace, file, specifier, fileAsset)) return;
   const label = `${relative(root, file)}: ${specifier}`;
   if (specifier.startsWith("node:") || specifier.startsWith("bun:")) return;
   if (specifier.startsWith(".")) {
@@ -54,6 +88,35 @@ function checkImport(workspace: Workspace, file: string, specifier: string) {
   assert(subpath in target.exports, `${label} is not a public export`);
 }
 
+// Self-test the exception through the same syntax and import checks used below.
+function checkPgliteAssetException(): void {
+  const workspace = workspaces.get("@contremaitre/environments");
+  assert(workspace);
+  const file = join(workspace.directory, "src/pglite-assets.ts");
+  const check = (text: string) => {
+    const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
+    const node = source.statements[0];
+    assert(ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier));
+    checkImport(workspace, file, node.moduleSpecifier.text, isFileImport(node));
+  };
+  const asset = "../node_modules/@electric-sql/pglite/dist/pglite.wasm";
+  check(`import asset from "${asset}" with { type: "file" };`);
+  assert.throws(() => check(`import asset from "${asset}";`), /crosses a package boundary/);
+  assert.throws(
+    () => check(`import asset from "${asset}" assert { type: "file" };`),
+    /crosses a package boundary/,
+  );
+  assert.throws(
+    () =>
+      check(
+        'import asset from "../node_modules/@electric-sql/pglite/dist/index.js" with { type: "file" };',
+      ),
+    /crosses a package boundary/,
+  );
+  assert(!isPgliteFileAsset({ ...workspace, dependencies: {} }, file, asset, true));
+}
+checkPgliteAssetException();
+
 for (const workspace of workspaces.values()) {
   for (const target of Object.values(workspace.exports)) {
     const path = resolve(workspace.directory, target);
@@ -72,7 +135,7 @@ for (const workspace of workspaces.values()) {
     const visit = (node: ts.Node) => {
       if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier) {
         assert(ts.isStringLiteral(node.moduleSpecifier));
-        checkImport(workspace, file, node.moduleSpecifier.text);
+        checkImport(workspace, file, node.moduleSpecifier.text, isFileImport(node));
       }
       if (
         ts.isImportTypeNode(node) &&
