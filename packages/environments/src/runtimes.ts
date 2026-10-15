@@ -4,6 +4,7 @@ import type { RunOptions } from "@contremaitre/execution/process";
 import type { RuntimeKind, Service, ServiceKind } from "@contremaitre/projects/model";
 import { appleRuntime, type Runtime } from "./apple.js";
 import type { BuildRecord, ServiceState } from "./model.js";
+import { WasmtimeRuntime } from "./wasmtime.js";
 /** Where a service accepts connections from the hub and from host processes. */
 export interface Address {
   host: string;
@@ -118,7 +119,7 @@ export function runtimeRegistry(options: RegistryOptions): RuntimeRegistry {
   return {
     apple: { app: apple, postgres: apple, redis: apple },
     wasm: {
-      app: unavailableRuntime("app"),
+      app: new WasmtimeRuntime(options),
       postgres: unavailableRuntime("postgres"),
     },
   };

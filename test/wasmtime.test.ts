@@ -3,14 +3,13 @@ import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import type { RunSpec } from "@contremaitre/environments/runtimes";
+import { WasmtimeRuntime } from "@contremaitre/environments/wasmtime";
 import { context } from "@contremaitre/execution/context";
 import { privateEnv } from "@contremaitre/execution/files";
 import { run } from "@contremaitre/execution/process";
-import {
-  type RunSpec,
-  type Service,
-  WasmtimeRuntime,
-} from "../packages/environments/src/wasmtime.ts";
+import type { Service } from "@contremaitre/projects/model";
+import { FakeRuntime } from "./fake-runtime.js";
 
 const fixture = resolve("test/fixtures/wasm-http");
 const cache = join(tmpdir(), "contremaitre-wasm-fixture");
@@ -57,7 +56,7 @@ afterEach(async () => {
   }
 });
 function fresh() {
-  const r = new WasmtimeRuntime({ home: directory });
+  const r = new WasmtimeRuntime({ home: directory, apple: new FakeRuntime() });
   runtimes.push(r);
   return r;
 }
@@ -101,13 +100,23 @@ async function spec(
   };
 }
 const portOf = (s: RunSpec) => s.ports?.["8080"] ?? 0;
+test("constructing the runtime has no filesystem side effects", async () => {
+  const home = await fs.mkdtemp(join(tmpdir(), "cm-wasm-constructor-"));
+  try {
+    const missing = join(home, "missing");
+    new WasmtimeRuntime({ home: missing, apple: new FakeRuntime() });
+    expect(await fs.readdir(home)).toEqual([]);
+  } finally {
+    await fs.rm(home, { recursive: true, force: true });
+  }
+});
 test("preflight explains how to install missing wasmtime", async () => {
   const path = process.env.PATH;
   try {
     process.env.PATH = "/nonexistent";
-    await expect(new WasmtimeRuntime({ home: "/unused" }).preflight(ctx)).rejects.toThrow(
-      "brew install wasmtime",
-    );
+    await expect(
+      new WasmtimeRuntime({ home: "/unused", apple: new FakeRuntime() }).preflight(ctx),
+    ).rejects.toThrow("brew install wasmtime");
   } finally {
     process.env.PATH = path;
   }
@@ -265,7 +274,7 @@ real(
     await fs.copyFile(component, join(root, "app.wasm"));
     const service: Service = {
       port: 8080,
-      wasm: { component: "app.wasm", build: "echo build >> builds" },
+      wasm: { component: "app.wasm", build: ["/bin/sh", "-c", "echo build >> builds"] },
       dev: { source: ".", exclude: ["builds"] },
     };
     const s = await spec({
@@ -278,7 +287,7 @@ real(
     const script = join(directory, "hub.ts");
     await fs.writeFile(
       script,
-      `import { WasmtimeRuntime } from ${JSON.stringify(resolve("packages/environments/src/wasmtime.ts"))};\nawait new WasmtimeRuntime(${JSON.stringify({ home: directory })}).run({ signal: new AbortController().signal, log() {} }, ${JSON.stringify(s)});\nconsole.log("ready"); setInterval(() => {}, 1000);`,
+      `import { WasmtimeRuntime } from ${JSON.stringify(import.meta.resolve("@contremaitre/environments/wasmtime"))};\nimport { FakeRuntime } from ${JSON.stringify(import.meta.resolve("./fake-runtime.js"))};\nawait new WasmtimeRuntime({ home: ${JSON.stringify(directory)}, apple: new FakeRuntime() }).run({ signal: new AbortController().signal, log() {} }, ${JSON.stringify(s)});\nconsole.log("ready"); setInterval(() => {}, 1000);`,
     );
     const child = spawn(process.execPath, [script], { stdio: ["ignore", "pipe", "pipe"] });
     try {
@@ -309,7 +318,11 @@ real(
     const service: Service = {
       port: 8080,
       wasm: {
-        build: "echo build >> builds; cargo build --release --target wasm32-wasip2 --locked",
+        build: [
+          "/bin/sh",
+          "-c",
+          "echo build >> builds; cargo build --release --target wasm32-wasip2 --locked",
+        ],
         directory: ".",
         component: "target/wasm32-wasip2/release/wasm_http.wasm",
       },
@@ -348,12 +361,14 @@ real(
         "WASM rebuild failed:",
       ),
     );
-    expect(output).toContain("WASM rebuild failed:");
+    expect(output).not.toContain("WASM rebuild failed:");
     expect(await body(portOf(s))).toBe("changed wasm");
     await runtime.stop(ctx, "app");
     await fs.writeFile(source, original);
     await runtime.start(ctx, "app");
     const restarted = await record();
+    // Let macOS finish retiring the old FSEvents stream before editing again.
+    await Bun.sleep(500);
     await fs.writeFile(source, original.replace("hello wasm", "again wasm"));
     await until(async () => (await record()).pid !== restarted.pid);
   },

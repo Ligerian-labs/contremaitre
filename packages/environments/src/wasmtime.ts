@@ -2,7 +2,6 @@ import { spawn, spawnSync } from "node:child_process";
 import { closeSync, existsSync, promises as fs, openSync, watch } from "node:fs";
 import { createConnection } from "node:net";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import type { Readable } from "node:stream";
 import ignore from "@balena/dockerignore";
 import {
   type Context,
@@ -16,54 +15,19 @@ import {
 } from "@contremaitre/execution/context";
 import { atomicWrite } from "@contremaitre/execution/files";
 import { run } from "@contremaitre/execution/process";
+import { type Service, serviceSchema } from "@contremaitre/projects/model";
 import { Schema } from "effect";
 import type { BuildRecord } from "./model.js";
 
-const wasmSchema = Schema.Struct({
-  build: Schema.optional(Schema.Union(Schema.String, Schema.Array(Schema.String))),
-  directory: Schema.optional(Schema.String),
-  component: Schema.String,
-});
-const devSchema = Schema.Struct({
-  source: Schema.String,
-  exclude: Schema.optional(Schema.Array(Schema.String)),
-});
-// Replace these local structural mirrors with ./runtimes.js imports at wiring.
-export interface Service {
-  port?: number;
-  wasm?: Schema.Schema.Type<typeof wasmSchema>;
-  dev?: Schema.Schema.Type<typeof devSchema>;
-}
-export interface BuildRequest {
-  root: string;
-  name: string;
-  service: Service;
-  tag: string;
-}
-export interface RunSpec {
-  name: string;
-  image: string;
-  network: string;
-  service: Service;
-  volumes: Record<string, string>;
-  envFile: string;
-  task?: boolean;
-  timeout?: number;
-  stdin?: Readable;
-  root?: string;
-  ports?: Record<string, number>;
-  data?: string;
-  source?: string;
-}
-export interface Inspection {
-  Host: string;
-  Running: boolean;
-}
-export interface RuntimeCapabilities {
-  network: "container" | "host";
-  development: "sync" | "mount";
-  clone: "online" | "files";
-}
+import type {
+  BuildRequest,
+  Inspection,
+  RegistryOptions,
+  RunSpec,
+  RuntimeCapabilities,
+  ServiceRuntime,
+} from "./runtimes.js";
+
 const recordSchema = Schema.Struct({
   version: Schema.Literal(1),
   pid: Schema.Int,
@@ -78,13 +42,7 @@ const recordSchema = Schema.Struct({
   log: Schema.String,
   root: Schema.optional(Schema.String),
   source: Schema.optional(Schema.String),
-  service: Schema.optional(
-    Schema.Struct({
-      port: Schema.optional(Schema.Number),
-      wasm: Schema.optional(wasmSchema),
-      dev: Schema.optional(devSchema),
-    }),
-  ),
+  service: Schema.optional(serviceSchema),
 });
 type RecordState = Schema.Schema.Type<typeof recordSchema>;
 function identity(pid: number) {
@@ -106,7 +64,7 @@ async function answering(port: number, host = "127.0.0.1"): Promise<boolean> {
     socket.setTimeout(200, () => finish(false));
   });
 }
-export class WasmtimeRuntime {
+export class WasmtimeRuntime implements ServiceRuntime {
   readonly capabilities: RuntimeCapabilities = {
     network: "host",
     development: "mount",
@@ -115,7 +73,7 @@ export class WasmtimeRuntime {
   private directory: string;
   private bind: string;
   private watchers = new Map<string, { stop: () => Promise<void> }>();
-  constructor(options: { home: string; bind?: string }) {
+  constructor(options: RegistryOptions & { bind?: string }) {
     this.directory = resolve(options.home, "wasmtime");
     this.bind = options.bind ?? "127.0.0.1";
   }
@@ -170,11 +128,7 @@ export class WasmtimeRuntime {
       if (wasm.build) {
         const cwd = await fs.realpath(resolve(root, wasm.directory ?? "."));
         inside(cwd);
-        await run(
-          ctx,
-          typeof wasm.build === "string" ? ["/bin/sh", "-c", wasm.build] : wasm.build,
-          { cwd, stdout: ctx.log, stderr: ctx.log },
-        );
+        await run(ctx, wasm.build, { cwd, stdout: ctx.log, stderr: ctx.log });
       }
     } catch (e) {
       ctx.signal.throwIfAborted();
@@ -185,9 +139,11 @@ export class WasmtimeRuntime {
     const built = { image: component, digest: hash(await fs.readFile(component)) };
     return previous?.digest === built.digest && previous.image === built.image ? previous : built;
   }
-  async inspect(_ctx: Context, name: string): Promise<Inspection | undefined> {
+  async inspect(ctx: Context, name: string): Promise<Inspection | undefined> {
     const r = await this.read(name);
-    return r ? { Running: identity(r.pid) === r.identity, Host: this.bind } : undefined;
+    const running = !!r && identity(r.pid) === r.identity;
+    if (running) await this.watchService(ctx, name);
+    return r ? { Running: running, Host: this.bind } : undefined;
   }
   async run(ctx: Context, spec: RunSpec): Promise<void> {
     if (spec.task) fail("WASM apps have no tasks");
@@ -412,12 +368,12 @@ export class WasmtimeRuntime {
       await delay(100);
     }
   }
-  private async watchService(parent: Context, name: string) {
+  private async watchService(_parent: Context, name: string) {
     if (this.watchers.has(name)) return;
     const r = await this.read(name);
     if (!r?.source || !r.root || !r.service?.wasm) return;
     const root = r.root,
-      service = r.service,
+      service: Service = r.service,
       source = await fs.realpath(r.source),
       component = await fs.realpath(r.component);
     const controller = new AbortController();
@@ -426,7 +382,6 @@ export class WasmtimeRuntime {
       log: (data) => {
         // Watcher output survives deployment-context cancellation and hub recovery.
         fs.appendFile(r.log, data).catch(() => {});
-        parent.log(data);
       },
     };
     const matcher = ignore().add([...(r.service.dev?.exclude ?? [])]);
@@ -470,7 +425,9 @@ export class WasmtimeRuntime {
         return;
       clearTimeout(timer);
       timer = setTimeout(rebuild, 300);
+      timer.unref();
     });
+    watcher.unref();
     this.watchers.set(name, {
       stop: async () => {
         controller.abort();

@@ -322,7 +322,13 @@ test("placeholder WASM runtimes fail clearly and leave the environment deletable
   const home = mkdtempSync(join(tmpdir(), "cm-runtimes-placeholder-")),
     root = join(home, "project");
   mkdirSync(join(root, "src"), { recursive: true });
-  const manager = new Manager(new Store(home), new FakeRuntime());
+  const { unavailableRuntime } = await import("@contremaitre/environments/runtimes");
+  const apple = new FakeRuntime();
+  const registry = runtimeRegistry({ home, apple });
+  const manager = new Manager(new Store(home), apple, 48399, "http", {
+    apple: registry.apple,
+    wasm: { app: unavailableRuntime("app"), postgres: unavailableRuntime("postgres") },
+  });
   try {
     const identity = newIdentity("example", root, "main");
     await expect(

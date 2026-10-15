@@ -11,6 +11,7 @@
     "./manager": "./src/manager.ts",
     "./model": "./src/model.ts",
     "./runtimes": "./src/runtimes.ts",
+    "./wasmtime": "./src/wasmtime.ts",
     "./store": "./src/store.ts",
     "./tunnel": "./src/tunnel.ts",
     "./tunnel-session": "./src/tunnel-session.ts",
