@@ -9,6 +9,7 @@ import {
   requestSchema,
   serviceAddress,
 } from "@contremaitre/environments/model";
+import type { RuntimeRegistry } from "@contremaitre/environments/runtimes";
 import { Store } from "@contremaitre/environments/store";
 import { TunnelSessions } from "@contremaitre/environments/tunnel-session";
 import { context, decode, fail, HubError, keys, message } from "@contremaitre/execution/context";
@@ -54,6 +55,9 @@ export interface ServerOptions {
   httpsPort?: number;
   concurrency?: number;
   runtime?: Runtime;
+  /** Service runtimes; defaults to the registry built from `runtime`. */
+  runtimes?: RuntimeRegistry;
+  /** @deprecated The hub starts the container system on demand, never at startup. */
   skipSystemStart?: boolean;
   now?: () => number;
   idleSweepIntervalMs?: number;
@@ -195,14 +199,14 @@ export async function startServer(
   };
   try {
     await reapProcesses(context(signal), join(store.home, "processes"));
-    const runtime = options.runtime ?? new Apple();
-    if (!options.skipSystemStart)
-      await runtime.startSystem(context(signal, (chunk) => process.stderr.write(chunk)));
+    // WASM-only environments never need the container system; Apple services start it.
+    const runtime = options.runtime ?? new Apple("container", { startSystem: true });
     const manager = new Manager(
       store,
       runtime,
       options.httpsPort === undefined ? options.publicPort || options.port : 443,
       options.httpsPort === undefined ? "http" : "https",
+      options.runtimes,
     );
     stopDevelopment = () => manager.stopDevelopment();
     ops = new Operations(store.home, options.concurrency ?? 2);

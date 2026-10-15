@@ -23,6 +23,7 @@ import type { Inspection, RunSpec, ServiceRuntime } from "./runtimes.js";
 
 export type { Inspection, RunSpec } from "./runtimes.js";
 export interface Runtime {
+  /** Start the container system. Repeated calls after a successful start do nothing. */
   startSystem(ctx: Context): Promise<void>;
   build(
     ctx: Context,
@@ -82,20 +83,56 @@ interface BuilderSession {
   users: number;
   ready: Promise<BuilderLease>;
 }
+export interface AppleOptions {
+  /** Start the container system once, before the first container command that needs it. */
+  startSystem?: boolean;
+}
+interface SystemStart {
+  signal: AbortSignal;
+  done: Promise<void>;
+}
 export class Apple implements Runtime {
   private readonly builder = new Semaphore(4);
   // Service contexts in one deployment share a cancellation signal. Keep other
   // deployments out of the builder until every build in this session has settled.
   private readonly buildSessions = new Map<AbortSignal, BuilderSession>();
-  constructor(readonly binary = "container") {}
-  output(ctx: Context, args: readonly string[], opts: RunOptions = {}) {
+  private system?: SystemStart;
+  private started = false;
+  constructor(
+    readonly binary = "container",
+    private readonly options: AppleOptions = {},
+  ) {}
+  async output(ctx: Context, args: readonly string[], opts: RunOptions = {}) {
+    if (this.options.startSystem) await this.startSystem(ctx);
     return run(ctx, [this.binary, ...args], opts);
   }
   async call(ctx: Context, ...args: string[]) {
     await this.output(ctx, args);
   }
   async startSystem(ctx: Context) {
-    await this.call(ctx, "system", "start", "--enable-kernel-install");
+    while (!this.started) {
+      if (!this.system) {
+        phase(ctx, "Starting the Apple container system");
+        const system: SystemStart = {
+          signal: ctx.signal,
+          done: run(ctx, [this.binary, "system", "start", "--enable-kernel-install"]).then(() => {
+            this.started = true;
+          }),
+        };
+        // A failed start is retried by the next caller rather than remembered.
+        system.done.catch(() => {
+          if (this.system === system) this.system = undefined;
+        });
+        this.system = system;
+      }
+      const { signal, done } = this.system;
+      try {
+        await done;
+      } catch (e) {
+        // Another caller's cancellation is not this caller's failure; start again.
+        if (signal === ctx.signal || !signal.aborted || ctx.signal.aborted) throw e;
+      }
+    }
   }
   async network(ctx: Context, name: string) {
     try {
@@ -453,8 +490,8 @@ export async function tcpReady(host: string, port: number, signal: AbortSignal):
 export function appleRuntime(runtime: Runtime, home: string): ServiceRuntime {
   return {
     capabilities: { network: "container", development: "sync", clone: "online" },
-    // The hub starts the container system before it accepts work.
-    preflight: async () => {},
+    // Report an unavailable container system on the deployment that needs it.
+    preflight: (ctx) => runtime.startSystem(ctx),
     build: (ctx, { root, service, tag }, previous) => {
       const build = service.build ?? fail("Apple builds require build");
       return runtime.build(
