@@ -779,6 +779,7 @@ real("distinct rebuilds retain two snapshots and failed restart still rolls back
     await fs.writeFile(candidate, next);
     await fs.writeFile(join(root, "change"), String(i));
     await until(async () => (await record()).digest === hash(next));
+    await until(async () => (await body(portOf(s)).catch(() => "")) === "hello wasm");
     await until(
       async () =>
         (await fs.readdir(join(directory, "wasmtime"))).filter((p) => p.endsWith(".wasm")).length <=
