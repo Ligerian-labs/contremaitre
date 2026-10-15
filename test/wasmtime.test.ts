@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
@@ -41,14 +41,24 @@ beforeAll(async () => {
   }
   await run(ctx, ["cargo", "build", "--release", "--target", "wasm32-wasip2", "--locked"], {
     cwd: fixture,
-    env: { ...process.env, CARGO_TARGET_DIR: cache },
+    env: { ...process.env, CARGO_TARGET_DIR: cache, CARGO_BUILD_JOBS: "1" },
   });
 }, 120000);
 afterEach(async () => {
   if (!directory) return;
   try {
-    for (const r of runtimes)
-      for (const name of ["app", "crash", "broken"]) await r.remove(ctx, name);
+    const failures: unknown[] = [];
+    for (const r of runtimes) {
+      for (const name of ["app", "crash", "broken"]) {
+        try {
+          await r.remove(ctx, name);
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      expect(Reflect.get(r, "watchers").size).toBe(0);
+    }
+    if (failures.length) throw new AggregateError(failures, "WASM runtime cleanup failed");
   } finally {
     runtimes.length = 0;
     await fs.rm(directory, { recursive: true, force: true });
@@ -304,7 +314,11 @@ real(
       await until(async () => (await record("crash")).pid !== first.pid);
       expect(await fs.readFile(join(root, "builds"), "utf8")).toContain("build");
     } finally {
-      child.kill("SIGKILL");
+      if (child.exitCode === null && child.signalCode === null) {
+        const exited = new Promise<void>((done) => child.once("exit", () => done()));
+        child.kill("SIGKILL");
+        await exited;
+      }
     }
   },
   30000,
@@ -321,7 +335,7 @@ real(
         build: [
           "/bin/sh",
           "-c",
-          "echo build >> builds; cargo build --release --target wasm32-wasip2 --locked",
+          "echo build >> builds; cargo build --release --target wasm32-wasip2 --locked --jobs 1",
         ],
         directory: ".",
         component: "target/wasm32-wasip2/release/wasm_http.wasm",
@@ -389,3 +403,123 @@ real(
   },
   30000,
 );
+
+real(
+  "concurrent inspections attach one watcher and remove drains it before source deletion",
+  async () => {
+    await setup();
+    const root = join(directory, "source");
+    await fs.mkdir(root);
+    await fs.copyFile(component, join(root, "app.wasm"));
+    const service: Service = {
+      port: 8080,
+      wasm: { component: "app.wasm", build: ["/bin/sh", "-c", "echo build >> builds"] },
+      dev: { source: ".", exclude: ["builds"] },
+    };
+    const s = await spec({ root, source: root, image: join(root, "app.wasm"), service });
+    await runtime.run(ctx, s);
+    const recovered = fresh();
+    await Promise.all(Array.from({ length: 8 }, () => recovered.inspect(ctx, "app")));
+    // The original runtime represents a retired hub; stop its watcher without removing state.
+    await runtime.stop(ctx, "app");
+    await recovered.start(ctx, "app");
+    await fs.writeFile(join(root, "change"), "changed");
+    await until(async () => await Bun.file(join(root, "builds")).exists());
+    await recovered.remove(ctx, "app");
+    const builds = await fs.readFile(join(root, "builds"), "utf8");
+    expect(builds.trim()).toBe("build");
+    await fs.rm(root, { recursive: true });
+    await Bun.sleep(700);
+    expect(await recovered.inspect(ctx, "app")).toBeUndefined();
+  },
+  30000,
+);
+
+real(
+  "vanished source or record stops a queued watcher before building",
+  async () => {
+    await setup();
+    const root = join(directory, "source");
+    await fs.mkdir(root);
+    await fs.copyFile(component, join(root, "app.wasm"));
+    const marker = join(directory, "builds");
+    const service: Service = {
+      port: 8080,
+      wasm: { component: "app.wasm", build: ["/usr/bin/touch", marker] },
+      dev: { source: "." },
+    };
+    const s = await spec({ root, source: root, image: join(root, "app.wasm"), service });
+    await runtime.run(ctx, s);
+    await fs.writeFile(join(root, "change"), "changed");
+    await fs.rm(root, { recursive: true });
+    await Bun.sleep(700);
+    expect(await Bun.file(marker).exists()).toBe(false);
+    expect(Reflect.get(runtime, "watchers").size).toBe(0);
+    await runtime.stop(ctx, "app");
+    await fs.mkdir(root);
+    await fs.copyFile(component, join(root, "app.wasm"));
+    await runtime.run(ctx, s);
+    await fs.writeFile(join(root, "change"), "changed");
+    const recordPath = join(directory, "wasmtime/app.json");
+    const saved = await fs.readFile(recordPath);
+    try {
+      await fs.rm(recordPath);
+      await Bun.sleep(700);
+      expect(await Bun.file(marker).exists()).toBe(false);
+      expect(Reflect.get(runtime, "watchers").size).toBe(0);
+    } finally {
+      await fs.writeFile(recordPath, saved);
+    }
+  },
+  30000,
+);
+
+real(
+  "stop drains an active build and its children and cancels queued rebuilds",
+  async () => {
+    await setup();
+    const root = join(directory, "source");
+    await fs.mkdir(root);
+    await fs.copyFile(component, join(root, "app.wasm"));
+    const service: Service = {
+      port: 8080,
+      wasm: {
+        component: "app.wasm",
+        build: ["/bin/sh", "-c", "sleep 60 & echo $! > child; wait"],
+      },
+      dev: { source: ".", exclude: ["child"] },
+    };
+    const s = await spec({ root, source: root, image: join(root, "app.wasm"), service });
+    await runtime.run(ctx, s);
+    await fs.writeFile(join(root, "change"), "changed");
+    await until(async () => Bun.file(join(root, "child")).exists());
+    const pid = Number(await fs.readFile(join(root, "child"), "utf8"));
+    await fs.writeFile(join(root, "change"), "queued");
+    const stopping = runtime.stop(ctx, "app");
+    await runtime.inspect(ctx, "app");
+    await stopping;
+    expect(() => process.kill(pid, 0)).toThrow();
+    expect(Reflect.get(runtime, "watchers").size).toBe(0);
+    await fs.rm(join(root, "child"));
+    await Bun.sleep(700);
+    expect(await Bun.file(join(root, "child")).exists()).toBe(false);
+    expect((await runtime.inspect(ctx, "app"))?.Running).toBe(false);
+  },
+  30000,
+);
+
+// Opt-in evidence from inside the shared test process, before the next file runs.
+afterAll(() => {
+  if (process.env.CONTREMAITRE_WASMTIME_DIAGNOSTICS !== "1") return;
+  console.error("WASM cleanup diagnostics", import.meta.path, {
+    resources: process.getActiveResourcesInfo(),
+    processes: Bun.spawnSync(["ps", "-axo", "pid,ppid,etime,command"])
+      .stdout.toString()
+      .split("\n")
+      .filter(
+        (line) =>
+          /(?:wasmtime serve|cargo build|rustc|bun test)/.test(line) &&
+          !line.includes("/bin/zsh -c"),
+      ),
+  });
+});

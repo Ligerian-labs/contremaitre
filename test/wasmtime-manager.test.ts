@@ -1,4 +1,4 @@
-import { beforeAll, expect, test } from "bun:test";
+import { afterAll, beforeAll, expect, test } from "bun:test";
 import { existsSync, promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -30,10 +30,20 @@ const available = !!(
 );
 const real = available ? test : test.skip;
 const ctx = context();
-beforeAll(() => {
+const cache = join(tmpdir(), "contremaitre-wasm-fixture");
+beforeAll(async () => {
   if (!available && process.env.CONTREMAITRE_REQUIRE_WASMTIME === "1")
     throw Error("Required wasmtime/cargo/wasm32-wasip2 toolchain missing");
-});
+  if (available)
+    await run(
+      ctx,
+      ["cargo", "build", "--release", "--target", "wasm32-wasip2", "--locked", "--jobs", "1"],
+      {
+        cwd: resolve("test/fixtures/wasm-http"),
+        env: { ...process.env, CARGO_TARGET_DIR: cache },
+      },
+    );
+}, 120000);
 async function until(check: () => Promise<boolean>) {
   const deadline = Date.now() + 60000;
   while (Date.now() < deadline) {
@@ -51,18 +61,48 @@ async function fixture(dev = false) {
     recursive: true,
     filter: (p) => !p.includes("/target"),
   });
+  if (!dev) {
+    await fs.mkdir(join(root, "target/wasm32-wasip2/release"), { recursive: true });
+    await fs.copyFile(
+      join(cache, "wasm32-wasip2/release/wasm_http.wasm"),
+      join(root, "target/wasm32-wasip2/release/wasm_http.wasm"),
+    );
+  }
   const text = `version: 1
 project: wasm-test
 services:
   web:
     runtime: wasm
     wasm:
-      build: [cargo, build, --release, --target, wasm32-wasip2, --locked]
-      component: target/wasm32-wasip2/release/wasm_http.wasm
+${dev ? "      build: [cargo, build, --release, --target, wasm32-wasip2, --locked, --jobs, '1']\n" : ""}      component: target/wasm32-wasip2/release/wasm_http.wasm
     port: 8080
     http: true
 ${dev ? "    dev: {source: ., exclude: [target]}\n" : "    environment: {GREETING: manifest-env}\n"}`;
-  const manager = () => new Manager(new Store(home), new FakeRuntime(), 48399);
+  const managers: Manager[] = [];
+  const manager = () => {
+    const m = new Manager(new Store(home), new FakeRuntime(), 48399);
+    managers.push(m);
+    return m;
+  };
+  const cleanup = async () => {
+    const failures: unknown[] = [];
+    for (const m of managers) {
+      for (const env of m.list()) {
+        try {
+          const backends = Object.values(env.Services).map((service) => m.backend(service));
+          await m.down(ctx, env, true);
+          for (const backend of backends) {
+            const watchers = Reflect.get(backend, "watchers");
+            if (watchers) expect(watchers.size).toBe(0);
+          }
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+    }
+    await fs.rm(home, { recursive: true, force: true });
+    if (failures.length) throw new AggregateError(failures, "WASM manager cleanup failed");
+  };
   const prepared = {
     root,
     identity: newIdentity("wasm-test", root, "main"),
@@ -70,7 +110,7 @@ ${dev ? "    dev: {source: ., exclude: [target]}\n" : "    environment: {GREETIN
     request: {},
   };
   await fs.writeFile(join(root, ".contremaitre.yaml"), text);
-  return { home, root, manager, prepared };
+  return { home, root, manager, prepared, cleanup };
 }
 real(
   "Manager deploy, hub routing, CLI logs, stop/start, surviving and killed process recovery, down cleanup",
@@ -175,8 +215,7 @@ real(
     } finally {
       proxy.closeAllConnections();
       if (proxy.listening) await new Promise<void>((done) => proxy.close(() => done()));
-      for (const env of m.list()) await m.down(ctx, env, true);
-      await fs.rm(f.home, { recursive: true, force: true });
+      await f.cleanup();
     }
   },
   120000,
@@ -239,9 +278,8 @@ root, identity: newIdentity("wasm-test", root, "main"), manifest: prepareManifes
       expect(JSON.parse(await fs.readFile(path, "utf8")).pid).not.toBe(first.pid);
     } finally {
       // Reload state if deployment failed before the first recover.
-      const cleanup = m.list().length ? m : f.manager();
-      for (const env of cleanup.list()) await cleanup.down(ctx, env, true);
-      await fs.rm(f.home, { recursive: true, force: true });
+      if (!m.list().length) f.manager();
+      await f.cleanup();
     }
   },
   120000,
@@ -328,3 +366,19 @@ real(
   },
   120000,
 );
+
+// Opt-in evidence from inside the shared test process, before the next file runs.
+afterAll(() => {
+  if (process.env.CONTREMAITRE_WASMTIME_DIAGNOSTICS !== "1") return;
+  console.error("WASM cleanup diagnostics", import.meta.path, {
+    resources: process.getActiveResourcesInfo(),
+    processes: Bun.spawnSync(["ps", "-axo", "pid,ppid,etime,command"])
+      .stdout.toString()
+      .split("\n")
+      .filter(
+        (line) =>
+          /(?:wasmtime serve|cargo build|rustc|bun test)/.test(line) &&
+          !line.includes("/bin/zsh -c"),
+      ),
+  });
+});

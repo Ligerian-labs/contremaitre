@@ -73,6 +73,8 @@ export class WasmtimeRuntime implements ServiceRuntime {
   private directory: string;
   private bind: string;
   private watchers = new Map<string, { stop: () => Promise<void> }>();
+  private watcherEpochs = new Map<string, number>();
+  private stopping = new Set<string>();
   constructor(options: RegistryOptions & { bind?: string }) {
     this.directory = resolve(options.home, "wasmtime");
     this.bind = options.bind ?? "127.0.0.1";
@@ -278,16 +280,21 @@ export class WasmtimeRuntime implements ServiceRuntime {
     }
   }
   async stop(ctx: Context, name: string): Promise<void> {
-    const watcher = this.watchers.get(name);
-    this.watchers.delete(name);
-    await watcher?.stop();
-    const r = await this.read(name);
-    if (!r) return;
-    phase(ctx, `Stopping wasmtime ${name}`);
+    this.stopping.add(name);
+    this.watcherEpochs.set(name, (this.watcherEpochs.get(name) ?? 0) + 1);
     try {
-      this.save(name, { ...r, desired: "stopped" });
+      const watcher = this.watchers.get(name);
+      await watcher?.stop();
+      const r = await this.read(name);
+      if (!r) return;
+      phase(ctx, `Stopping wasmtime ${name}`);
+      try {
+        this.save(name, { ...r, desired: "stopped" });
+      } finally {
+        await this.terminate(r);
+      }
     } finally {
-      await this.terminate(r);
+      this.stopping.delete(name);
     }
   }
   private async terminate(r: RecordState) {
@@ -369,25 +376,56 @@ export class WasmtimeRuntime implements ServiceRuntime {
     }
   }
   private async watchService(_parent: Context, name: string) {
-    if (this.watchers.has(name)) return;
+    if (this.watchers.has(name) || this.stopping.has(name)) return;
+    const epoch = this.watcherEpochs.get(name);
     const r = await this.read(name);
-    if (!r?.source || !r.root || !r.service?.wasm) return;
+    if (!r?.source || !r.root || !r.service?.wasm || r.desired !== "running") return;
     const root = r.root,
       service: Service = r.service,
-      source = await fs.realpath(r.source),
-      component = await fs.realpath(r.component);
+      source = r.source,
+      component = r.component;
+    if (!existsSync(source) || !existsSync(component)) return;
+    // No await between this check and registration: concurrent inspect calls share one watcher.
+    if (
+      this.watchers.has(name) ||
+      this.stopping.has(name) ||
+      this.watcherEpochs.get(name) !== epoch
+    )
+      return;
     const controller = new AbortController();
+    let writes = Promise.resolve();
     const ctx: Context = {
       signal: controller.signal,
       log: (data) => {
         // Watcher output survives deployment-context cancellation and hub recovery.
-        fs.appendFile(r.log, data).catch(() => {});
+        writes = writes.then(() => fs.appendFile(r.log, data)).catch(() => {});
       },
     };
     const matcher = ignore().add([...(r.service.dev?.exclude ?? [])]);
     let timer: ReturnType<typeof setTimeout> | undefined;
     let active: Promise<void> | undefined;
     let pending = false;
+    const close = () => {
+      controller.abort();
+      clearTimeout(timer);
+      watcher.close();
+      clearInterval(liveness);
+      const forget = () => {
+        if (this.watchers.get(name) === entry) this.watchers.delete(name);
+      };
+      if (active) void active.then(forget, forget);
+      else forget();
+    };
+    const valid = async () => {
+      if (controller.signal.aborted) return false;
+      const current = await this.read(name);
+      if (controller.signal.aborted) return false;
+      if (!existsSync(source) || !current || current.desired !== "running") {
+        close();
+        return false;
+      }
+      return true;
+    };
     const rebuild = () => {
       pending = true;
       if (active || controller.signal.aborted) return;
@@ -395,19 +433,21 @@ export class WasmtimeRuntime implements ServiceRuntime {
         while (pending && !controller.signal.aborted) {
           pending = false;
           try {
+            if (!(await valid())) break;
             const built = await this.build(ctx, {
               root,
               name,
               service,
               tag: name,
             });
-            if (controller.signal.aborted) break;
+            if (!(await valid())) break;
             const current = await this.read(name);
             if (!current) break;
             await this.terminate(current);
             await this.spawn(ctx, name, { ...current, component: built.image });
           } catch (e) {
-            ctx.log(`WASM rebuild failed: ${message(e)}\n`);
+            if (!controller.signal.aborted && (await valid()))
+              ctx.log(`WASM rebuild failed: ${message(e)}\n`);
           }
         }
       })().finally(() => {
@@ -415,7 +455,12 @@ export class WasmtimeRuntime implements ServiceRuntime {
       });
     };
     const watcher = watch(source, { recursive: true }, (_event, filename) => {
+      if (controller.signal.aborted) return;
       const path = filename?.toString();
+      if (!existsSync(source)) {
+        close();
+        return;
+      }
       if (
         !path ||
         path.split(/[\\/]/).some((p) => [".git", ".jj", "node_modules"].includes(p)) ||
@@ -428,13 +473,18 @@ export class WasmtimeRuntime implements ServiceRuntime {
       timer.unref();
     });
     watcher.unref();
-    this.watchers.set(name, {
+    // FSEvents need not deliver an event when its watched directory itself disappears.
+    const liveness = setInterval(() => {
+      if (!existsSync(source) || !existsSync(this.path(name))) close();
+    }, 200);
+    liveness.unref();
+    const entry = {
       stop: async () => {
-        controller.abort();
-        clearTimeout(timer);
-        watcher.close();
+        close();
         await active;
+        await writes;
       },
-    });
+    };
+    this.watchers.set(name, entry);
   }
 }
