@@ -1,7 +1,9 @@
 import { spawn, spawnSync } from "node:child_process";
 import { closeSync, existsSync, promises as fs, openSync, watch } from "node:fs";
-import { createConnection, createServer } from "node:net";
+import { createConnection } from "node:net";
 import { isAbsolute, join, relative, resolve } from "node:path";
+import type { Readable } from "node:stream";
+import ignore from "@balena/dockerignore";
 import {
   type Context,
   decode,
@@ -15,7 +17,53 @@ import {
 import { atomicWrite } from "@contremaitre/execution/files";
 import { run } from "@contremaitre/execution/process";
 import { Schema } from "effect";
+import type { BuildRecord } from "./model.js";
 
+const wasmSchema = Schema.Struct({
+  build: Schema.optional(Schema.Union(Schema.String, Schema.Array(Schema.String))),
+  directory: Schema.optional(Schema.String),
+  component: Schema.String,
+});
+const devSchema = Schema.Struct({
+  source: Schema.String,
+  exclude: Schema.optional(Schema.Array(Schema.String)),
+});
+// Replace these local structural mirrors with ./runtimes.js imports at wiring.
+export interface Service {
+  port?: number;
+  wasm?: Schema.Schema.Type<typeof wasmSchema>;
+  dev?: Schema.Schema.Type<typeof devSchema>;
+}
+export interface BuildRequest {
+  root: string;
+  name: string;
+  service: Service;
+  tag: string;
+}
+export interface RunSpec {
+  name: string;
+  image: string;
+  network: string;
+  service: Service;
+  volumes: Record<string, string>;
+  envFile: string;
+  task?: boolean;
+  timeout?: number;
+  stdin?: Readable;
+  root?: string;
+  ports?: Record<string, number>;
+  data?: string;
+  source?: string;
+}
+export interface Inspection {
+  Host: string;
+  Running: boolean;
+}
+export interface RuntimeCapabilities {
+  network: "container" | "host";
+  development: "sync" | "mount";
+  clone: "online" | "files";
+}
 const recordSchema = Schema.Struct({
   version: Schema.Literal(1),
   pid: Schema.Int,
@@ -28,21 +76,17 @@ const recordSchema = Schema.Struct({
   cwd: Schema.optional(Schema.String),
   desired: Schema.Literal("running", "stopped"),
   log: Schema.String,
+  root: Schema.optional(Schema.String),
+  source: Schema.optional(Schema.String),
+  service: Schema.optional(
+    Schema.Struct({
+      port: Schema.optional(Schema.Number),
+      wasm: Schema.optional(wasmSchema),
+      dev: Schema.optional(devSchema),
+    }),
+  ),
 });
 type RecordState = Schema.Schema.Type<typeof recordSchema>;
-export interface BuildSpec {
-  root: string;
-  command: string | readonly string[];
-  component: string;
-  env?: Record<string, string>;
-}
-export interface ServeSpec {
-  name: string;
-  component: string;
-  env: Record<string, string>;
-  cwd?: string;
-  port?: number;
-}
 function identity(pid: number) {
   const r = spawnSync("/bin/ps", ["-p", String(pid), "-o", "lstart=,comm="], { encoding: "utf8" });
   if (r.status === 1) return undefined;
@@ -50,9 +94,9 @@ function identity(pid: number) {
   return r.stdout.trim() || undefined;
 }
 const delay = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
-async function answering(port: number): Promise<boolean> {
+async function answering(port: number, host = "127.0.0.1"): Promise<boolean> {
   return new Promise((done) => {
-    const socket = createConnection({ host: "127.0.0.1", port });
+    const socket = createConnection({ host, port });
     const finish = (ok: boolean) => {
       socket.destroy();
       done(ok);
@@ -63,20 +107,17 @@ async function answering(port: number): Promise<boolean> {
   });
 }
 export class WasmtimeRuntime {
-  constructor(
-    private directory: string,
-    private ports?: { from: number; to: number },
-  ) {
-    this.directory = resolve(directory);
-    if (
-      ports &&
-      (!Number.isInteger(ports.from) ||
-        !Number.isInteger(ports.to) ||
-        ports.from < 1 ||
-        ports.to > 65535 ||
-        ports.from > ports.to)
-    )
-      fail("Invalid wasmtime port range");
+  readonly capabilities: RuntimeCapabilities = {
+    network: "host",
+    development: "mount",
+    clone: "files",
+  };
+  private directory: string;
+  private bind: string;
+  private watchers = new Map<string, { stop: () => Promise<void> }>();
+  constructor(options: { home: string; bind?: string }) {
+    this.directory = resolve(options.home, "wasmtime");
+    this.bind = options.bind ?? "127.0.0.1";
   }
   private path(name: string) {
     if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(name)) fail("Invalid wasmtime service name");
@@ -106,17 +147,18 @@ export class WasmtimeRuntime {
   private save(name: string, r: RecordState) {
     atomicWrite(this.path(name), JSON.stringify(r));
   }
-  async preflight(ctx: Context) {
+  async preflight(ctx: Context): Promise<void> {
     const binary = Bun.which("wasmtime", { PATH: process.env.PATH ?? "" });
     if (!binary)
       fail(
         "wasmtime is missing. Install with brew install wasmtime or curl https://wasmtime.dev/install.sh -sSf | bash",
       );
-    return (await run(ctx, [binary, "--version"])).toString().trim();
+    phase(ctx, (await run(ctx, [binary, "--version"])).toString().trim());
   }
-  async build(ctx: Context, spec: BuildSpec) {
+  async build(ctx: Context, spec: BuildRequest, previous?: BuildRecord): Promise<BuildRecord> {
+    const wasm = spec.service.wasm ?? fail("WASM service requires wasm settings");
     const root = await fs.realpath(spec.root),
-      component = resolve(root, spec.component);
+      component = resolve(root, wasm.component);
     const inside = (path: string) => {
       const p = relative(root, path);
       if (p === ".." || p.startsWith("../") || isAbsolute(p))
@@ -125,73 +167,82 @@ export class WasmtimeRuntime {
     inside(component);
     phase(ctx, "Building WASM component on host");
     try {
-      await run(
-        ctx,
-        typeof spec.command === "string" ? ["/bin/sh", "-c", spec.command] : spec.command,
-        { cwd: root, env: { ...process.env, ...spec.env }, stdout: ctx.log, stderr: ctx.log },
-      );
+      if (wasm.build) {
+        const cwd = await fs.realpath(resolve(root, wasm.directory ?? "."));
+        inside(cwd);
+        await run(
+          ctx,
+          typeof wasm.build === "string" ? ["/bin/sh", "-c", wasm.build] : wasm.build,
+          { cwd, stdout: ctx.log, stderr: ctx.log },
+        );
+      }
     } catch (e) {
       ctx.signal.throwIfAborted();
       fail(`WASM build command failed; read the logs: ${message(e)}`);
     }
     if (!existsSync(component)) fail(`WASM build did not produce ${component}; read the logs`);
     inside(await fs.realpath(component));
-    return { component, digest: hash(await fs.readFile(component)) };
+    const built = { image: component, digest: hash(await fs.readFile(component)) };
+    return previous?.digest === built.digest && previous.image === built.image ? previous : built;
   }
-  private async allocate() {
-    const reserved = new Set<number>();
-    if (existsSync(this.directory))
-      for (const file of await fs.readdir(this.directory)) {
-        if (!file.endsWith(".json")) continue;
-        const r = await this.read(file.slice(0, -5));
-        if (r) reserved.add(r.port);
-      }
-    for (
-      let attempt = 0;
-      attempt < (this.ports ? this.ports.to - this.ports.from + 1 : 100);
-      attempt++
-    ) {
-      const port = this.ports ? this.ports.from + attempt : 0;
-      const allocated = await new Promise<number | undefined>((done) => {
-        if (port && reserved.has(port)) return done(undefined);
-        const server = createServer();
-        server.once("error", () => done(undefined));
-        server.listen(port, "127.0.0.1", () => {
-          const addr = server.address();
-          server.close(() =>
-            done(
-              typeof addr === "object" && addr && !reserved.has(addr.port) ? addr.port : undefined,
-            ),
-          );
-        });
-      });
-      if (allocated) return allocated;
-    }
-    return fail("No free wasmtime loopback port", "conflict");
-  }
-  async inspect(name: string) {
+  async inspect(_ctx: Context, name: string): Promise<Inspection | undefined> {
     const r = await this.read(name);
-    return r
-      ? { Running: identity(r.pid) === r.identity, host: "127.0.0.1" as const, port: r.port }
-      : undefined;
+    return r ? { Running: identity(r.pid) === r.identity, Host: this.bind } : undefined;
   }
-  async start(ctx: Context, spec: ServeSpec | string) {
+  async run(ctx: Context, spec: RunSpec): Promise<void> {
+    if (spec.task) fail("WASM apps have no tasks");
+    const port = spec.ports?.[String(spec.service.port)];
+    if (!port) fail(`Missing reserved WASM port mapping for ${spec.service.port}`);
+    if (!spec.data || !spec.root) fail("WASM run requires root and data directories");
+    const env: Record<string, string> = {};
+    for (const line of (await fs.readFile(spec.envFile, "utf8")).split("\n")) {
+      if (!line) continue;
+      const split = line.indexOf("=");
+      if (split < 1 || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(line.slice(0, split)))
+        fail("Invalid environment entry");
+      env[line.slice(0, split)] = line.slice(split + 1);
+    }
+    await this.stop(ctx, spec.name);
+    await this.spawn(ctx, spec.name, {
+      component: spec.image,
+      env,
+      cwd: spec.data,
+      port,
+      root: spec.root,
+      source: spec.source,
+      service: {
+        port: spec.service.port,
+        wasm: spec.service.wasm && {
+          build: spec.service.wasm.build,
+          directory: spec.service.wasm.directory,
+          component: spec.service.wasm.component,
+        },
+        dev: spec.service.dev && {
+          source: spec.service.dev.source,
+          exclude: spec.service.dev.exclude,
+        },
+      },
+    });
+    await this.watchService(ctx, spec.name);
+  }
+  async start(ctx: Context, name: string): Promise<void> {
+    const r = (await this.read(name)) ?? fail(`Unknown wasmtime service ${name}`);
+    await this.stop(ctx, name);
+    await this.spawn(ctx, name, r);
+    await this.watchService(ctx, name);
+  }
+  private async spawn(
+    ctx: Context,
+    name: string,
+    s: Pick<RecordState, "component" | "env" | "cwd" | "port" | "root" | "source" | "service">,
+  ): Promise<void> {
     ctx.signal.throwIfAborted();
-    const name = typeof spec === "string" ? spec : spec.name;
-    const old = await this.read(name);
-    if (typeof spec === "string" && !old) return fail(`Unknown wasmtime service ${name}`);
-    const s: ServeSpec =
-      typeof spec === "string"
-        ? old
-          ? { name, component: old.component, env: { ...old.env }, cwd: old.cwd, port: old.port }
-          : fail(`Unknown wasmtime service ${name}`)
-        : spec;
     await this.preflight(ctx);
     phase(ctx, `Starting wasmtime ${name}`);
     const digest = hash(await fs.readFile(s.component));
-    if (old) await this.stop(ctx, name);
-    const port = s.port ?? old?.port ?? (await this.allocate());
-    if (await answering(port)) fail(`Wasmtime port ${port} is already in use`, "conflict");
+    const port = s.port;
+    if (await answering(port, this.bind))
+      fail(`Wasmtime port ${port} is already in use`, "conflict");
     await fs.mkdir(this.directory, { recursive: true, mode: 0o700 });
     const log = join(this.directory, `${name}.log`);
     if (existsSync(log) && (await fs.stat(log)).size > 5 * 1024 ** 2)
@@ -201,16 +252,17 @@ export class WasmtimeRuntime {
         fail("wasmtime is missing; brew install wasmtime"),
       "serve",
       "-S",
-      "cli=y",
+      "cli=y", // WASI CLI imports provide guest environment and stderr.
       "--addr",
-      `127.0.0.1:${port}`,
-      ...Object.entries(s.env).flatMap(([k, v]) => ["--env", `${k}=${v}`]),
+      `${this.bind}:${port}`,
+      ...Object.keys(s.env).flatMap((k) => ["--env", k]),
       s.component,
     ];
     const fd = openSync(log, "a", 0o600);
     const child = spawn(argv[0], argv.slice(1), {
       detached: true,
       cwd: s.cwd,
+      env: { ...process.env, ...s.env },
       stdio: ["ignore", fd, fd],
     });
     closeSync(fd);
@@ -238,6 +290,9 @@ export class WasmtimeRuntime {
         argv,
         env: s.env,
         cwd: s.cwd,
+        root: s.root,
+        source: s.source,
+        service: s.service,
         desired: "running",
         log,
       };
@@ -249,7 +304,7 @@ export class WasmtimeRuntime {
           fail(
             `Wasmtime exited: ${error?.message ?? ""}\n${(await fs.readFile(log, "utf8")).slice(-8192)}`,
           );
-        if (await answering(port)) return { Running: true, host: "127.0.0.1" as const, port };
+        if (await answering(port, this.bind)) return;
         await delay(50);
       }
       fail(`Wasmtime readiness timed out on port ${port}`);
@@ -266,7 +321,10 @@ export class WasmtimeRuntime {
       throw e;
     }
   }
-  async stop(ctx: Context, name: string) {
+  async stop(ctx: Context, name: string): Promise<void> {
+    const watcher = this.watchers.get(name);
+    this.watchers.delete(name);
+    await watcher?.stop();
     const r = await this.read(name);
     if (!r) return;
     phase(ctx, `Stopping wasmtime ${name}`);
@@ -293,7 +351,7 @@ export class WasmtimeRuntime {
     while (identity(r.pid) === r.identity && Date.now() < killed) await delay(50);
     if (identity(r.pid) === r.identity) fail(`Cannot stop wasmtime pid ${r.pid}`);
   }
-  async remove(ctx: Context, name: string) {
+  async remove(ctx: Context, name: string): Promise<void> {
     await this.stop(ctx, name);
     await Promise.all(
       [
@@ -303,27 +361,32 @@ export class WasmtimeRuntime {
       ].map((p) => fs.rm(p, { force: true })),
     );
   }
-  async recover(ctx: Context) {
+  async recover(ctx: Context): Promise<Record<string, string>> {
     const outcomes: Record<string, string> = {};
     if (!existsSync(this.directory)) return outcomes;
     for (const file of await fs.readdir(this.directory)) {
       if (!file.endsWith(".json")) continue;
-      const name = file.slice(0, -5),
-        r = await this.read(name);
-      if (!r) continue;
-      if (r.desired === "stopped") {
-        await this.stop(ctx, name);
-        outcomes[name] = "stopped";
-      } else if (identity(r.pid) === r.identity && (await answering(r.port)))
-        outcomes[name] = "reattached";
-      else {
-        await this.start(ctx, name);
-        outcomes[name] = "restarted";
+      const name = file.slice(0, -5);
+      try {
+        const r = await this.read(name);
+        if (!r) continue;
+        if (r.desired === "stopped") {
+          await this.stop(ctx, name);
+          outcomes[name] = "stopped";
+        } else if (identity(r.pid) === r.identity && (await answering(r.port, this.bind))) {
+          await this.watchService(ctx, name);
+          outcomes[name] = "reattached";
+        } else {
+          await this.start(ctx, name);
+          outcomes[name] = "restarted";
+        }
+      } catch (e) {
+        outcomes[name] = `failed: ${message(e)}`;
       }
     }
     return outcomes;
   }
-  async logs(ctx: Context, name: string) {
+  async logs(ctx: Context, name: string, follow = false): Promise<void> {
     const r = await this.read(name);
     if (!r) return;
     let offset = 0,
@@ -345,71 +408,76 @@ export class WasmtimeRuntime {
       } finally {
         await file.close();
       }
+      if (!follow) return;
       await delay(100);
     }
   }
-  watch(
-    ctx: Context,
-    spec: Omit<ServeSpec, "component"> & {
-      root: string;
-      build: BuildSpec["command"];
-      component: string;
-      buildEnv?: Record<string, string>;
-    },
-    callbacks?: { error?: (error: unknown) => void; ready?: () => void },
-  ) {
-    let timer: ReturnType<typeof setTimeout> | undefined,
-      active: Promise<void> | undefined,
-      pending = false,
-      stopped = false;
+  private async watchService(parent: Context, name: string) {
+    if (this.watchers.has(name)) return;
+    const r = await this.read(name);
+    if (!r?.source || !r.root || !r.service?.wasm) return;
+    const root = r.root,
+      service = r.service,
+      source = await fs.realpath(r.source),
+      component = await fs.realpath(r.component);
+    const controller = new AbortController();
+    const ctx: Context = {
+      signal: controller.signal,
+      log: (data) => {
+        // Watcher output survives deployment-context cancellation and hub recovery.
+        fs.appendFile(r.log, data).catch(() => {});
+        parent.log(data);
+      },
+    };
+    const matcher = ignore().add([...(r.service.dev?.exclude ?? [])]);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let active: Promise<void> | undefined;
+    let pending = false;
     const rebuild = () => {
       pending = true;
-      if (active || stopped) return;
+      if (active || controller.signal.aborted) return;
       active = (async () => {
-        while (pending && !stopped) {
+        while (pending && !controller.signal.aborted) {
           pending = false;
           try {
             const built = await this.build(ctx, {
-              root: spec.root,
-              command: spec.build,
-              component: spec.component,
-              env: spec.buildEnv,
+              root,
+              name,
+              service,
+              tag: name,
             });
-            if (stopped) break;
-            await this.start(ctx, { ...spec, component: built.component });
-            callbacks?.ready?.();
+            if (controller.signal.aborted) break;
+            const current = await this.read(name);
+            if (!current) break;
+            await this.terminate(current);
+            await this.spawn(ctx, name, { ...current, component: built.image });
           } catch (e) {
             ctx.log(`WASM rebuild failed: ${message(e)}\n`);
-            callbacks?.error?.(e);
           }
         }
       })().finally(() => {
         active = undefined;
       });
     };
-    const watcher = watch(spec.root, { recursive: true }, (_event, filename) => {
+    const watcher = watch(source, { recursive: true }, (_event, filename) => {
       const path = filename?.toString();
       if (
         !path ||
-        path.split(/[\\/]/).some((p) => [".git", ".jj", "target", "node_modules"].includes(p)) ||
-        resolve(spec.root, path) === resolve(spec.root, spec.component)
+        path.split(/[\\/]/).some((p) => [".git", ".jj", "node_modules"].includes(p)) ||
+        resolve(source, path) === component ||
+        matcher.ignores(path)
       )
         return;
       clearTimeout(timer);
       timer = setTimeout(rebuild, 300);
     });
-    const stop = async () => {
-      stopped = true;
-      clearTimeout(timer);
-      watcher.close();
-      ctx.signal.removeEventListener("abort", abort);
-      await active;
-    };
-    const abort = () => {
-      void stop();
-    };
-    ctx.signal.addEventListener("abort", abort, { once: true });
-    if (ctx.signal.aborted) void stop();
-    return { stop };
+    this.watchers.set(name, {
+      stop: async () => {
+        controller.abort();
+        clearTimeout(timer);
+        watcher.close();
+        await active;
+      },
+    });
   }
 }

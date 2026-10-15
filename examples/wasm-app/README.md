@@ -11,13 +11,20 @@ curl http://127.0.0.1:48390
 
 The app answers `hello wasm` and logs each request to stderr. Stop it with Ctrl-C.
 
-Proposed manifest, fields pending lane A (#52):
+Manifest supported once lane A (#52) merges:
 
 ```yaml
 services:
   web:
     kind: app
     runtime: wasm
-    build: [cargo, build, --release, --target, wasm32-wasip2, --locked]
-    component: target/wasm32-wasip2/release/wasm_http.wasm
+    wasm:
+      build: [cargo, build, --release, --target, wasm32-wasip2, --locked]
+      directory: .
+      component: target/wasm32-wasip2/release/wasm_http.wasm
+    port: 8080
+    http: true
+    dev:
+      source: .
+      exclude: [target]
 ```

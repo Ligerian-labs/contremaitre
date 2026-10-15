@@ -7,7 +7,8 @@ impl wasi::exports::http::incoming_handler::Guest for App {
         let outgoing = OutgoingResponse::new(Fields::new());
         let body = outgoing.body().unwrap();
         ResponseOutparam::set(response, Ok(outgoing));
-        body.write().unwrap().blocking_write_and_flush(BODY.as_bytes()).unwrap();
+        let greeting = std::env::var("GREETING").unwrap_or_else(|_| BODY.to_string());
+        body.write().unwrap().blocking_write_and_flush(greeting.as_bytes()).unwrap();
         OutgoingBody::finish(body, None).unwrap();
     }
 }
