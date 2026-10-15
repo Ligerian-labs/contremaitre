@@ -73,7 +73,12 @@ test("host-runtime proxy stays bound while following its environment's current s
     stdout: "pipe",
     stderr: "pipe",
   });
-  const stderr = new Response(child.stderr).text();
+  let stderrOutput = "";
+  const stderr = (async () => {
+    const decoder = new TextDecoder();
+    for await (const chunk of child.stderr) stderrOutput += decoder.decode(chunk, { stream: true });
+    stderrOutput += decoder.decode();
+  })();
   try {
     const reader = child.stdout.getReader();
     const ready = await reader.read();
@@ -102,6 +107,12 @@ test("host-runtime proxy stays bound while following its environment's current s
       state = unavailable;
       expect(await connect()).toBe("");
       expect(child.exitCode).toBeNull();
+      const reason = unavailable === "deleted" ? "Environment not found" : "Service is not running";
+      const line = `[contremaitre] web: ${reason}\n`;
+      const deadline = Date.now() + 1000;
+      while (!stderrOutput.includes(line) && Date.now() < deadline) await Bun.sleep(10);
+      expect(stderrOutput).toContain(line);
+      stderrOutput = "";
     }
     state = "running";
     expect(await connect()).toBe("A-redeployed");

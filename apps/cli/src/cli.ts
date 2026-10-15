@@ -368,15 +368,21 @@ export function makeRoot(passthrough: readonly string[] = []) {
                   remote,
                   async () => {
                     if (!container) {
-                      // Host-process runtimes listen on reserved loopback ports.
-                      const current = (await call(ctx, home, "resolve", {
-                        ...req,
-                        env: env.Identity.ID,
-                      })) as Environment;
-                      const service = current.Services[s.Name];
-                      const address = service && serviceAddress(service, remote);
-                      if (!address) fail("Service is not running");
-                      return address;
+                      try {
+                        // Host-process runtimes listen on reserved loopback ports.
+                        const current = (await call(ctx, home, "resolve", {
+                          ...req,
+                          env: env.Identity.ID,
+                        })) as Environment;
+                        const service = current.Services[s.Name];
+                        const address = service && serviceAddress(service, remote);
+                        if (!address) fail("Service is not running");
+                        return address;
+                      } catch (error) {
+                        const message = error instanceof Error ? error.message : String(error);
+                        ctx.log(`[contremaitre] ${s.Name}: ${message}\n`);
+                        throw error;
+                      }
                     }
                     const value = await backend.inspect(activeCtx, s.Container);
                     if (!value?.Running) fail("Service is not running");
