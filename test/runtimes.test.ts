@@ -440,7 +440,7 @@ interface RecoveryCase {
   error?: string;
   /** Host services started by recovery, in order. */
   restarted: string[];
-  /** Expected environment text per service after recovery; PORT is db's current port. */
+  /** Expected environment text per service after recovery; {port} is db's current port. */
   environment?: Record<string, string>;
   /** A second recovery and a redeploy start nothing. */
   retained?: boolean;
@@ -449,7 +449,7 @@ const pair = `version: 1
 project: example
 services:
   db: {kind: postgres, runtime: wasm}
-  web: {runtime: wasm, wasm: {component: web.wasm}, port: 8080, depends_on: [db], environment: {DATABASE_URL: '{{db.url}}'}}
+  web: {runtime: wasm, wasm: {component: web.wasm}, port: 8080, http: true, depends_on: [db], environment: {DATABASE_URL: '{{db.url}}'}}
 `;
 const chain = `version: 1
 project: example
@@ -489,7 +489,7 @@ const recoveryCases: RecoveryCase[] = [
     crash: moveService,
     status: "running",
     restarted: ["db", "web"],
-    environment: { web: "@127.0.0.1:PORT/app" },
+    environment: { web: "@127.0.0.1:{port}/app" },
     retained: true,
   },
   {
@@ -498,7 +498,22 @@ const recoveryCases: RecoveryCase[] = [
     crash: moveService,
     status: "running",
     restarted: ["db", "relay", "web"],
-    environment: { web: "@127.0.0.1:PORT/app" },
+    environment: { web: "@127.0.0.1:{port}/app" },
+    retained: true,
+  },
+  {
+    name: "a moved dependency reaches consumers that reference only its port",
+    manifest: `version: 1
+project: example
+services:
+  db: {kind: postgres, runtime: wasm}
+  relay: {runtime: wasm, wasm: {component: relay.wasm}, port: 8080, depends_on: [db]}
+  web: {runtime: wasm, wasm: {component: web.wasm}, port: 8081, depends_on: [relay], environment: {DB_PORT: '{{db.port}}'}}
+`,
+    crash: moveService,
+    status: "running",
+    restarted: ["db", "relay", "web"],
+    environment: { web: "DB_PORT={port}" },
     retained: true,
   },
   {
@@ -614,10 +629,19 @@ for (const c of recoveryCases)
       expect(f.host.started).toEqual(c.restarted.map(container));
       // Recovery never replaces Apple processes.
       expect(f.apple.calls.filter((call) => /^(stop|run|remove) /.test(call))).toEqual([]);
+      // Restarted services publish their loopback address, and HTTP routes follow it.
+      for (const name of c.restarted) {
+        const s = env.Services[name];
+        expect(s.Host).toBe("127.0.0.1");
+        if (s.HTTP)
+          expect(routes(f.manager, new URL(f.manager.localURL(env, name)).hostname)?.upstream).toBe(
+            `http://127.0.0.1:${s.Ports?.[String(s.Port)]}`,
+          );
+      }
       for (const [name, text] of Object.entries(c.environment ?? {})) {
         const port = String(env.Services.db.Ports?.["5432"]);
         const run = f.host.specs.get(container(name)) as RunSpec & { environment: string };
-        expect(run.environment).toContain(text.replace("PORT", port));
+        expect(run.environment).toContain(text.replace("{port}", port));
       }
       if (c.retained) {
         f.host.started = [];
