@@ -1,11 +1,12 @@
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { RunSpec } from "@contremaitre/environments/runtimes";
 import { WasmtimeRuntime } from "@contremaitre/environments/wasmtime";
-import { context } from "@contremaitre/execution/context";
+import { context, hash } from "@contremaitre/execution/context";
 import { privateEnv } from "@contremaitre/execution/files";
 import { run } from "@contremaitre/execution/process";
 import type { Service } from "@contremaitre/projects/model";
@@ -241,6 +242,9 @@ real(
     await runtime.remove(ctx, "app");
     await runtime.logs(ctx, "app");
     expect(await runtime.inspect(ctx, "app")).toBeUndefined();
+    expect(
+      (await fs.readdir(join(directory, "wasmtime"))).filter((p) => p.endsWith(".wasm")),
+    ).toEqual([]);
   },
   30000,
 );
@@ -706,3 +710,118 @@ real("failed initial start still rejects deployment", async () => {
   const owner = join(directory, "wasmtime/app.owner");
   if (await Bun.file(owner).exists()) expect((await fs.stat(owner)).mode & 0o777).toBe(0o600);
 });
+
+real("terminate waits until the owned port is closed", async () => {
+  await setup();
+  const s = await spec();
+  const server = createServer((socket) => socket.destroy());
+  await new Promise<void>((done) => server.listen(portOf(s), "127.0.0.1", done));
+  const child = spawn("/bin/sleep", ["60"], { detached: true });
+  const exited = new Promise<void>((done) => child.once("exit", () => done()));
+  const pid = child.pid ?? 0;
+  const identity = (await run(ctx, ["/bin/ps", "-p", String(pid), "-o", "lstart=,comm="]))
+    .toString()
+    .trim();
+  let closing: Promise<void> | undefined;
+  child.once("exit", () => {
+    closing = new Promise<void>((done) => setTimeout(() => server.close(() => done()), 400));
+  });
+  try {
+    await Reflect.get(runtime, "terminate").call(runtime, { pid, identity, port: portOf(s) });
+    expect(server.listening).toBe(false);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    await exited;
+    await closing;
+    if (server.listening) server.close();
+  }
+});
+
+real("truncated snapshot is repaired before start", async () => {
+  await setup();
+  const s = await spec();
+  const bytes = await fs.readFile(s.image);
+  const snapshot = join(directory, "wasmtime", `app.${hash(bytes)}.wasm`);
+  await fs.mkdir(join(directory, "wasmtime"));
+  await fs.writeFile(snapshot, bytes.subarray(0, 8));
+  await runtime.run(ctx, s);
+  expect(hash(await fs.readFile(snapshot))).toBe(hash(bytes));
+  expect((await fs.stat(snapshot)).mode & 0o777).toBe(0o600);
+  expect(await body(portOf(s))).toBe("hello wasm");
+  expect((await fs.readdir(join(directory, "wasmtime"))).some((p) => p.startsWith(".write-"))).toBe(
+    false,
+  );
+});
+
+real("distinct rebuilds retain two snapshots and failed restart still rolls back", async () => {
+  await setup();
+  const root = join(directory, "source");
+  await fs.mkdir(root);
+  const image = join(root, "app.wasm");
+  const candidate = join(directory, "candidate.wasm");
+  const bytes = await fs.readFile(component);
+  await fs.writeFile(image, bytes);
+  const s = await spec({
+    root,
+    source: root,
+    image,
+    service: {
+      port: 8080,
+      wasm: { component: "app.wasm", build: ["/bin/cp", candidate, image] },
+      dev: { source: "." },
+    },
+  });
+  await runtime.run(ctx, s);
+  for (let i = 1; i <= 4; i++) {
+    const previous = await record();
+    // A valid custom section changes the digest without changing the HTTP handler.
+    const next = Buffer.concat([bytes, Buffer.from([0, 2, 0, i])]);
+    await fs.writeFile(candidate, next);
+    await fs.writeFile(join(root, "change"), String(i));
+    await until(async () => (await record()).digest === hash(next));
+    await until(
+      async () =>
+        (await fs.readdir(join(directory, "wasmtime"))).filter((p) => p.endsWith(".wasm")).length <=
+        2,
+    );
+    expect(await Bun.file(previous.component).exists()).toBe(true);
+    expect(await body(portOf(s))).toBe("hello wasm");
+  }
+  const current = await record();
+  await runtime.stop(ctx, "app");
+  await runtime.start(ctx, "app");
+  expect(await Bun.file(current.previous).exists()).toBe(true);
+  await fs.writeFile(candidate, "invalid");
+  await fs.writeFile(join(root, "change"), "bad");
+  await until(async () =>
+    (await fs.readFile(current.log, "utf8")).includes("previous version restored"),
+  );
+  expect((await record()).component).toBe(current.component);
+  expect(await Bun.file(current.previous).exists()).toBe(true);
+  expect(await body(portOf(s))).toBe("hello wasm");
+  expect(
+    (await fs.readdir(join(directory, "wasmtime"))).filter((p) => p.endsWith(".wasm")).length,
+  ).toBeLessThanOrEqual(2);
+});
+
+real(
+  "unidentifiable ownership warns in operation and service logs without failing removal",
+  async () => {
+    await setup();
+    await fs.mkdir(join(directory, "wasmtime"));
+    await fs.writeFile(join(directory, "wasmtime/app.json"), "{");
+    await fs.writeFile(join(directory, "wasmtime/app.owner"), "{");
+    let operation = "",
+      service = "";
+    await runtime.remove(
+      context(undefined, (data, name) => {
+        operation += data.toString();
+        if (name === "app") service += data.toString();
+      }),
+      "app",
+    );
+    expect(operation).toContain("may still be running");
+    expect(service).toContain("may still be running");
+    expect(await runtime.inspect(ctx, "app")).toBeUndefined();
+  },
+);

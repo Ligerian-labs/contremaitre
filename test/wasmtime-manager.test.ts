@@ -203,6 +203,9 @@ real(
       // Environment shutdown removes runtime state; redeployment starts it again.
       await m.down(ctx, env);
       expect(() => process.kill(restarted.pid, 0)).toThrow();
+      expect(
+        (await fs.readdir(join(f.home, "wasmtime"))).filter((p) => p.endsWith(".wasm")),
+      ).toEqual([]);
       await m.deploy(ctx, f.prepared);
       env = m.resolve(f.prepared.identity.ID);
       service = env.Services.web;
@@ -212,6 +215,9 @@ real(
       expect(() => process.kill(final.pid, 0)).toThrow();
       expect(existsSync(recordPath)).toBe(false);
       expect(existsSync(final.log)).toBe(false);
+      expect(
+        (await fs.readdir(join(f.home, "wasmtime"))).filter((p) => p.endsWith(".wasm")),
+      ).toEqual([]);
     } finally {
       proxy.closeAllConnections();
       if (proxy.listening) await new Promise<void>((done) => proxy.close(() => done()));

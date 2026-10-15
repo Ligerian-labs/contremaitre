@@ -37,13 +37,15 @@ At the runtime interface, `stop` terminates the process and `start` resumes it o
 
 With `dev.source`, Contremaitre watches that directory in place. It does not create a source mirror. `dev.exclude` uses ignore patterns; exclude build output such as `target` to avoid rebuild loops. A source change rebuilds the component and replaces the process. A failed build leaves the previous process serving and writes the failure to the service log.
 
+Successful starts retain only the current snapshot and the immediately previous snapshot. Snapshots are written atomically and verified before reuse.
+
 A component that builds but fails to start restores the previous snapshot on the same port and writes the restart failure to the service log.
 
 ## Limits
 
 - Logs are reset when the hub restarts a dead service.
 - Logs rotate only when spawning a process, above 5 MiB. A long-running process can exceed this size.
-- A corrupt record is treated as stopped. Shutdown uses a separate private ownership record or salvaged PID and identity, and only terminates a matching process. If both records are unreadable, it cannot safely identify the old process.
+- A corrupt record is treated as stopped. Shutdown uses a separate private ownership record or salvaged PID and identity, and only terminates a matching process. If both records are unreadable, it cannot safely identify the old process. Shutdown succeeds with a warning in the operation and service logs, streamed by the CLI; inspect and stop the old process manually.
 
 - The server entry point is `wasi:http/proxy`. Wasmtime owns the HTTP listener; guests cannot create a raw TCP server through this backend. Host socket network access is not granted. Outbound HTTP uses `wasi:http/outgoing-handler`.
 - There is no `exec`, and no `init` or `migrate` task support.

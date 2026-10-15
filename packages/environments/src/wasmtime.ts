@@ -35,6 +35,7 @@ const recordSchema = Schema.Struct({
   port: Schema.Int,
   component: Schema.String,
   digest: Schema.String,
+  previous: Schema.optional(Schema.String),
   argv: Schema.Array(Schema.String),
   env: strings,
   cwd: Schema.optional(Schema.String),
@@ -107,6 +108,7 @@ export class WasmtimeRuntime implements ServiceRuntime {
   private async broken(ctx: Context, name: string) {
     if (!existsSync(this.path(name)) && !existsSync(join(this.directory, `${name}.owner`))) return;
     phase(ctx, `Ignoring corrupt wasmtime record ${name}; cleaning verified process ownership`);
+    let identified = false;
     for (const path of [this.path(name), join(this.directory, `${name}.owner`)]) {
       let value: unknown;
       try {
@@ -124,9 +126,16 @@ export class WasmtimeRuntime implements ServiceRuntime {
         Number.isSafeInteger(value.pid) &&
         value.pid >= 2 &&
         typeof value.identity === "string"
-      )
+      ) {
+        identified = true;
         await this.terminate({ pid: value.pid, identity: value.identity });
+      }
     }
+    if (!identified)
+      phase(
+        { ...ctx, log: (data) => ctx.log(data, name) },
+        `Warning: cannot identify wasmtime process for ${name}; it may still be running. Both ownership records are unreadable or invalid; inspect and stop it manually.`,
+      );
     await fs.rm(this.path(name), { force: true });
     await fs.rm(join(this.directory, `${name}.owner`), { force: true });
   }
@@ -240,7 +249,14 @@ export class WasmtimeRuntime implements ServiceRuntime {
     const digest = hash(bytes);
     await fs.mkdir(this.directory, { recursive: true, mode: 0o700 });
     const snapshot = join(this.directory, `${name}.${digest}.wasm`);
-    if (!existsSync(snapshot)) await fs.writeFile(snapshot, bytes, { mode: 0o600 });
+    const previous = await this.read(name);
+    let cached: Buffer | undefined;
+    try {
+      cached = await fs.readFile(snapshot);
+    } catch (e) {
+      if (!isCode(e, "ENOENT")) throw e;
+    }
+    if (!cached || hash(cached) !== digest) atomicWrite(snapshot, bytes);
     const port = s.port;
     if (await answering(port, this.bind))
       fail(`Wasmtime port ${port} is already in use`, "conflict");
@@ -288,6 +304,7 @@ export class WasmtimeRuntime implements ServiceRuntime {
         port,
         component: snapshot,
         digest,
+        previous: previous?.component === snapshot ? previous.previous : previous?.component,
         argv,
         env: s.env,
         cwd: s.cwd,
@@ -305,7 +322,18 @@ export class WasmtimeRuntime implements ServiceRuntime {
           fail(
             `Wasmtime exited: ${error?.message ?? ""}\n${(await fs.readFile(log, "utf8")).slice(-8192)}`,
           );
-        if (await answering(port, this.bind)) return;
+        if (await answering(port, this.bind)) {
+          for (const file of await fs.readdir(this.directory)) {
+            if (
+              file.startsWith(`${name}.`) &&
+              /^[a-f0-9]{64}\.wasm$/.test(file.slice(name.length + 1))
+            ) {
+              const path = join(this.directory, file);
+              if (path !== snapshot && path !== r.previous) await fs.rm(path, { force: true });
+            }
+          }
+          return;
+        }
         await delay(50);
       }
       fail(`Wasmtime readiness timed out on port ${port}`);
@@ -313,7 +341,7 @@ export class WasmtimeRuntime implements ServiceRuntime {
       if (r) {
         await this.terminate(r);
         const saved = await this.read(name);
-        if (saved?.pid === r.pid) this.save(name, { ...r, desired: "stopped" });
+        if (saved?.pid === r.pid) this.save(name, previous ?? { ...r, desired: "stopped" });
       } else if (child.pid) {
         try {
           process.kill(-child.pid, "SIGKILL");
