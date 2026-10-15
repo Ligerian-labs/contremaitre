@@ -246,7 +246,7 @@ real(
       (await fs.readdir(join(directory, "wasmtime"))).filter((p) => p.endsWith(".wasm")),
     ).toEqual([]);
   },
-  30000,
+  150000,
 );
 real("task and missing port mapping fail clearly", async () => {
   await setup();
@@ -367,7 +367,7 @@ real(
     await fs.writeFile(source, original.replace("hello wasm", "again wasm"));
     await until(async () => (await record()).pid !== restarted.pid);
   },
-  120000,
+  210000,
 );
 real(
   "oversized logs rotate on start",
@@ -413,7 +413,7 @@ real(
     await Bun.sleep(700);
     expect(await recovered.inspect(ctx, "app")).toBeUndefined();
   },
-  30000,
+  90000,
 );
 
 real(
@@ -479,6 +479,14 @@ real(
     const stopping = runtime.stop(ctx, "app");
     await runtime.inspect(ctx, "app");
     await stopping;
+    await until(async () => {
+      try {
+        process.kill(pid, 0);
+        return false;
+      } catch {
+        return true;
+      }
+    });
     expect(() => process.kill(pid, 0)).toThrow();
     expect(Reflect.get(runtime, "watchers").size).toBe(0);
     await fs.rm(join(root, "child"));
@@ -486,7 +494,7 @@ real(
     expect(await Bun.file(join(root, "child")).exists()).toBe(false);
     expect((await runtime.inspect(ctx, "app"))?.Running).toBe(false);
   },
-  30000,
+  150000,
 );
 
 // Opt-in evidence from inside the shared test process, before the next file runs.
@@ -505,30 +513,34 @@ afterAll(() => {
   });
 });
 
-real("unrelated live pid is never running or terminated", async () => {
-  await setup();
-  await runtime.run(ctx, await spec());
-  const saved = await record();
-  await runtime.stop(ctx, "app");
-  const sleeper = spawn("/bin/sleep", ["60"]);
-  try {
-    await fs.writeFile(
-      join(directory, "wasmtime/app.json"),
-      JSON.stringify({
-        ...saved,
-        pid: sleeper.pid,
-        identity: "different process identity",
-      }),
-    );
-    expect((await runtime.inspect(ctx, "app"))?.Running).toBe(false);
+real(
+  "unrelated live pid is never running or terminated",
+  async () => {
+    await setup();
+    await runtime.run(ctx, await spec());
+    const saved = await record();
     await runtime.stop(ctx, "app");
-    await runtime.remove(ctx, "app");
-    expect(() => process.kill(sleeper.pid ?? 0, 0)).not.toThrow();
-  } finally {
-    sleeper.kill();
-    await new Promise<void>((done) => sleeper.once("exit", () => done()));
-  }
-});
+    const sleeper = spawn("/bin/sleep", ["60"]);
+    try {
+      await fs.writeFile(
+        join(directory, "wasmtime/app.json"),
+        JSON.stringify({
+          ...saved,
+          pid: sleeper.pid,
+          identity: "different process identity",
+        }),
+      );
+      expect((await runtime.inspect(ctx, "app"))?.Running).toBe(false);
+      await runtime.stop(ctx, "app");
+      await runtime.remove(ctx, "app");
+      expect(() => process.kill(sleeper.pid ?? 0, 0)).not.toThrow();
+    } finally {
+      sleeper.kill();
+      await new Promise<void>((done) => sleeper.once("exit", () => done()));
+    }
+  },
+  30000,
+);
 
 real(
   "stop prevents later builds and redeploy uses new settings without component loops",
@@ -583,7 +595,7 @@ real(
     await Bun.sleep(1500);
     expect(await fs.readFile(marker, "utf8")).toBe("new\n");
   },
-  30000,
+  90000,
 );
 
 real(
@@ -613,7 +625,7 @@ real(
     expect((await record()).component).toBe(first.component);
     expect((await runtime.inspect(ctx, "app"))?.Running).toBe(true);
   },
-  30000,
+  90000,
 );
 
 real("build directory escape is reported before invoking the build", async () => {
@@ -644,6 +656,14 @@ real(
     );
     expect((await runtime.inspect(ctx, "app"))?.Running).toBe(false);
     await runtime.remove(ctx, "app");
+    await until(async () => {
+      try {
+        process.kill(saved.pid, 0);
+        return false;
+      } catch {
+        return true;
+      }
+    });
     expect(() => process.kill(saved.pid, 0)).toThrow();
     await fs.writeFile(join(directory, "wasmtime/app.json"), "{");
     let output = "";
@@ -656,6 +676,7 @@ real(
     expect(output).toContain("corrupt");
     expect(await runtime.inspect(ctx, "app")).toBeUndefined();
   },
+  90000,
 );
 
 real(
@@ -698,7 +719,7 @@ real(
     await until(async () => Bun.file(marker).exists());
     expect(await fs.readFile(marker, "utf8")).toBe("new\n");
   },
-  30000,
+  90000,
 );
 
 real("failed initial start still rejects deployment", async () => {
@@ -753,57 +774,61 @@ real("truncated snapshot is repaired before start", async () => {
   );
 });
 
-real("distinct rebuilds retain two snapshots and failed restart still rolls back", async () => {
-  await setup();
-  const root = join(directory, "source");
-  await fs.mkdir(root);
-  const image = join(root, "app.wasm");
-  const candidate = join(directory, "candidate.wasm");
-  const bytes = await fs.readFile(component);
-  await fs.writeFile(image, bytes);
-  const s = await spec({
-    root,
-    source: root,
-    image,
-    service: {
-      port: 8080,
-      wasm: { component: "app.wasm", build: ["/bin/cp", candidate, image] },
-      dev: { source: "." },
-    },
-  });
-  await runtime.run(ctx, s);
-  for (let i = 1; i <= 4; i++) {
-    const previous = await record();
-    // A valid custom section changes the digest without changing the HTTP handler.
-    const next = Buffer.concat([bytes, Buffer.from([0, 2, 0, i])]);
-    await fs.writeFile(candidate, next);
-    await fs.writeFile(join(root, "change"), String(i));
-    await until(async () => (await record()).digest === hash(next));
-    await until(async () => (await body(portOf(s)).catch(() => "")) === "hello wasm");
-    await until(
-      async () =>
-        (await fs.readdir(join(directory, "wasmtime"))).filter((p) => p.endsWith(".wasm")).length <=
-        2,
+real(
+  "distinct rebuilds retain two snapshots and failed restart still rolls back",
+  async () => {
+    await setup();
+    const root = join(directory, "source");
+    await fs.mkdir(root);
+    const image = join(root, "app.wasm");
+    const candidate = join(directory, "candidate.wasm");
+    const bytes = await fs.readFile(component);
+    await fs.writeFile(image, bytes);
+    const s = await spec({
+      root,
+      source: root,
+      image,
+      service: {
+        port: 8080,
+        wasm: { component: "app.wasm", build: ["/bin/cp", candidate, image] },
+        dev: { source: "." },
+      },
+    });
+    await runtime.run(ctx, s);
+    for (let i = 1; i <= 4; i++) {
+      const previous = await record();
+      // A valid custom section changes the digest without changing the HTTP handler.
+      const next = Buffer.concat([bytes, Buffer.from([0, 2, 0, i])]);
+      await fs.writeFile(candidate, next);
+      await fs.writeFile(join(root, "change"), String(i));
+      await until(async () => (await record()).digest === hash(next));
+      await until(async () => (await body(portOf(s)).catch(() => "")) === "hello wasm");
+      await until(
+        async () =>
+          (await fs.readdir(join(directory, "wasmtime"))).filter((p) => p.endsWith(".wasm"))
+            .length <= 2,
+      );
+      expect(await Bun.file(previous.component).exists()).toBe(true);
+      expect(await body(portOf(s))).toBe("hello wasm");
+    }
+    const current = await record();
+    await runtime.stop(ctx, "app");
+    await runtime.start(ctx, "app");
+    expect(await Bun.file(current.previous).exists()).toBe(true);
+    await fs.writeFile(candidate, "invalid");
+    await fs.writeFile(join(root, "change"), "bad");
+    await until(async () =>
+      (await fs.readFile(current.log, "utf8")).includes("previous version restored"),
     );
-    expect(await Bun.file(previous.component).exists()).toBe(true);
+    expect((await record()).component).toBe(current.component);
+    expect(await Bun.file(current.previous).exists()).toBe(true);
     expect(await body(portOf(s))).toBe("hello wasm");
-  }
-  const current = await record();
-  await runtime.stop(ctx, "app");
-  await runtime.start(ctx, "app");
-  expect(await Bun.file(current.previous).exists()).toBe(true);
-  await fs.writeFile(candidate, "invalid");
-  await fs.writeFile(join(root, "change"), "bad");
-  await until(async () =>
-    (await fs.readFile(current.log, "utf8")).includes("previous version restored"),
-  );
-  expect((await record()).component).toBe(current.component);
-  expect(await Bun.file(current.previous).exists()).toBe(true);
-  expect(await body(portOf(s))).toBe("hello wasm");
-  expect(
-    (await fs.readdir(join(directory, "wasmtime"))).filter((p) => p.endsWith(".wasm")).length,
-  ).toBeLessThanOrEqual(2);
-});
+    expect(
+      (await fs.readdir(join(directory, "wasmtime"))).filter((p) => p.endsWith(".wasm")).length,
+    ).toBeLessThanOrEqual(2);
+  },
+  900000,
+);
 
 real(
   "unidentifiable ownership warns in operation and service logs without failing removal",

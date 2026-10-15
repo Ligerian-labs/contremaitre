@@ -45,7 +45,7 @@ A component that builds but fails to start restores the previous snapshot on the
 
 - Logs are reset when the hub restarts a dead service.
 - Logs rotate only when spawning a process, above 5 MiB. A long-running process can exceed this size.
-- A corrupt record is treated as stopped. Shutdown uses a separate private ownership record or salvaged PID and identity, and only terminates a matching process. If both records are unreadable, it cannot safely identify the old process. Shutdown succeeds with a warning in the operation and service logs, streamed by the CLI; inspect and stop the old process manually.
+- A corrupt record is treated as stopped. Shutdown uses a separate private ownership record or salvaged PID and identity, and only terminates a matching process. If both records are unreadable, it cannot safely identify the old process. Shutdown succeeds with a warning in the operation and service logs. Find the operation with `contremaitre operations` and read its log with `contremaitre attach <id>`. `contremaitre down` prints only `down complete`; inspect and stop the old process manually.
 
 - The server entry point is `wasi:http/proxy`. Wasmtime owns the HTTP listener; guests cannot create a raw TCP server through this backend. Host socket network access is not granted. Outbound HTTP uses `wasi:http/outgoing-handler`.
 - There is no `exec`, and no `init` or `migrate` task support.

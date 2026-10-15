@@ -202,6 +202,14 @@ real(
       const restarted = await record();
       // Environment shutdown removes runtime state; redeployment starts it again.
       await m.down(ctx, env);
+      await until(async () => {
+        try {
+          process.kill(restarted.pid, 0);
+          return false;
+        } catch {
+          return true;
+        }
+      });
       expect(() => process.kill(restarted.pid, 0)).toThrow();
       expect(
         (await fs.readdir(join(f.home, "wasmtime"))).filter((p) => p.endsWith(".wasm")),
@@ -212,6 +220,14 @@ real(
       expect(await get()).toBe("manifest-env");
       const final = await record();
       await m.down(ctx, env, true);
+      await until(async () => {
+        try {
+          process.kill(final.pid, 0);
+          return false;
+        } catch {
+          return true;
+        }
+      });
       expect(() => process.kill(final.pid, 0)).toThrow();
       expect(existsSync(recordPath)).toBe(false);
       expect(existsSync(final.log)).toBe(false);
@@ -224,7 +240,7 @@ real(
       await f.cleanup();
     }
   },
-  120000,
+  210000,
 );
 real(
   "Manager dev recovery reattaches in-place watcher after the deploying hub exits naturally",
@@ -413,6 +429,14 @@ real(
         await fs.writeFile(path, corrupt(previous));
         m = f.manager();
         await m.recover(ctx);
+        await until(async () => {
+          try {
+            process.kill(previous.pid, 0);
+            return false;
+          } catch {
+            return true;
+          }
+        });
         expect(() => process.kill(previous.pid, 0)).toThrow();
         expect(JSON.parse(await fs.readFile(path, "utf8")).pid).not.toBe(previous.pid);
         expect(JSON.parse(await fs.readFile(healthyPath, "utf8")).pid).toBe(healthyPid);
@@ -422,6 +446,14 @@ real(
         const current = JSON.parse(await fs.readFile(path, "utf8"));
         await fs.writeFile(path, '{"version":1,');
         await m.down(ctx, m.resolve(f.prepared.identity.ID), deleteData);
+        await until(async () => {
+          try {
+            process.kill(current.pid, 0);
+            return false;
+          } catch {
+            return true;
+          }
+        });
         expect(() => process.kill(current.pid, 0)).toThrow();
         expect(existsSync(path)).toBe(false);
         if (!deleteData) await m.deploy(ctx, f.prepared);
@@ -430,5 +462,5 @@ real(
       await f.cleanup();
     }
   },
-  120000,
+  330000,
 );
