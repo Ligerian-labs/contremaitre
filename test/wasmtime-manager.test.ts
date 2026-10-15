@@ -2,9 +2,11 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { existsSync, promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { call } from "@contremaitre/cli/client";
 import { Manager } from "@contremaitre/environments/manager";
 import { addressURL, serviceAddress } from "@contremaitre/environments/model";
 import { Store } from "@contremaitre/environments/store";
+import { WasmtimeRuntime } from "@contremaitre/environments/wasmtime";
 import { context } from "@contremaitre/execution/context";
 import { run } from "@contremaitre/execution/process";
 import { application, Deploy } from "@contremaitre/hub/application";
@@ -54,6 +56,14 @@ async function until(check: () => Promise<boolean>) {
   }
   throw Error("Condition timed out");
 }
+const alive = (pid: number) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
 async function fixture(dev = false) {
   const home = await fs.realpath(await fs.mkdtemp(join(tmpdir(), "cm-wasm-manager-")));
   const root = join(home, "project");
@@ -463,4 +473,108 @@ real(
     }
   },
   330000,
+);
+
+real(
+  "CLI logs read main and branch WASM apps through a non-canonical home after redeploy",
+  async () => {
+    const f = await fixture();
+    const link = `${f.home}-link`;
+    try {
+      const m = f.manager();
+      const branch = { ...f.prepared, identity: newIdentity("wasm-test", f.root, "feature") };
+      for (const prepared of [f.prepared, branch, f.prepared, branch])
+        await m.deploy(ctx, prepared);
+      await fs.symlink(f.home, link);
+      // The CLI resolves --home without following symlinks, such as /tmp -> /private/tmp.
+      const cli = new WasmtimeRuntime({ home: link, apple: new FakeRuntime() });
+      const logs = async (name: string) => {
+        let output = "";
+        await cli.logs(
+          context(undefined, (chunk) => {
+            output += chunk.toString();
+          }),
+          name,
+          false,
+        );
+        return output;
+      };
+      for (const id of [f.prepared.identity.ID, branch.identity.ID]) {
+        const service = m.resolve(id).Services.web;
+        const output = await logs(service.Container);
+        expect(output).toContain(`Serving HTTP on http://127.0.0.1:${service.Ports?.["8080"]}/`);
+        expect(output).not.toContain("Cannot read wasmtime record");
+        expect((await cli.inspect(ctx, service.Container))?.Running).toBe(true);
+      }
+      // A corrupt record is treated as stopped: its log stays readable, with a notice.
+      const service = m.resolve(branch.identity.ID).Services.web;
+      const path = join(f.home, "wasmtime", `${service.Container}.json`);
+      const saved = await fs.readFile(path, "utf8");
+      const outside = join(f.home, "outside.log");
+      await fs.writeFile(outside, "OUTSIDE-SENTINEL\n");
+      for (const corrupt of [
+        '{"version":1,',
+        JSON.stringify({ ...JSON.parse(saved), log: outside }),
+      ]) {
+        await fs.writeFile(path, corrupt);
+        const output = await logs(service.Container);
+        expect(output).toContain(`wasmtime record ${service.Container}`);
+        expect(output).toContain("treated as stopped");
+        expect(output).toContain(`Serving HTTP on http://127.0.0.1:${service.Ports?.["8080"]}/`);
+        expect(output).not.toContain("OUTSIDE-SENTINEL");
+      }
+      await expect(logs("../outside")).rejects.toThrow("Invalid wasmtime service name");
+      await fs.writeFile(path, saved);
+    } finally {
+      await fs.rm(link, { force: true });
+      await f.cleanup();
+    }
+  },
+  120000,
+);
+real(
+  "hub signal shutdown keeps WASM apps for reattach and contremaitre stop stops them",
+  async () => {
+    const f = await fixture();
+    const hub = await startServer({
+      home: f.home,
+      port: 0,
+      runtime: new FakeRuntime(),
+      skipSystemStart: true,
+    });
+    let restarted: Awaited<ReturnType<typeof startServer>> | undefined;
+    try {
+      await hub.manager.deploy(ctx, f.prepared);
+      const service = hub.manager.resolve(f.prepared.identity.ID).Services.web;
+      const path = join(f.home, "wasmtime", `${service.Container}.json`);
+      const first = JSON.parse(await fs.readFile(path, "utf8"));
+      const get = async () => (await fetch(`http://127.0.0.1:${service.Ports?.["8080"]}`)).text();
+      // SIGTERM and SIGINT run hub.close(); like Apple containers, services keep running.
+      await hub.close();
+      expect(alive(first.pid)).toBe(true);
+      expect(await get()).toBe("manifest-env");
+      restarted = await startServer({
+        home: f.home,
+        port: 0,
+        runtime: new FakeRuntime(),
+        skipSystemStart: true,
+      });
+      expect(JSON.parse(await fs.readFile(path, "utf8")).pid).toBe(first.pid);
+      expect(restarted.manager.resolve(f.prepared.identity.ID).Status).toBe("running");
+      expect(await get()).toBe("manifest-env");
+      await call(context(), f.home, "stop");
+      await until(async () => restarted?.closed === true);
+      await restarted.close();
+      await until(async () => !alive(first.pid));
+      expect(existsSync(path)).toBe(false);
+      const stopped = new Manager(new Store(f.home), new FakeRuntime(), 48399);
+      expect(stopped.resolve(f.prepared.identity.ID).Status).toBe("stopped");
+    } finally {
+      await hub.close();
+      await restarted?.close();
+      f.manager(); // Cleanup downs whatever the hubs left.
+      await f.cleanup();
+    }
+  },
+  120000,
 );

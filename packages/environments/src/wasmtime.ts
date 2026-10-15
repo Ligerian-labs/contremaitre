@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { closeSync, existsSync, promises as fs, openSync, watch } from "node:fs";
+import { closeSync, existsSync, promises as fs, openSync, realpathSync, watch } from "node:fs";
 import { createConnection } from "node:net";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import ignore from "@balena/dockerignore";
@@ -77,7 +77,9 @@ export class WasmtimeRuntime implements ServiceRuntime {
   private watcherEpochs = new Map<string, number>();
   private stopping = new Set<string>();
   constructor(options: RegistryOptions & { bind?: string }) {
-    this.directory = resolve(options.home, "wasmtime");
+    // The hub's store canonicalizes its home; a CLI may spell it through a symlink.
+    const home = resolve(options.home);
+    this.directory = join(existsSync(home) ? realpathSync(home) : home, "wasmtime");
     this.bind = options.bind ?? "127.0.0.1";
   }
   private path(name: string) {
@@ -414,12 +416,25 @@ export class WasmtimeRuntime implements ServiceRuntime {
     );
   }
   async logs(ctx: Context, name: string, follow = false): Promise<void> {
-    const r = await this.read(name);
-    if (!r) return;
+    this.path(name); // Reject names that escape the runtime directory before any fallback.
+    try {
+      if (!(await this.read(name))) return;
+    } catch (e) {
+      phase(ctx, `${message(e)}; the service is treated as stopped`);
+    }
+    const log = join(this.directory, `${name}.log`);
     let offset = 0,
       inode: number | undefined;
     while (!ctx.signal.aborted) {
-      const file = await fs.open(r.log, "r");
+      let file: fs.FileHandle;
+      try {
+        file = await fs.open(log, "r");
+      } catch (e) {
+        if (!isCode(e, "ENOENT")) throw e;
+        if (!follow) return;
+        await delay(100);
+        continue;
+      }
       try {
         const stat = await file.stat(),
           size = stat.size;
