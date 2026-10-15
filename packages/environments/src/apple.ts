@@ -127,7 +127,7 @@ export class Apple implements Runtime {
       }
       const { signal, done } = this.system;
       try {
-        await done;
+        await waitFor(done, ctx.signal);
       } catch (e) {
         // Another caller's cancellation is not this caller's failure; start again.
         if (signal === ctx.signal || !signal.aborted || ctx.signal.aborted) throw e;
@@ -452,6 +452,15 @@ export class Apple implements Runtime {
       throw error;
     }
   }
+}
+/** Wait for shared work, rejecting as soon as this caller is cancelled. */
+function waitFor(work: Promise<void>, signal: AbortSignal): Promise<void> {
+  signal.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+    work.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+  });
 }
 async function sharedBuilderLock(ctx: Context): Promise<() => void> {
   const directory = join(

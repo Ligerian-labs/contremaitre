@@ -71,7 +71,8 @@ class HostRuntime implements ServiceRuntime {
 
 /**
  * A fake `container` binary. It appends every invocation to `calls`. With `fail-all`
- * present every call fails; with `fail-start` only `system start` fails.
+ * present every call fails; with `fail-start` only `system start` fails. With
+ * `slow-start`, `system start` waits for `release`.
  */
 function containerBinary(dir: string) {
   const binary = join(dir, "container"),
@@ -91,6 +92,7 @@ const file = (kind, name) => join(state, kind + '-' + name);
 const missing = (kind, name) => { if (!existsSync(file(kind, name))) fatal(name + ' not found'); };
 const [verb, sub] = args;
 if (verb === 'system') {
+  while (existsSync(join(dir, 'slow-start')) && !existsSync(join(dir, 'release'))) await Bun.sleep(5);
   if (existsSync(join(dir, 'fail-start'))) fatal('container system start failed: kernel unavailable');
 } else if (['network', 'volume', 'image'].includes(verb)) {
   const name = args[args.length - 1];
@@ -335,6 +337,72 @@ test("recovery fails an Apple environment, not the hub, when the container syste
     expect(failed.Services.web.Host).toBe("");
     expect(hub.manager.resolve(wasm).Status).toBe("running");
   } finally {
+    await hub.close();
+    rmSync(f.home, { recursive: true, force: true });
+  }
+});
+
+test("a cancelled caller stops waiting for a shared system start, and others still get one", async () => {
+  const f = await fixture(),
+    fake = join(f.home, "fake"),
+    starts = () => f.container.calls().filter((c) => c.startsWith("system ")).length;
+  writeFileSync(join(fake, "slow-start"), "");
+  const started = async (count: number) => {
+    while (starts() < count) await Bun.sleep(5);
+  };
+  try {
+    // A waiter's cancellation rejects only that waiter.
+    const owner = f.apple.startSystem(context());
+    await started(1);
+    const cancel = new AbortController(),
+      waiter = f.apple.startSystem(context(cancel.signal));
+    cancel.abort();
+    await expect(waiter).rejects.toThrow();
+    writeFileSync(join(fake, "release"), "");
+    await owner;
+    expect(starts()).toBe(1);
+    // The owner's cancellation makes a waiting caller start the system again.
+    rmSync(join(fake, "release"));
+    const apple = new Apple(f.container.binary, { startSystem: true }),
+      stop = new AbortController(),
+      first = apple.startSystem(context(stop.signal));
+    await started(2);
+    const second = apple.startSystem(context());
+    stop.abort();
+    await expect(first).rejects.toThrow();
+    await started(3);
+    writeFileSync(join(fake, "release"), "");
+    await second;
+    await apple.startSystem(context());
+    expect(starts()).toBe(3);
+  } finally {
+    rmSync(f.home, { recursive: true, force: true });
+  }
+});
+
+test("the default hub runtime starts the container system on demand", async () => {
+  const f = await fixture(),
+    path = process.env.PATH;
+  // The hub's own Apple runtime resolves `container` through PATH.
+  process.env.PATH = `${join(f.home, "fake")}:${path}`;
+  let hub = await startServer({ home: f.home, port: 0 });
+  try {
+    expect(f.container.calls()).toEqual([]);
+    const prepared = await hub.manager.prepare(context(), {
+      root: f.project("apple", appleOnly("apple")),
+      branch: "main",
+    });
+    await hub.manager.deploy(context(), prepared);
+    expect(f.container.calls()[0]).toBe("system start --enable-kernel-install");
+    await hub.close();
+    writeFileSync(join(f.home, "fake", "calls"), "");
+    // Recovery of a running Apple environment is the first use after a restart.
+    hub = await startServer({ home: f.home, port: 0 });
+    expect(f.container.calls()[0]).toBe("system start --enable-kernel-install");
+    expect(f.container.calls().filter((c) => c.startsWith("system "))).toHaveLength(1);
+    expect(hub.manager.resolve(prepared.identity.ID).Status).toBe("running");
+  } finally {
+    process.env.PATH = path;
     await hub.close();
     rmSync(f.home, { recursive: true, force: true });
   }
