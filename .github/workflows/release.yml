@@ -19,7 +19,8 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: '1.4.2'
-      - run: brew install traefik mkcert shellcheck
+      - run: brew install traefik mkcert shellcheck wasmtime
+      - run: rustup target add wasm32-wasip2
       - run: bun install --frozen-lockfile
       - name: Parse version from tag
         if: startsWith(github.ref, 'refs/tags/v')
@@ -51,6 +52,8 @@ jobs:
           JS
       - run: shellcheck scripts/install.sh
       - run: bun run check
+        env:
+          CONTREMAITRE_REQUIRE_WASMTIME: '1'
       - name: Package release
         if: startsWith(github.ref, 'refs/tags/v')
         env:
