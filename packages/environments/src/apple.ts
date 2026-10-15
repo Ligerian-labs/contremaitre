@@ -1,9 +1,8 @@
-import { createReadStream } from "node:fs";
+import { closeSync, createReadStream, openSync, writeSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import { createConnection } from "node:net";
 import { availableParallelism, homedir, totalmem } from "node:os";
 import { basename, join } from "node:path";
-import type { Readable } from "node:stream";
 import {
   type Context,
   fail,
@@ -12,29 +11,17 @@ import {
   message,
   phase,
 } from "@contremaitre/execution/context";
-import { lockHome } from "@contremaitre/execution/files";
+import { lockHome, privateFile, removeFile } from "@contremaitre/execution/files";
 import { Semaphore } from "@contremaitre/execution/locks";
 import { type RunOptions, run } from "@contremaitre/execution/process";
 import { sleep } from "@contremaitre/execution/sleep";
-import type { Service } from "@contremaitre/projects/model";
+import { safePath } from "@contremaitre/projects/config";
 import { Schema } from "effect";
 import { fingerprintBuildContext, prepareBuildContext } from "./build-context.js";
 import type { BuildRecord } from "./model.js";
-export interface Inspection {
-  IP: string;
-  Running: boolean;
-}
-export interface RunSpec {
-  name: string;
-  image: string;
-  network: string;
-  service: Service;
-  volumes: Record<string, string>;
-  envFile: string;
-  task?: boolean;
-  timeout?: number;
-  stdin?: Readable;
-}
+import type { Inspection, RunSpec, ServiceRuntime } from "./runtimes.js";
+
+export type { Inspection, RunSpec } from "./runtimes.js";
 export interface Runtime {
   startSystem(ctx: Context): Promise<void>;
   build(
@@ -55,7 +42,7 @@ export interface Runtime {
   start(ctx: Context, name: string): Promise<void>;
   remove(ctx: Context, name: string): Promise<void>;
   exec(ctx: Context, name: string, args: readonly string[], options?: RunOptions): Promise<Buffer>;
-  logs(ctx: Context, name: string): Promise<void>;
+  logs(ctx: Context, name: string, follow?: boolean): Promise<void>;
   sync(
     ctx: Context,
     spec: RunSpec,
@@ -84,7 +71,7 @@ export function decodeInspection(data: unknown): Inspection {
     status = typeof v.status === "string" ? { state: v.status, networks: v.networks } : v.status;
   return {
     Running: status.state === "running",
-    IP: status.networks?.[0]?.ipv4Address.split("/")[0] ?? "",
+    Host: status.networks?.[0]?.ipv4Address.split("/")[0] ?? "",
   };
 }
 interface BuilderLease {
@@ -291,8 +278,8 @@ export class Apple implements Runtime {
       options,
     );
   }
-  async logs(ctx: Context, name: string) {
-    await this.output(ctx, ["logs", "--follow", name], {
+  async logs(ctx: Context, name: string, follow = true) {
+    await this.output(ctx, ["logs", ...(follow ? ["--follow"] : []), name], {
       stdout: ctx.log,
       stderr: ctx.log,
       timeout: 86_400_000,
@@ -461,4 +448,75 @@ export async function tcpReady(host: string, port: number, signal: AbortSignal):
     socket.once("error", () => finish(false));
     signal.addEventListener("abort", abort, { once: true });
   });
+}
+/** Registry entry for Apple containers. Delegates at call time so tests can replace runtime methods. */
+export function appleRuntime(runtime: Runtime, home: string): ServiceRuntime {
+  return {
+    capabilities: { network: "container", development: "sync", clone: "online" },
+    // The hub starts the container system before it accepts work.
+    preflight: async () => {},
+    build: (ctx, { root, service, tag }, previous) => {
+      const build = service.build ?? fail("Apple builds require build");
+      return runtime.build(
+        ctx,
+        safePath(root, build),
+        safePath(root, service.dockerfile || join(build, "Dockerfile")),
+        tag,
+        previous,
+      );
+    },
+    run: (ctx, spec) => runtime.run(ctx, spec),
+    inspect: (ctx, name) => runtime.inspect(ctx, name),
+    start: (ctx, name) => runtime.start(ctx, name),
+    stop: (ctx, name) => runtime.stop(ctx, name),
+    remove: (ctx, name) => runtime.remove(ctx, name),
+    logs: (ctx, name, follow) => runtime.logs(ctx, name, follow),
+    exec: (ctx, name, args, options) => runtime.exec(ctx, name, args, options),
+    sync: (ctx, spec, directory, changed, removed, initial) =>
+      runtime.sync(ctx, spec, directory, changed, removed, initial),
+    clone: (ctx, from, to) => dumpRestore(runtime, home, ctx, from.name, to.name),
+  };
+}
+async function dumpRestore(runtime: Runtime, home: string, ctx: Context, from: string, to: string) {
+  const file = privateFile(join(home, "tmp"), "", "database");
+  let fd: number | undefined;
+  try {
+    fd = openSync(file, "w", 0o600);
+    const descriptor = fd;
+    await runtime.exec(ctx, from, ["pg_dump", "-Fc", "--no-owner", "-U", "app", "-d", "app"], {
+      stdout: (chunk) => {
+        let offset = 0;
+        while (offset < chunk.length) offset += writeSync(descriptor, chunk, offset);
+      },
+      stderr: ctx.log,
+      timeout: 1_800_000,
+    });
+    closeSync(fd);
+    fd = undefined;
+    const input = createReadStream(file, { fd: openSync(file, "r"), autoClose: true });
+    input.on("error", () => {});
+    try {
+      await runtime.exec(
+        ctx,
+        to,
+        [
+          "pg_restore",
+          "--clean",
+          "--if-exists",
+          "--no-owner",
+          "--exit-on-error",
+          "-U",
+          "app",
+          "-d",
+          "app",
+        ],
+        { stdin: input, stdout: ctx.log, stderr: ctx.log, timeout: 1_800_000 },
+      );
+    } finally {
+      input.destroy();
+    }
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+    removeFile(file);
+  }
 }

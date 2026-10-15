@@ -180,7 +180,8 @@ export async function tcpProxy(
   ctx: Context,
   local: number,
   remote: number,
-  target: () => Promise<string>,
+  /** Upstream host on `remote`, or a full address when the service maps its ports. */
+  target: () => Promise<string | { host: string; port: number }>,
   ready: (port: number) => void,
 ) {
   const connections = new Set<Socket>();
@@ -193,12 +194,14 @@ export async function tcpProxy(
     socket.on("close", () => connections.delete(socket));
     socket.on("error", () => socket.destroy());
     void target()
-      .then((host) => {
+      .then((upstream) => {
         if (ctx.signal.aborted || socket.destroyed) {
           socket.destroy();
           return;
         }
-        const up = createConnection({ host, port: remote, allowHalfOpen: true });
+        const { host, port } =
+          typeof upstream === "string" ? { host: upstream, port: remote } : upstream;
+        const up = createConnection({ host, port, allowHalfOpen: true });
         connections.add(up);
         const timer = setTimeout(() => up.destroy(), 5000);
         up.once("connect", () => {

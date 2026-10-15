@@ -1,22 +1,13 @@
-import {
-  closeSync,
-  constants,
-  createReadStream,
-  existsSync,
-  openSync,
-  readdirSync,
-  readFileSync,
-  writeSync,
-} from "node:fs";
+import { constants, existsSync, readdirSync, readFileSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import { join } from "node:path";
 import { type Context, decode, fail, message, phase } from "@contremaitre/execution/context";
-import { atomicWrite, privateFile, removeFile } from "@contremaitre/execution/files";
+import { atomicWrite, removeFile } from "@contremaitre/execution/files";
 import { order } from "@contremaitre/projects/config";
 import { Schema } from "effect";
 import { invokeDriver } from "./driver.js";
 import type { Manager } from "./manager.js";
-import type { Environment } from "./model.js";
+import type { Environment, ServiceState } from "./model.js";
 
 const recoverySchema = Schema.Struct({
   version: Schema.Literal(1),
@@ -57,7 +48,7 @@ async function recover(m: Manager, ctx: Context, r: Recovery) {
         if (r.writers.includes(name)) {
           const s = source.Services[name];
           phase(ctx, `Resuming main ${name}`);
-          await m.runtime.remove(ctx, s.Container);
+          await m.backend(s).remove(ctx, s.Container);
           await m.startService(ctx, source, s, false);
           r.writers = r.writers.filter((n) => n !== name);
           save(m, r);
@@ -65,9 +56,9 @@ async function recover(m: Manager, ctx: Context, r: Recovery) {
       for (const name of [...r.temporary]) {
         const s = source.Services[name];
         if (!s) fail(`Unknown recovery service ${name}`);
-        await m.runtime.stop(ctx, s.Container);
-        await m.runtime.remove(ctx, s.Container);
-        s.IP = "";
+        await m.backend(s).stop(ctx, s.Container);
+        await m.backend(s).remove(ctx, s.Container);
+        s.Host = "";
         r.temporary = r.temporary.filter((n) => n !== name);
         save(m, r);
       }
@@ -170,80 +161,68 @@ export async function cloneData(
   target: Environment,
 ) {
   await withRecovery(m, ctx, source, target, false, async (r) => {
+    const quiesce = async (name: string) => {
+      const s = source.Services[name];
+      if (!(await m.backend(s).inspect(ctx, s.Container))?.Running) return;
+      r.writers.push(name);
+      save(m, r);
+      await m.backend(s).stop(ctx, s.Container);
+      s.Host = "";
+      m.save();
+    };
     for (const [name, s] of Object.entries(source.Services))
-      if (s.Spec.kind === "app" && (await m.runtime.inspect(ctx, s.Container))?.Running) {
-        r.writers.push(name);
-        save(m, r);
-        await m.runtime.stop(ctx, s.Container);
-        s.IP = "";
-        m.save();
-      }
+      if (s.Spec.kind === "app") await quiesce(name);
     if (source.Status === "stopped") {
-      for (const s of Object.values(source.Services)) await m.runtime.remove(ctx, s.Container);
-      await m.runtime.removeNetwork(ctx, source.Network);
-      await m.runtime.network(ctx, source.Network);
+      for (const s of Object.values(source.Services)) await m.backend(s).remove(ctx, s.Container);
+      if (
+        Object.values(source.Services).some(
+          (s) => m.backend(s).capabilities.network === "container",
+        )
+      ) {
+        await m.runtime.removeNetwork(ctx, source.Network);
+        await m.runtime.network(ctx, source.Network);
+      }
     }
     for (const [name, to] of Object.entries(target.Services)) {
       if (to.Spec.kind !== "postgres") continue;
       const from = source.Services[name];
       if (!from) continue;
+      const runtime = m.backend(to),
+        fromRuntime = from.Runtime ?? "apple",
+        toRuntime = to.Runtime ?? "apple";
+      if (fromRuntime !== toRuntime)
+        fail(
+          `Clone ${name}: main uses runtime ${fromRuntime} and this environment uses ${toRuntime}; give both environments the same runtime for ${name}`,
+        );
       if (from.Spec.kind !== "postgres" || from.Image !== to.Image)
         fail(`Clone ${name}: main database image must match target`);
-      const inspection = await m.runtime.inspect(ctx, from.Container);
+      if (!runtime.clone) fail(`Clone ${name}: runtime ${toRuntime} cannot copy Postgres data`);
+      const side = (env: Environment, s: ServiceState) => ({
+        name: s.Container,
+        data: m.dataDirectory(env, s),
+        service: s,
+      });
+      if (runtime.capabilities.clone === "files") {
+        // File copies need both servers stopped; recovery restarts the source.
+        await quiesce(name);
+        await runtime.stop(ctx, to.Container);
+        to.Host = "";
+        m.save();
+        await runtime.clone(ctx, side(source, from), side(target, to));
+        await runtime.remove(ctx, to.Container);
+        await m.startService(ctx, target, to, false);
+        continue;
+      }
+      const inspection = await runtime.inspect(ctx, from.Container);
       if (!inspection?.Running) {
         r.temporary.push(name);
         save(m, r);
         if (inspection) {
-          await m.runtime.start(ctx, from.Container);
+          await runtime.start(ctx, from.Container);
           await m.waitReady(ctx, from);
         } else await m.startService(ctx, source, from, false);
       }
-      const file = privateFile(join(m.store.home, "tmp"), "", "database");
-      let fd: number | undefined;
-      try {
-        fd = openSync(file, "w", 0o600);
-        const descriptor = fd;
-        await m.runtime.exec(
-          ctx,
-          from.Container,
-          ["pg_dump", "-Fc", "--no-owner", "-U", "app", "-d", "app"],
-          {
-            stdout: (chunk) => {
-              let offset = 0;
-              while (offset < chunk.length) offset += writeSync(descriptor, chunk, offset);
-            },
-            stderr: ctx.log,
-            timeout: 1_800_000,
-          },
-        );
-        closeSync(fd);
-        fd = undefined;
-        const input = createReadStream(file, { fd: openSync(file, "r"), autoClose: true });
-        input.on("error", () => {});
-        try {
-          await m.runtime.exec(
-            ctx,
-            to.Container,
-            [
-              "pg_restore",
-              "--clean",
-              "--if-exists",
-              "--no-owner",
-              "--exit-on-error",
-              "-U",
-              "app",
-              "-d",
-              "app",
-            ],
-            { stdin: input, stdout: ctx.log, stderr: ctx.log, timeout: 1_800_000 },
-          );
-        } finally {
-          input.destroy();
-        }
-      } finally {
-        if (fd !== undefined) closeSync(fd);
-        removeFile(file);
-      }
+      await runtime.clone(ctx, side(source, from), side(target, to));
     }
     const volumes = new Set(
       Object.values(target.Services).flatMap((s) => Object.keys(s.Spec.volumes ?? {})),

@@ -1,11 +1,13 @@
 import { resolve } from "node:path";
 import { Apple } from "@contremaitre/environments/apple";
 import { driverProcess } from "@contremaitre/environments/driver";
-import type { Environment, Request } from "@contremaitre/environments/model";
+import { type Environment, type Request, serviceAddress } from "@contremaitre/environments/model";
+import { runtimeRegistry, selectRuntime } from "@contremaitre/environments/runtimes";
 import { context, decode, fail } from "@contremaitre/execution/context";
 import { attempt } from "@contremaitre/execution/effect";
 import { serve } from "@contremaitre/hub/server";
 import { operationSchema } from "@contremaitre/operations/operations";
+import { serviceKind } from "@contremaitre/projects/model";
 import { tcpProxy } from "@contremaitre/routing/proxy";
 import { BunContext, BunRuntime } from "@effect/platform-bun";
 import { Args, Command, defineCommand, withSubcommands } from "@structure-ai/cli";
@@ -328,15 +330,29 @@ export function makeRoot(passthrough: readonly string[] = []) {
                   return;
                 }
                 const runtime = new Apple();
+                const backend = selectRuntime(
+                  runtimeRegistry({ home, apple: runtime }),
+                  s.Runtime ?? "apple",
+                  serviceKind(s.Spec),
+                );
+                const container = backend.capabilities.network === "container";
                 if (name === "exec") {
-                  await runtime.exec(activeCtx, s.Container, command, io);
+                  if (!backend.exec) fail(`${s.Name}: runtime ${s.Runtime} cannot run commands`);
+                  await backend.exec(activeCtx, s.Container, command, io);
                   return;
                 }
                 if (name === "logs") {
-                  await runtime.output(activeCtx, ["logs", s.Container], {
-                    stdout: io.stdout,
-                    stderr: io.stderr,
-                  });
+                  if (container)
+                    await runtime.output(activeCtx, ["logs", s.Container], {
+                      stdout: io.stdout,
+                      stderr: io.stderr,
+                    });
+                  else
+                    await backend.logs(
+                      { ...activeCtx, log: (data) => process.stdout.write(data) },
+                      s.Container,
+                      false,
+                    );
                   return;
                 }
                 if (command.length !== 1) fail("proxy requires [LOCAL:]REMOTE");
@@ -351,9 +367,17 @@ export function makeRoot(passthrough: readonly string[] = []) {
                   local,
                   remote,
                   async () => {
-                    const value = await runtime.inspect(activeCtx, s.Container);
+                    if (!container) {
+                      // Host-process runtimes listen on reserved loopback ports.
+                      const current = (await call(ctx, home, "resolve", req)) as Environment;
+                      const service = current.Services[s.Name];
+                      const address = service && serviceAddress(service, remote);
+                      if (!address) fail("Service is not running");
+                      return address;
+                    }
+                    const value = await backend.inspect(activeCtx, s.Container);
                     if (!value?.Running) fail("Service is not running");
-                    return value.IP;
+                    return value.Host;
                   },
                   (port) => output(o.json, { address: `127.0.0.1:${port}`, remote_port: remote }),
                 );

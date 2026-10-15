@@ -2,6 +2,7 @@ import { hash } from "@contremaitre/execution/context";
 import {
   type Driver,
   type Identity,
+  type RuntimeKind,
   type Service,
   serviceEndpoints,
 } from "@contremaitre/projects/model";
@@ -22,7 +23,12 @@ export interface ServiceState {
   Name: string;
   Container: string;
   Image: string;
-  IP: string;
+  /** Address host: Apple container IP, or loopback for host-process runtimes. Empty when stopped. */
+  Host: string;
+  /** Runtime recorded at the service's first deploy. Absent only on driver services. */
+  Runtime?: RuntimeKind;
+  /** Declared port -> reserved loopback port, for host-process runtimes. */
+  Ports?: Record<string, number>;
   Volume: string;
   Port: number;
   HTTP: boolean;
@@ -78,6 +84,16 @@ export function httpEndpoints(
       .sort(([a], [b]) => a.localeCompare(b)),
   );
 }
+/** Where the hub and host processes reach a service's declared port, or undefined while it has no host. */
+export function serviceAddress(
+  service: ServiceState,
+  port: number,
+): { host: string; port: number } | undefined {
+  if (!service.Host) return;
+  return { host: service.Host, port: service.Ports?.[String(port)] ?? port };
+}
+export const addressURL = (address: { host: string; port: number }): string =>
+  `http://${address.host.includes(":") ? `[${address.host}]` : address.host}:${address.port}`;
 export interface State {
   Version: 1;
   Environments: Record<string, Environment>;

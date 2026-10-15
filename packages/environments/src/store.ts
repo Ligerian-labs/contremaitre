@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fail, hash } from "@contremaitre/execution/context";
 import { atomicWrite } from "@contremaitre/execution/files";
-import type { Environment, State } from "./model.js";
+import type { Environment, ServiceState, State } from "./model.js";
 export class Store {
   readonly home: string;
   constructor(home: string) {
@@ -39,6 +39,12 @@ export class Store {
       e.credentials ??= {};
       e.tunnels ??= {};
       e.builds ??= {};
+      for (const service of Object.values(e.Services) as (ServiceState & { IP?: string })[]) {
+        // State written before per-service runtimes stored the container address as IP.
+        if (service.Host === undefined) service.Host = service.IP ?? "";
+        delete service.IP;
+        if (!e.driver) service.Runtime ??= "apple";
+      }
     }
     return state;
   }
