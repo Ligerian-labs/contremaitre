@@ -1,8 +1,19 @@
 import { basename } from "node:path";
 import { hash, strings } from "@contremaitre/execution/context";
 import { Schema } from "effect";
+export const runtimeKinds = ["apple", "wasm"] as const;
+export type RuntimeKind = (typeof runtimeKinds)[number];
+export type ServiceKind = "app" | "postgres" | "redis";
 export const serviceSchema = Schema.Struct({
   kind: Schema.optional(Schema.String),
+  runtime: Schema.optional(Schema.Literal(...runtimeKinds)),
+  wasm: Schema.optional(
+    Schema.Struct({
+      build: Schema.optional(Schema.Array(Schema.String)),
+      directory: Schema.optional(Schema.String),
+      component: Schema.String,
+    }),
+  ),
   image: Schema.optional(Schema.String),
   build: Schema.optional(Schema.String),
   dockerfile: Schema.optional(Schema.String),
@@ -11,7 +22,7 @@ export const serviceSchema = Schema.Struct({
   dev: Schema.optional(
     Schema.Struct({
       source: Schema.String,
-      target: Schema.String,
+      target: Schema.optional(Schema.String),
       install: Schema.optional(Schema.Array(Schema.String)),
       exclude: Schema.optional(Schema.Array(Schema.String)),
     }),
@@ -30,6 +41,9 @@ export const serviceSchema = Schema.Struct({
   memory: Schema.optional(Schema.String),
 });
 export type Service = Schema.Schema.Type<typeof serviceSchema>;
+export const serviceRuntime = (service: Service): RuntimeKind => service.runtime ?? "apple";
+export const serviceKind = (service: Service): ServiceKind =>
+  (service.kind || "app") as ServiceKind;
 export function serviceEndpoints(name: string, service: Service): Record<string, number> {
   return {
     ...(service.http && service.port ? { [name]: service.port } : {}),

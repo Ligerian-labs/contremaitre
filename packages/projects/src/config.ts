@@ -22,12 +22,19 @@ export const validName = /^[a-z][a-z0-9-]{0,39}$/;
 export const envKey = /^[A-Za-z_][A-Za-z0-9_]*$/;
 export function serviceDefaults(original: Service): Service {
   const kind = original.kind || "app";
+  const container = original.runtime !== "wasm";
   return {
     ...original,
     kind,
     image:
       original.image ||
-      (kind === "postgres" ? "postgres:17" : kind === "redis" ? "redis:7-alpine" : ""),
+      (!container
+        ? ""
+        : kind === "postgres"
+          ? "postgres:17"
+          : kind === "redis"
+            ? "redis:7-alpine"
+            : ""),
     port: original.port || (kind === "postgres" ? 5432 : kind === "redis" ? 6379 : 0),
     cpus: original.cpus || 1,
     memory: original.memory || (original.dev ? "2G" : "512M"),
@@ -102,6 +109,10 @@ export function parseManifest(text: string): Manifest {
         if (check.service && !parsed.driver && !Object.hasOwn(parsed.services ?? {}, check.service))
           fail(`${check.name}: unknown verification service`);
         if (check.service && !validName.test(check.service)) fail(`${check.name}: invalid service`);
+        if (check.service && parsed.services?.[check.service]?.runtime === "wasm")
+          fail(
+            `${check.name}: service checks run inside a container; WASM service ${check.service} cannot run them`,
+          );
         if ((check.timeout_seconds ?? 300) < 1 || (check.timeout_seconds ?? 300) > 1800)
           fail(`${check.name}: timeout_seconds must be 1..1800`);
         if ((check.artifacts?.length ?? 0) > 32)
@@ -142,7 +153,10 @@ export function parseManifest(text: string): Manifest {
     const kind = original.kind || "app";
     if (!["app", "postgres", "redis"].includes(kind)) fail(`${name}: unknown kind`);
     const s = serviceDefaults(original);
-    if (Boolean(s.image) === Boolean(s.build))
+    const wasm = s.runtime === "wasm";
+    if (s.wasm && !wasm) fail(`${name}: wasm requires runtime: wasm`);
+    if (wasm) validateWasm(name, kind, s);
+    else if (Boolean(s.image) === Boolean(s.build))
       fail(`${name}: specify exactly one of image or build`);
     if (
       kind !== "app" &&
@@ -162,7 +176,6 @@ export function parseManifest(text: string): Manifest {
       p.startsWith("/") && !/[,:\r\n]/.test(p) && resolve(p) === p && p !== "/";
     if (s.working_dir && !containerPath(s.working_dir)) fail(`${name}: invalid working_dir`);
     if (s.dev) {
-      const target = s.dev.target;
       if (kind !== "app") fail(`${name}: dev is only supported for apps`);
       if (
         !s.dev.source ||
@@ -170,9 +183,12 @@ export function parseManifest(text: string): Manifest {
         !inside("/project", resolve("/project", s.dev.source))
       )
         fail(`${name}: dev.source must stay within project`);
-      if (!containerPath(s.dev.target)) fail(`${name}: invalid dev.target`);
+    }
+    if (s.dev && !wasm) {
+      const target = s.dev.target ?? "";
+      if (!containerPath(target)) fail(`${name}: invalid dev.target`);
       if (!s.command?.length) fail(`${name}: dev requires an explicit command`);
-      if (!s.working_dir || !inside(s.dev.target, s.working_dir))
+      if (!s.working_dir || !inside(target, s.working_dir))
         fail(`${name}: working_dir must be inside dev.target`);
       if (Object.values(s.volumes ?? {}).some((p) => inside(p, target) || inside(target, p)))
         fail(`${name}: persistent volumes cannot overlap dev.target`);
@@ -212,6 +228,13 @@ export function parseManifest(text: string): Manifest {
   }
   if (!keys(services).length) fail("At least one service is required");
   order(services);
+  for (const [name, s] of Object.entries(services))
+    if (s.runtime !== "wasm")
+      for (const dep of s.depends_on ?? [])
+        if (services[dep].runtime === "wasm")
+          fail(
+            `${name}: Apple container services cannot reach WASM service ${dep}; give both the same runtime`,
+          );
   return {
     version: 1,
     project: parsed.project,
@@ -219,6 +242,44 @@ export function parseManifest(text: string): Manifest {
     verification,
     idle_timeout_seconds: parsed.idle_timeout_seconds,
   };
+}
+function validateWasm(name: string, kind: string, s: Service) {
+  if (kind === "redis") fail(`${name}: kind redis does not support runtime: wasm`);
+  if (s.image) fail(`${name}: runtime: wasm does not use image`);
+  if (kind !== "app") return;
+  const unsupported = (
+    [
+      ["build", s.build],
+      ["dockerfile", s.dockerfile],
+      ["command", s.command?.length],
+      ["working_dir", s.working_dir],
+      ["init", s.init?.length],
+      ["migrate", s.migrate?.length],
+      ["ready", s.ready?.length],
+      ["endpoints", keys(s.endpoints).length],
+      ["dev.install", s.dev?.install?.length],
+    ] as const
+  ).find(([, value]) => value);
+  if (unsupported) fail(`${name}: ${unsupported[0]} is not supported with runtime: wasm`);
+  if (!s.wasm?.component) fail(`${name}: runtime: wasm requires wasm.component`);
+  if (!s.port) fail(`${name}: runtime: wasm requires a port`);
+  if (
+    s.wasm.build &&
+    (!s.wasm.build.length || s.wasm.build.some((arg) => !arg || arg.includes("\0")))
+  )
+    fail(`${name}: wasm.build requires nonempty arguments`);
+  for (const p of [s.wasm.component, s.wasm.directory])
+    if (p !== undefined && (!p || isAbsolute(p) || !inside("/project", resolve("/project", p))))
+      fail(`${name}: wasm paths must stay within project`);
+  if (
+    s.dev?.target !== undefined &&
+    !(
+      s.dev.target.startsWith("/") &&
+      resolve(s.dev.target) === s.dev.target &&
+      s.dev.target !== "/"
+    )
+  )
+    fail(`${name}: invalid dev.target`);
 }
 export function loadManifest(root: string, options: LoadOptions = {}): Manifest {
   return loadProject(root, options);

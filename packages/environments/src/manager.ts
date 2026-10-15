@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { createServer } from "node:net";
 import { join, resolve } from "node:path";
 import {
   type Context,
@@ -15,6 +16,7 @@ import {
 } from "@contremaitre/execution/context";
 import { privateEnv, removeFile } from "@contremaitre/execution/files";
 import { EnvironmentLocks, Semaphore } from "@contremaitre/execution/locks";
+import type { RunOptions } from "@contremaitre/execution/process";
 import { sleep } from "@contremaitre/execution/sleep";
 import {
   detectIdentity,
@@ -26,8 +28,15 @@ import {
   readEnv,
   safePath,
 } from "@contremaitre/projects/config";
-import { type Identity, type Manifest, newIdentity } from "@contremaitre/projects/model";
-import { type RunSpec, type Runtime, tcpReady } from "./apple.js";
+import {
+  type Identity,
+  type Manifest,
+  newIdentity,
+  type Service,
+  serviceKind,
+  serviceRuntime,
+} from "@contremaitre/projects/model";
+import { type Runtime, tcpReady } from "./apple.js";
 import { cloneData, cloneDriver, recoverClones } from "./clone.js";
 import {
   DevelopmentSource,
@@ -43,7 +52,15 @@ import {
   resourceName,
   type ServiceState,
   type State,
+  serviceAddress,
 } from "./model.js";
+import {
+  type RunSpec,
+  type RuntimeRegistry,
+  runtimeRegistry,
+  type ServiceRuntime,
+  selectRuntime,
+} from "./runtimes.js";
 import { publicEnvironment, type Store } from "./store.js";
 export interface PreparedDeploy {
   root: string;
@@ -82,8 +99,9 @@ export class Manager {
       try {
         const changes = await source.refresh(ctx);
         if (changes.changed.length || changes.removed.length) {
-          await this.runtime.sync(
+          await this.syncSource(
             ctx,
+            s,
             spec,
             source.directory,
             changes.changed,
@@ -143,8 +161,43 @@ export class Manager {
     readonly runtime: Runtime,
     readonly httpPort = 8080,
     readonly protocol: "http" | "https" = "http",
+    readonly runtimes: RuntimeRegistry = runtimeRegistry({ home: store.home, apple: runtime }),
   ) {
     this.state = store.load();
+  }
+  /** The runtime recorded for a deployed service. */
+  backend(s: ServiceState): ServiceRuntime {
+    return selectRuntime(this.runtimes, s.Runtime ?? "apple", serviceKind(s.Spec));
+  }
+  /** Run a command inside a service whose runtime supports it. */
+  exec(ctx: Context, s: ServiceState, args: readonly string[], options?: RunOptions) {
+    const runtime = this.backend(s);
+    if (!runtime.exec)
+      return fail(`${s.Name}: runtime ${s.Runtime ?? "apple"} cannot run commands in the service`);
+    return runtime.exec(ctx, s.Container, args, options);
+  }
+  private specBackend(spec: Service): ServiceRuntime {
+    return selectRuntime(this.runtimes, serviceRuntime(spec), serviceKind(spec));
+  }
+  private syncSource(
+    ctx: Context,
+    s: ServiceState,
+    spec: RunSpec,
+    directory: string,
+    changed: string[],
+    removed: string[],
+    initial: boolean,
+  ) {
+    const runtime = this.backend(s);
+    if (!runtime.sync) return fail(`${s.Name}: runtime cannot sync development source`);
+    return runtime.sync(ctx, spec, directory, changed, removed, initial);
+  }
+  private syncsSource(s: ServiceState): boolean {
+    return !!s.Spec.dev && this.backend(s).capabilities.development === "sync";
+  }
+  /** Private per-service data directory for host-process runtimes, removed with environment data. */
+  dataDirectory(env: Environment, s: ServiceState): string {
+    return join(this.store.home, "data", env.Identity.ID, ".services", s.Name);
   }
   assertRecovered(id: string) {
     const dir = join(this.store.home, "recovery");
@@ -338,26 +391,36 @@ export class Manager {
           spec.depends_on?.some((dep) => manifest.services[dep].kind === "app")
         )
           fail(`${name}: infrastructure services cannot depend on apps`);
+        const recorded = e.Services[name]?.Runtime ?? (e.Services[name] && "apple");
+        const next = serviceRuntime(spec);
+        if (recorded && recorded !== next)
+          fail(
+            `${name}: runtime changed from ${recorded} to ${next}; Contremaitre does not convert services. Remove ${name} from the manifest and deploy, or delete the environment with contremaitre down --delete-data, then deploy with the new runtime`,
+          );
       }
       const images: Record<string, string> = {};
+      const preflights = new Map<ServiceRuntime, Promise<void>>();
       const builds = await Promise.allSettled(
         names.map((name) =>
           attemptService(name, async () => {
-            const s = manifest.services[name];
-            if (!s.build) {
+            const s = manifest.services[name],
+              backend = this.specBackend(s);
+            if (!preflights.has(backend)) preflights.set(backend, backend.preflight(ctx));
+            await preflights.get(backend);
+            if (!s.build && !s.wasm) {
               progress(scopes[name], "waiting", "waiting for builds");
               images[name] = s.image ?? "";
               return;
             }
             const tag = `cm-${identity.ID}-${name}:${Date.now()}${randomBytes(3).toString("hex")}`;
-            e.Images.push(tag);
-            this.save();
+            if (backend.capabilities.network === "container") {
+              e.Images.push(tag);
+              this.save();
+            }
             phase(scopes[name], "building");
-            const built = await this.runtime.build(
+            const built = await backend.build(
               scopes[name],
-              safePath(root, s.build),
-              safePath(root, s.dockerfile || join(s.build, "Dockerfile")),
-              tag,
+              { root, name, service: s, tag },
               request.rebuild ? undefined : e.builds?.[name],
             );
             e.builds ??= {};
@@ -396,7 +459,9 @@ export class Manager {
               Name: name,
               Container: resourceName(e.Network, name),
               Image: images[name],
-              IP: old?.IP ?? "",
+              Host: old?.Host ?? "",
+              Runtime: serviceRuntime(s),
+              Ports: old?.Ports,
               Volume: old?.Volume ?? "",
               Port: s.port || s.endpoints?.[keys(s.endpoints)[0]] || 0,
               HTTP: !!s.http || Object.keys(s.endpoints ?? {}).length > 0,
@@ -424,8 +489,8 @@ export class Manager {
           )
             return false;
           return inspections.use(ctx.signal, async () => {
-            const inspected = await this.runtime.inspect(scopes[name], old.Container);
-            return !!inspected?.Running && !!inspected.IP && inspected.IP === old.IP;
+            const inspected = await this.backend(s).inspect(scopes[name], old.Container);
+            return !!inspected?.Running && !!inspected.Host && inspected.Host === old.Host;
           });
         }),
       );
@@ -452,9 +517,12 @@ export class Manager {
       e.Status = "deploying";
       e.Error = "";
       this.save();
+      const containers = names.some(
+        (name) => this.backend(services[name]).capabilities.network === "container",
+      );
       if (mutated) {
         phase(ctx, `Preparing network for ${e.Identity.Name}`);
-        await this.runtime.network(ctx, e.Network);
+        if (containers) await this.runtime.network(ctx, e.Network);
         // Settle all cleanup calls before proceeding or releasing the environment lock.
         const stopped = await Promise.allSettled(
           removing.map(async (name) => {
@@ -463,30 +531,31 @@ export class Manager {
             if (scopes[name]) phase(scope, "stopping previous process");
             s.ready = false;
             this.save();
+            const runtime = this.backend(s);
             await this.stopDevelopment(s.Container);
-            await this.runtime.stop(scope, s.Container);
-            await this.runtime.remove(scope, s.Container);
-            await this.runtime.remove(scope, `${s.Container}-task`);
-            await this.runtime.remove(scope, `${s.Container}-sync`);
+            await runtime.stop(scope, s.Container);
+            await runtime.remove(scope, s.Container);
+            await runtime.remove(scope, `${s.Container}-task`);
+            await runtime.remove(scope, `${s.Container}-sync`);
             if (s.dependency_cache) this.unavailableCaches.delete(s.dependency_cache);
             if (services[name]) delete services[name].dependency_cache;
           }),
         );
         const error = stopped.find((result) => result.status === "rejected");
         if (error?.status === "rejected") throw error.reason;
-        if (!retained.size && keys(previous).length) {
+        if (!retained.size && keys(previous).length && containers) {
           await this.runtime.removeNetwork(ctx, e.Network);
           await this.runtime.network(ctx, e.Network);
         }
       }
-      for (const name of changing) services[name].IP = "";
+      for (const name of changing) services[name].Host = "";
       e.Services = services;
       e.Root = root;
       this.save();
       // Host source scans do not need live dependency addresses. Start them while
       // infrastructure and prerequisite applications are becoming ready.
       const sourceSlots = new Semaphore(4);
-      for (const name of names.filter((name) => services[name].Spec.dev)) {
+      for (const name of names.filter((name) => this.syncsSource(services[name]))) {
         sources.set(
           name,
           (async () => {
@@ -587,11 +656,11 @@ export class Manager {
         s.Image,
         s.Spec,
         this.serviceEnv(env, s),
-        (s.Spec.depends_on ?? []).map((name) => [
-          name,
-          env.Services[name]?.IP,
-          env.Services[name]?.Port,
-        ]),
+        (s.Spec.depends_on ?? []).map((name) => {
+          const dep = env.Services[name];
+          // Apple addresses keep the container IP and declared port, as before host runtimes.
+          return [name, dep?.Host, (dep && serviceAddress(dep, dep.Port)?.port) ?? dep?.Port];
+        }),
       ]),
     );
   }
@@ -690,8 +759,8 @@ export class Manager {
             service.ready = false;
             this.save();
             await this.stopDevelopment(service.Container);
-            await this.runtime.stop(scope, service.Container);
-            await this.runtime.remove(scope, service.Container);
+            await this.backend(service).stop(scope, service.Container);
+            await this.backend(service).remove(scope, service.Container);
             await this.startService(scope, env, service, false);
             scope.signal.throwIfAborted();
             service.deployment = this.deploymentFingerprint(env, service);
@@ -757,12 +826,15 @@ export class Manager {
               return this.browserURL(env, name);
             }
             if (dep && property === "local_url") return this.localURL(env, name);
-            const ip = dep === s ? "127.0.0.1" : dep?.IP;
-            if (!dep || !ip) fail(`${s.Name}: ${name} is not ready; declare depends_on`);
-            const port = endpoint?.port ?? dep.Port;
-            if (property === "host") return ip;
-            if (property === "port") return String(port);
-            const host = `${ip.includes(":") ? `[${ip}]` : ip}:${port}`;
+            const declared = endpoint?.port ?? dep?.Port ?? 0;
+            const address =
+              dep === s
+                ? { host: "127.0.0.1", port: s.Ports?.[String(declared)] ?? declared }
+                : dep && serviceAddress(dep, declared);
+            if (!dep || !address) fail(`${s.Name}: ${name} is not ready; declare depends_on`);
+            if (property === "host") return address.host;
+            if (property === "port") return String(address.port);
+            const host = `${address.host.includes(":") ? `[${address.host}]` : address.host}:${address.port}`;
             if (dep.Spec.kind === "postgres")
               return `postgresql://app:${encodeURIComponent(env.credentials?.[name] ?? "")}@${host}/app?sslmode=disable`;
             if (dep.Spec.kind === "redis") return `redis://${host}/0`;
@@ -788,12 +860,12 @@ export class Manager {
       s.Spec.dev.install?.[0] === "corepack" &&
       packageInstaller(s.Spec.dev.install)
     )
-      values.COREPACK_HOME ??= join(s.Spec.dev.target, ".cache", "corepack");
+      values.COREPACK_HOME ??= join(s.Spec.dev.target ?? "", ".cache", "corepack");
     return values;
   }
   async volumes(ctx: Context, env: Environment, s: ServiceState) {
     const volumes: Record<string, string> = {};
-    if (s.Spec.kind === "postgres") {
+    if (s.Spec.kind === "postgres" && this.backend(s).capabilities.network === "container") {
       if (!s.Volume) {
         s.Volume = `${resourceName(env.Network, s.Name)}-data`;
         env.Volumes.push(s.Volume);
@@ -864,21 +936,34 @@ export class Manager {
     options: { source?: DevelopmentSource; resetSource?: boolean } = {},
   ) {
     ctx = serviceContext(ctx, s.Name);
-    phase(ctx, `resources: ${s.Spec.cpus ?? 1} CPU, ${s.Spec.memory ?? "512M"} memory`);
+    const runtime = this.backend(s),
+      host = runtime.capabilities.network === "host";
+    if (host) {
+      await this.reservePorts(s);
+      phase(ctx, `loopback ports: ${JSON.stringify(s.Ports)}`);
+    } else phase(ctx, `resources: ${s.Spec.cpus ?? 1} CPU, ${s.Spec.memory ?? "512M"} memory`);
     const envFile = privateEnv(join(this.store.home, "tmp"), this.serviceEnv(env, s));
     try {
       await this.stopDevelopment(s.Container);
       const volumes = await this.volumes(ctx, env, s),
-        spec = {
+        spec: RunSpec = {
           name: s.Container,
           image: s.Image,
           network: env.Network,
           service: s.Spec,
           volumes,
           envFile,
+          root: env.Root,
         };
+      if (host) {
+        spec.ports = { ...s.Ports };
+        spec.data = this.dataDirectory(env, s);
+        mkdirSync(spec.data, { recursive: true, mode: 0o700 });
+      }
+      if (s.Spec.dev && runtime.capabilities.development === "mount")
+        spec.source = safePath(env.Root, s.Spec.dev.source);
       let source: DevelopmentSource | undefined;
-      if (s.Spec.dev) {
+      if (this.syncsSource(s) && s.Spec.dev) {
         const volume = `${s.Container}-source`;
         if (!env.Volumes.includes(volume)) {
           env.Volumes.push(volume);
@@ -898,10 +983,11 @@ export class Manager {
           s.development_source = fingerprint;
           this.save();
         }
-        volumes[volume] = s.Spec.dev.target;
+        volumes[volume] = s.Spec.dev.target ?? "";
         phase(ctx, "copying development source");
-        await this.runtime.sync(
+        await this.syncSource(
           ctx,
+          s,
           spec,
           source.directory,
           source.paths(),
@@ -917,7 +1003,7 @@ export class Manager {
           ...(s.Spec.migrate?.length ? [s.Spec.migrate] : []),
         ];
         for (const command of tasks) {
-          await this.runtime.remove(ctx, `${s.Container}-task`);
+          await runtime.remove(ctx, `${s.Container}-task`);
           phase(
             ctx,
             command === s.Spec.dev?.install
@@ -945,11 +1031,11 @@ export class Manager {
               this.serviceEnv(env, s),
               source?.directory,
             );
-          else await this.runtime.run(ctx, task);
+          else await runtime.run(ctx, task);
         }
       }
       phase(ctx, "starting");
-      await this.runtime.run(ctx, spec);
+      await runtime.run(ctx, spec);
       await this.waitReady(ctx, s);
       phase(ctx, "ready");
       s.Initialized = true;
@@ -959,12 +1045,9 @@ export class Manager {
       removeFile(envFile);
       if (ctx.signal.aborted) {
         // Killing the host CLI does not guarantee that its temporary task VM stopped.
-        await this.runtime.remove(
-          context(AbortSignal.timeout(15_000), ctx.log),
-          `${s.Container}-task`,
-        );
-        if (s.Spec.dev)
-          await this.runtime.remove(
+        await runtime.remove(context(AbortSignal.timeout(15_000), ctx.log), `${s.Container}-task`);
+        if (this.syncsSource(s))
+          await runtime.remove(
             context(AbortSignal.timeout(15_000), ctx.log),
             `${s.Container}-sync`,
           );
@@ -1077,15 +1160,20 @@ export class Manager {
       signal = AbortSignal.any([parent.signal, AbortSignal.timeout(90_000), controller.signal]),
       ctx = serviceContext({ ...parent, signal }, s.Name);
     phase(ctx, "waiting for readiness");
-    const logs = this.runtime.logs(ctx, s.Container).catch(() => {});
+    const runtime = this.backend(s);
+    const logs = runtime.logs(ctx, s.Container, true).catch(() => {});
+    const reachable = async (port: number) => {
+      const address = serviceAddress(s, port);
+      return !!address && (await tcpReady(address.host, address.port, signal));
+    };
     try {
       while (true) {
         signal.throwIfAborted();
-        const v = await this.runtime.inspect(ctx, s.Container);
+        const v = await runtime.inspect(ctx, s.Container);
         if (v && !v.Running)
           fail(`${s.Name} exited before becoming ready; run contremaitre logs ${s.Name}`);
-        if (v?.Running && v.IP) {
-          s.IP = v.IP;
+        if (v?.Running && v.Host) {
+          s.Host = v.Host;
           const ready =
             s.Spec.kind === "postgres"
               ? ["pg_isready", "-U", "app", "-d", "app"]
@@ -1093,17 +1181,19 @@ export class Manager {
                 ? ["redis-cli", "ping"]
                 : s.Spec.ready;
           try {
-            if (ready?.length)
-              await this.runtime.exec(ctx, s.Container, ready, {
+            const address = serviceAddress(s, s.Port);
+            if (runtime.ready) {
+              if (!address || !(await runtime.ready(ctx, s, address)))
+                throw Error("Service not ready");
+            } else if (ready?.length && runtime.exec)
+              await runtime.exec(ctx, s.Container, ready, {
                 timeout: 5000,
                 stdout: ctx.log,
                 stderr: ctx.log,
               });
-            else if (s.Port && !(await tcpReady(s.IP, s.Port, signal)))
-              throw Error("Port unavailable");
+            else if (s.Port && !(await reachable(s.Port))) throw Error("Port unavailable");
             for (const port of Object.values(s.Spec.endpoints ?? {}))
-              if (!(await tcpReady(s.IP, port, signal)))
-                throw Error(`Endpoint port ${port} unavailable`);
+              if (!(await reachable(port))) throw Error(`Endpoint port ${port} unavailable`);
             s.ready = true;
             return;
           } catch (e) {
@@ -1155,7 +1245,7 @@ export class Manager {
         const reply = await invokeDriver(ctx, env, deleteData ? "delete" : "stop");
         if (reply.status !== "stopped") fail("Driver did not confirm stopped resources");
         for (const s of Object.values(env.Services)) {
-          s.IP = "";
+          s.Host = "";
           s.ready = false;
         }
       } catch (error) {
@@ -1166,12 +1256,13 @@ export class Manager {
       for (const name of keys(env.Services)) {
         const s = env.Services[name];
         try {
+          const runtime = this.backend(s);
           await this.stopDevelopment(s.Container);
-          await this.runtime.stop(ctx, s.Container);
-          await this.runtime.remove(ctx, s.Container);
-          await this.runtime.remove(ctx, `${s.Container}-task`);
-          await this.runtime.remove(ctx, `${s.Container}-sync`);
-          s.IP = "";
+          await runtime.stop(ctx, s.Container);
+          await runtime.remove(ctx, s.Container);
+          await runtime.remove(ctx, `${s.Container}-task`);
+          await runtime.remove(ctx, `${s.Container}-sync`);
+          s.Host = "";
           s.ready = false;
         } catch (error) {
           localFailure = true;
@@ -1226,6 +1317,31 @@ export class Manager {
       }
     return removed;
   }
+  private readonly portLock = new Semaphore(1);
+  /** Reserve one loopback port per declared port, keeping free previous reservations. */
+  private reservePorts(s: ServiceState) {
+    return this.portLock.use(AbortSignal.timeout(60_000), async () => {
+      const taken = new Set(
+        Object.values(this.state.Environments).flatMap((env) =>
+          Object.values(env.Services)
+            .filter((other) => other !== s)
+            .flatMap((other) => Object.values(other.Ports ?? {})),
+        ),
+      );
+      const ports: Record<string, number> = {};
+      for (const port of new Set([s.Port, ...Object.values(s.Spec.endpoints ?? {})])) {
+        if (!port) continue;
+        const previous = s.Ports?.[String(port)];
+        let reserved =
+          previous && !taken.has(previous) && (await loopbackPort(previous)) ? previous : 0;
+        while (!reserved || taken.has(reserved)) reserved = await loopbackPort(0);
+        taken.add(reserved);
+        ports[String(port)] = reserved;
+      }
+      s.Ports = ports;
+      this.save();
+    });
+  }
   async recover(ctx: Context) {
     // Recover cache leases before accepting work in any environment, including
     // failed deployments. A killed host CLI can leave a native guest running.
@@ -1275,13 +1391,16 @@ export class Manager {
             env.Error = message(e);
           }
       } else if (env.Status === "running") {
+        const restart = new Set<string>();
         for (const s of Object.values(env.Services)) {
-          const v = await this.runtime.inspect(ctx, s.Container);
-          s.IP = v?.Running ? v.IP : "";
-          if (!v?.Running) {
+          const runtime = this.backend(s);
+          const v = await runtime.inspect(ctx, s.Container);
+          s.Host = v?.Running ? v.Host : "";
+          if (!v?.Running && runtime.capabilities.network === "host") restart.add(s.Name);
+          else if (!v?.Running) {
             env.Status = "failed";
             env.Error = `${s.Name} is not running`;
-          } else if (s.Spec.dev) {
+          } else if (this.syncsSource(s) && s.Spec.dev) {
             await this.stopDevelopment(s.Container);
             const source = new DevelopmentSource(
               env.Root,
@@ -1303,6 +1422,23 @@ export class Manager {
             );
           }
         }
+        // Host processes do not outlive their hub reliably; restart them in dependency order.
+        const names = order(
+          Object.fromEntries(Object.entries(env.Services).map(([name, s]) => [name, s.Spec])),
+        );
+        for (const name of names.filter((name) => restart.has(name))) {
+          const s = env.Services[name];
+          try {
+            phase(ctx, `${env.Identity.Name}: restarting ${name}`);
+            await this.backend(s).remove(ctx, s.Container);
+            await this.startService(ctx, env, s, false);
+          } catch (error) {
+            s.Host = "";
+            env.Status = "failed";
+            env.Error = `${name} is not running: ${message(error)}`;
+            break;
+          }
+        }
       } else if (["deploying", "stopping"].includes(env.Status)) {
         env.Status = "failed";
         env.Error = "Interrupted operation; inspect logs before redeploying";
@@ -1310,4 +1446,15 @@ export class Manager {
     }
     this.save();
   }
+}
+/** Bind and release a loopback port. Returns the bound port, or 0 when it is in use. */
+function loopbackPort(port: number): Promise<number> {
+  return new Promise((resolve) => {
+    const server = createServer();
+    server.once("error", () => resolve(0));
+    server.listen({ host: "127.0.0.1", port, exclusive: true }, () => {
+      const address = server.address();
+      server.close(() => resolve(address && typeof address !== "string" ? address.port : 0));
+    });
+  });
 }

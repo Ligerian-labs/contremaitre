@@ -63,8 +63,8 @@ test("new deployments use readable names and queued collisions keep distinct rou
     expect(b.Identity.Host).toBe(`feature-a-app-${b.Identity.ID.slice(0, 8)}.example.localhost`);
     expect(logs.join("")).toContain(`Preparing network for ${b.Identity.Name}`);
     expect(a.Network).not.toBe(b.Network);
-    a.Services.web.IP = "127.0.0.2";
-    b.Services.web.IP = "127.0.0.3";
+    a.Services.web.Host = "127.0.0.2";
+    b.Services.web.Host = "127.0.0.3";
     expect(routes(f.manager, a.Identity.Host)?.upstream).toBe("http://127.0.0.2:3000");
     expect(routes(f.manager, b.Identity.Host)?.upstream).toBe("http://127.0.0.3:3000");
     expect(f.manager.resolve(b.Identity.Name)).toBe(b);

@@ -92,7 +92,7 @@ test("tunnel URL changes and restoration restart independent apps together and w
         if (spec.name === f.env.Services.api.Container) await gate.promise;
         await run(ctx, spec);
         if (spec.name === f.env.Services.api.Container)
-          f.runtime.containers.set(spec.name, { IP: "127.0.0.2", Running: true });
+          f.runtime.containers.set(spec.name, { Host: "127.0.0.2", Running: true });
       };
       const configuring = f.manager.configureTunnel(context(), f.env, urls);
       void configuring.catch(() => {});

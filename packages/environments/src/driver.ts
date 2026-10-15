@@ -145,7 +145,7 @@ export function applyDriverReply(env: Environment, reply: DriverReply): void {
       Image: "",
       Volume: "",
       Initialized: true,
-      IP: s.host ?? "",
+      Host: s.host ?? "",
       Port: s.port ?? 0,
       HTTP: s.http ?? false,
       url: s.url,
@@ -153,6 +153,6 @@ export function applyDriverReply(env: Environment, reply: DriverReply): void {
     };
   }
   if (reply.status === "running") env.Services = services;
-  else for (const s of Object.values(env.Services)) s.IP = "";
+  else for (const s of Object.values(env.Services)) s.Host = "";
   env.Status = reply.status;
 }

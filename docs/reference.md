@@ -129,13 +129,47 @@ Use `{{contremaitre.url}}` for the current service's browser URL. It resolves to
 
 Managed Postgres defaults to `postgres:17`, database/user `app`, and a generated password per environment. It stores data in an Apple named volume, under a subdirectory of the mount. This managed layout supports Postgres 17; changing an existing database image requires an explicit migration. Managed Redis defaults to `redis:7-alpine` and has no persistent volume, so it starts empty when replaced or restarted. An unchanged Redis process retains its in-memory data.
 
-`{{service.host}}`, `{{service.port}}`, and `{{service.url}}` resolve within the environment. Declare referenced services in `depends_on`. Postgres URLs include credentials; Redis URLs select database 0. App URLs use internal container IPs. Port numbers can be identical across environments because service ports are not published on the host.
+`{{service.host}}`, `{{service.port}}`, and `{{service.url}}` resolve within the environment. Declare referenced services in `depends_on`. Postgres URLs include credentials; Redis URLs select database 0. App URLs use internal container IPs. Port numbers can be identical across environments because service ports are not published on the host. WASM services resolve to their reserved loopback ports instead; see [Service runtime](#service-runtime).
 
 `{{service.local_url}}` resolves the browser-facing URL of another HTTP service, including the hub port. Use it for browser API endpoints and CORS origins. These URLs are known before services start, so this reference does not require `depends_on`; internal host/port/url references still do.
 
 `env_file` supports one-line `KEY=value` entries, optional outer quotes, comments, and blank lines. It does not evaluate shell expressions or expand `${...}`. Explicit `environment` entries take precedence. Multiline values are unsupported.
 
 Services receive `CONTREMAITRE_ENVIRONMENT`, `CONTREMAITRE_LOCAL_URL`, and, when reserved, `CONTREMAITRE_PUBLIC_URL`. The runtime retains private configuration needed to restart a deployed image, even after its source workspace changes.
+
+### Service runtime
+
+Each service runs on one runtime, selected with `runtime`. The default, `apple`, runs the service in an Apple container as described above. Existing manifests without the field keep this behavior. `runtime: wasm` runs the service as a WebAssembly process on the host:
+
+```yaml
+services:
+  db:
+    kind: postgres
+    runtime: wasm
+  web:
+    runtime: wasm
+    wasm:
+      build: [cargo, build, --release, --target, wasm32-wasip2]
+      directory: services/web
+      component: services/web/target/wasm32-wasip2/release/web.wasm
+    port: 8080
+    http: true
+    depends_on: [db]
+    environment:
+      DATABASE_URL: '{{db.url}}'
+    dev:
+      source: services/web
+```
+
+A WASM app needs `wasm.component` and `port`. `wasm.build` is an optional command run on the host in `wasm.directory` (default: the project root) before each deployment; it must produce `wasm.component`. Both paths are relative to the project root. With `dev`, the runtime uses `dev.source` in place: there is no copy into a container and no `dev.install`; `dev.target` is optional. WASM apps don't accept `image`, `build`, `dockerfile`, `command`, `working_dir`, `init`, `migrate`, `ready`, `endpoints`, or `dev.install`. A WASM Postgres takes no `image`. Redis runs only on `apple`. Verification checks with `service:` run inside a container, so they can't select a WASM service.
+
+WASM services listen on loopback. Contremaitre reserves a free `127.0.0.1` port for each declared port and keeps it across redeploys while it stays free. `{{db.host}}`, `{{db.port}}` and `{{db.url}}` resolve to that address, the hub routes HTTP to it, and `contremaitre proxy` connects to it, so the declared port still identifies the service.
+
+In a mixed environment, a WASM service can depend on an Apple service: it reaches the container through its IP. An Apple service can't depend on a WASM service, because containers can't reach the host's loopback. Validation rejects that `depends_on`. Give both services the same runtime instead.
+
+The first deployment records each service's runtime. Contremaitre never converts a service between runtimes. A deployment that changes a recorded runtime fails before it stops anything. To move a service, remove it from the manifest and deploy, or delete the environment with `contremaitre down --delete-data`; then deploy with the new runtime. Forking Postgres from main requires the same runtime for that service in both environments.
+
+The WASM runtimes are being added: until they're available, deploying a `runtime: wasm` service fails with `WASM app runtime not available yet` or `WASM postgres runtime not available yet`, and the environment can still be stopped or deleted.
 
 Contremaitre gives the shared Apple builder up to 4 CPUs and 8 GB RAM, capped at
 the host CPU count and half its total RAM. Larger existing allocations are

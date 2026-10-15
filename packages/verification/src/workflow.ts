@@ -3,7 +3,13 @@ import * as fs from "node:fs/promises";
 import { join } from "node:path";
 import { driverProcess, invokeDriver } from "@contremaitre/environments/driver";
 import type { Manager } from "@contremaitre/environments/manager";
-import { type Environment, httpEndpoints, type Request } from "@contremaitre/environments/model";
+import {
+  addressURL,
+  type Environment,
+  httpEndpoints,
+  type Request,
+  serviceAddress,
+} from "@contremaitre/environments/model";
 import { type Context, fail, HubError, message } from "@contremaitre/execution/context";
 import { run } from "@contremaitre/execution/process";
 import type { Operations } from "@contremaitre/operations/operations";
@@ -48,8 +54,8 @@ export class AgentWorkflow {
     for (const s of Object.values(env.Services)) {
       if (s.development_error || s.dependencies_changed || s.ready === false) return false;
       try {
-        const current = await this.manager.runtime.inspect(ctx, s.Container);
-        if (!current?.Running || current.IP !== s.IP) return false;
+        const current = await this.manager.backend(s).inspect(ctx, s.Container);
+        if (!current?.Running || current.Host !== s.Host) return false;
       } catch {
         caller.throwIfAborted();
         return false;
@@ -229,13 +235,7 @@ export class AgentWorkflow {
               try {
                 if (env.driver)
                   await driverProcess(cleanup, env, "exec", undefined, check.service, argv, quiet);
-                else
-                  await this.manager.runtime.exec(
-                    cleanup,
-                    env.Services[check.service].Container,
-                    argv,
-                    quiet,
-                  );
+                else await this.manager.exec(cleanup, env.Services[check.service], argv, quiet);
               } catch (error) {
                 result.status = "failed";
                 result.error = clean(`Check cleanup: ${message(error)}`);
@@ -276,10 +276,10 @@ export class AgentWorkflow {
     const urls =
       check.service && !env.driver
         ? Object.fromEntries(
-            Object.entries(httpEndpoints(env)).map(([name, { service: s, port }]) => [
-              name,
-              `http://${s.IP.includes(":") ? `[${s.IP}]` : s.IP}:${port}`,
-            ]),
+            Object.entries(httpEndpoints(env)).map(([name, { service: s, port }]) => {
+              const address = serviceAddress(s, port);
+              return [name, address ? addressURL(address) : `http://:${port}`];
+            }),
           )
         : this.urls(env);
     const selected =
@@ -306,7 +306,7 @@ export class AgentWorkflow {
       const exec = async (args: readonly string[]) =>
         env.driver
           ? driverProcess(ctx, env, "exec", undefined, check.service, [...args], options)
-          : this.manager.runtime.exec(ctx, service.Container, args, options);
+          : this.manager.exec(ctx, service, args, options);
       await exec(["mkdir", "-p", values.CONTREMAITRE_ARTIFACTS]);
       // The remote process needs its own deadline even if the exec client disconnects.
       try {
@@ -334,7 +334,7 @@ export class AgentWorkflow {
         const quiet = { stdout: () => {}, stderr: () => {}, timeout: 6000 };
         if (env.driver)
           await driverProcess(cleanup, env, "exec", undefined, check.service, command, quiet);
-        else await this.manager.runtime.exec(cleanup, service.Container, command, quiet);
+        else await this.manager.exec(cleanup, service, command, quiet);
       }
     } else
       await run(ctx, check.command, {
@@ -369,7 +369,7 @@ export class AgentWorkflow {
         const args = ["cat", `/tmp/contremaitre-${id}/${check.name}/${path}`];
         if (env.driver)
           await driverProcess(ctx, env, "exec", undefined, check.service, args, options);
-        else await this.manager.runtime.exec(ctx, service.Container, args, options);
+        else await this.manager.exec(ctx, service, args, options);
         await fs.mkdir(join(directory, path, ".."), { recursive: true, mode: 0o700 });
         await fs.writeFile(join(directory, path), Buffer.concat(chunks), { mode: 0o600 });
       }

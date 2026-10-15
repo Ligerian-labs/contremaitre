@@ -10,6 +10,7 @@
     "./driver": "./src/driver.ts",
     "./manager": "./src/manager.ts",
     "./model": "./src/model.ts",
+    "./runtimes": "./src/runtimes.ts",
     "./store": "./src/store.ts",
     "./tunnel": "./src/tunnel.ts",
     "./tunnel-session": "./src/tunnel-session.ts",

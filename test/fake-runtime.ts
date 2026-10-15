@@ -55,7 +55,7 @@ export class FakeRuntime implements Runtime {
       if (this.failTask) throw Error("task failed");
       return;
     }
-    this.containers.set(s.name, { IP: "127.0.0.1", Running: true });
+    this.containers.set(s.name, { Host: "127.0.0.1", Running: true });
   }
   async inspect(_ctx: Context, name: string) {
     return this.containers.get(name);
@@ -67,7 +67,7 @@ export class FakeRuntime implements Runtime {
   }
   async start(_ctx: Context, name: string) {
     this.calls.push(`start ${name}`);
-    this.containers.set(name, { IP: "127.0.0.1", Running: true });
+    this.containers.set(name, { Host: "127.0.0.1", Running: true });
   }
   async remove(_ctx: Context, name: string) {
     this.calls.push(`remove ${name}`);

@@ -26,7 +26,7 @@ test("driver executable is frozen and response validation rejects non-loopback u
     rmSync(path);
     applyDriverReply(env, await invokeDriver(context(), env, "deploy"));
     expect(env.Status).toBe("running");
-    expect(env.Services.web.IP).toBe("127.0.0.1");
+    expect(env.Services.web.Host).toBe("127.0.0.1");
     expect(() =>
       applyDriverReply(env, {
         version: 1,
