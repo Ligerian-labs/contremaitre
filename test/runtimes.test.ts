@@ -41,11 +41,13 @@ class FakeHostRuntime implements ServiceRuntime {
   clones: [CloneSide, CloneSide][] = [];
   readyChecks: string[] = [];
   digest = "component";
+  failBuilds = new Set<string>();
   async preflight() {
     this.calls.push("preflight");
   }
   async build(_ctx: Context, request: { name: string; root: string }) {
     this.calls.push(`build ${request.name}`);
+    if (this.failBuilds.has(request.name)) throw Error(`${request.name} build failed`);
     return { digest: this.digest, image: join(request.root, `${request.name}.wasm`) };
   }
   async run(_ctx: Context, spec: RunSpec) {
@@ -505,6 +507,64 @@ services:
     expect(f.host.calls.filter((c) => /^(stop|run) /.test(c))).toEqual([]);
   } finally {
     await new Promise<void>((resolve) => (blocker ? blocker.close(() => resolve()) : resolve()));
+    await f.clean();
+  }
+});
+test("recovery leaves services that reference no moved address untouched", async () => {
+  const f = fixture(`version: 1
+project: example
+services:
+  db: {kind: postgres, runtime: wasm}
+  one: {runtime: wasm, wasm: {component: one.wasm}, port: 8080}
+  two: {runtime: wasm, wasm: {component: two.wasm}, port: 8081, environment: {DATABASE_URL: '{{db.url}}'}, depends_on: [db]}
+`);
+  try {
+    const p = f.prepare();
+    await f.manager.deploy(context(), p);
+    const env = f.manager.resolve(p.identity.ID),
+      { db, one, two } = env.Services;
+    // A failed deployment can record a newer artifact for one service without replacing it.
+    f.host.digest = "v2";
+    f.host.failBuilds.add("two");
+    await expect(f.manager.deploy(context(), p)).rejects.toThrow("two build failed");
+    expect(env.Status).toBe("running");
+    await f.host.close(db.Container);
+    f.host.calls = [];
+    await f.manager.recover(context());
+    expect(env.Status).toBe("running");
+    expect(f.host.calls.filter((c) => /^(stop|run) /.test(c))).toEqual([
+      `stop ${db.Container}`,
+      `run ${db.Container}`,
+    ]);
+    expect(f.host.calls).not.toContain(`run ${one.Container}`);
+    expect(f.host.calls).not.toContain(`run ${two.Container}`);
+  } finally {
+    await f.clean();
+  }
+});
+test("recovery marks a missing Apple dependency failed without aborting", async () => {
+  const f = fixture(`version: 1
+project: example
+services:
+  apple-db: {kind: postgres}
+  db: {kind: postgres, runtime: wasm}
+  web:
+    runtime: wasm
+    wasm: {component: web.wasm}
+    port: 8080
+    depends_on: [apple-db, db]
+    environment: {APPLE_URL: '{{apple-db.url}}', DATABASE_URL: '{{db.url}}'}
+`);
+  try {
+    const p = f.prepare();
+    await f.manager.deploy(context(), p);
+    const env = f.manager.resolve(p.identity.ID);
+    await f.apple.remove(context(), env.Services["apple-db"].Container);
+    await f.host.close(env.Services.db.Container);
+    await f.manager.recover(context());
+    expect(env.Status).toBe("failed");
+    expect(env.Error).toContain("apple-db is not running");
+  } finally {
     await f.clean();
   }
 });

@@ -1321,6 +1321,16 @@ export class Manager {
       }
     return removed;
   }
+  /** Services whose address a service's configuration contains: dependencies and address references. */
+  private references(env: Environment, s: ServiceState): string[] {
+    const endpoints = httpEndpoints(env);
+    const names = new Set(s.Spec.depends_on ?? []);
+    for (const value of Object.values({ ...s.raw_environment, ...s.Spec.environment }))
+      for (const [, name] of value.matchAll(/\{\{([a-z][a-z0-9-]*)\.(?:host|port|url)\}\}/g))
+        names.add(endpoints[name]?.service.Name ?? name);
+    names.delete(s.Name);
+    return [...names];
+  }
   private readonly portLock = new Semaphore(1);
   /** Reserve one loopback port per declared port, keeping free previous reservations. */
   private reservePorts(s: ServiceState) {
@@ -1427,28 +1437,26 @@ export class Manager {
           }
         }
         // Host processes do not outlive their hub reliably; restart them in dependency order.
-        // A restart can move a reserved port. Running host services whose recorded
-        // configuration no longer matches, including transitive references, restart too.
+        // A restart can move a reserved port, so running services that reference a moved
+        // service restart with its new address. Validation keeps Apple services from
+        // referencing host services.
         const names = order(
           Object.fromEntries(Object.entries(env.Services).map(([name, s]) => [name, s.Spec])),
         );
-        let restarted = false;
+        const moved = new Set<string>();
         for (const name of names) {
           const s = env.Services[name];
-          const stale =
-            restarted &&
-            this.backend(s).capabilities.network === "host" &&
-            !!s.deployment &&
-            s.deployment !== this.deploymentFingerprint(env, s);
-          if (!restart.has(name) && !stale) continue;
           try {
+            if (!restart.has(name) && !this.references(env, s).some((dep) => moved.has(dep)))
+              continue;
             phase(ctx, `${env.Identity.Name}: restarting ${name}`);
+            const ports = JSON.stringify(s.Ports ?? {});
             await this.stopDevelopment(s.Container);
             await this.backend(s).stop(ctx, s.Container);
             await this.backend(s).remove(ctx, s.Container);
             await this.startService(ctx, env, s, false);
             s.deployment = this.deploymentFingerprint(env, s);
-            restarted = true;
+            if (JSON.stringify(s.Ports ?? {}) !== ports) moved.add(name);
           } catch (error) {
             s.Host = "";
             env.Status = "failed";
