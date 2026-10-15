@@ -22,7 +22,7 @@ import {
   type ServiceRuntime,
 } from "@contremaitre/environments/runtimes";
 import { Store } from "@contremaitre/environments/store";
-import { type Context, context } from "@contremaitre/execution/context";
+import { type Context, context, hash } from "@contremaitre/execution/context";
 import { routes } from "@contremaitre/hub/server";
 import { parseManifest, prepareManifest } from "@contremaitre/projects/config";
 import { newIdentity } from "@contremaitre/projects/model";
@@ -40,12 +40,13 @@ class FakeHostRuntime implements ServiceRuntime {
   servers = new Map<string, Server[]>();
   clones: [CloneSide, CloneSide][] = [];
   readyChecks: string[] = [];
+  digest = "component";
   async preflight() {
     this.calls.push("preflight");
   }
   async build(_ctx: Context, request: { name: string; root: string }) {
     this.calls.push(`build ${request.name}`);
-    return { digest: "component", image: join(request.root, `${request.name}.wasm`) };
+    return { digest: this.digest, image: join(request.root, `${request.name}.wasm`) };
   }
   async run(_ctx: Context, spec: RunSpec) {
     this.calls.push(`run ${spec.name}`);
@@ -388,6 +389,79 @@ test("hub recovery restarts stopped host-process services in dependency order", 
       `run ${env.Services.web.Container}`,
     ]);
     expect(env.Services.web.Host).toBe("127.0.0.1");
+  } finally {
+    await f.clean();
+  }
+});
+test("a rebuilt WASM artifact at the same path replaces the running service", async () => {
+  const f = fixture(mixed.replace("    dev: {source: src}\n", ""));
+  try {
+    const p = f.prepare();
+    await f.manager.deploy(context(), p);
+    const env = f.manager.resolve(p.identity.ID);
+    f.host.calls = [];
+    await f.manager.deploy(context(), p);
+    expect(f.host.calls.filter((c) => /^(stop|run) /.test(c))).toEqual([]);
+    f.host.digest = "rebuilt";
+    await f.manager.deploy(context(), p);
+    expect(env.builds?.web.digest).toBe("rebuilt");
+    expect(f.host.calls).toContain(`run ${env.Services.web.Container}`);
+    expect(f.host.calls).not.toContain(`run ${env.Services.db.Container}`);
+  } finally {
+    await f.clean();
+  }
+});
+test("recovery restarts running dependents when a dependency moves to a new port", async () => {
+  const f = fixture();
+  let blocker: Server | undefined;
+  try {
+    const p = f.prepare();
+    await f.manager.deploy(context(), p);
+    const env = f.manager.resolve(p.identity.ID),
+      { db, web } = env.Services,
+      previous = db.Ports?.["5432"] ?? 0;
+    await f.host.close(db.Container);
+    blocker = await new Promise<Server>((resolve) => {
+      const server = createServer();
+      server.listen(previous, "127.0.0.1", () => resolve(server));
+    });
+    f.host.calls = [];
+    await f.manager.recover(context());
+    const moved = db.Ports?.["5432"] ?? 0;
+    expect(moved).not.toBe(previous);
+    expect(env.Status).toBe("running");
+    expect(f.host.calls).toContain(`run ${web.Container}`);
+    const run = f.host.specs.get(web.Container) as RunSpec & { environment: string };
+    expect(run.environment).toContain(`@127.0.0.1:${moved}/app`);
+    // The refreshed fingerprint lets the next deployment retain both services.
+    f.host.calls = [];
+    await f.manager.deploy(context(), p);
+    expect(f.host.calls.filter((c) => c === `run ${db.Container}`)).toEqual([]);
+  } finally {
+    await new Promise<void>((resolve) => (blocker ? blocker.close(() => resolve()) : resolve()));
+    await f.clean();
+  }
+});
+test("Apple deployment fingerprints keep their pre-runtime shape", async () => {
+  const f = fixture(
+    'version: 1\nproject: example\nservices:\n  db: {kind: postgres}\n  web: {image: nginx, port: 80, ready: ["true"], depends_on: [db]}\n',
+  );
+  try {
+    const p = f.prepare();
+    await f.manager.deploy(context(), p);
+    const env = f.manager.resolve(p.identity.ID),
+      { db, web } = env.Services;
+    // The formula used before per-service runtimes, with the container IP as host.
+    expect(web.deployment).toBe(
+      hash(
+        JSON.stringify([
+          web.Image,
+          web.Spec,
+          f.manager.serviceEnv(env, web),
+          [["db", db.Host, db.Port]],
+        ]),
+      ),
+    );
   } finally {
     await f.clean();
   }

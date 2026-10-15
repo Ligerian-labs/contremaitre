@@ -651,6 +651,10 @@ export class Manager {
     }
   }
   private deploymentFingerprint(env: Environment, s: ServiceState): string {
+    // Apple image tags change with every build, so the image identifies its artifact.
+    // Other runtimes can rebuild an artifact in place; include its digest instead.
+    // Apple keeps its earlier fingerprint shape so upgrades retain running services.
+    const artifact = (s.Runtime ?? "apple") === "apple" ? [] : [env.builds?.[s.Name]?.digest ?? ""];
     return hash(
       JSON.stringify([
         s.Image,
@@ -658,9 +662,9 @@ export class Manager {
         this.serviceEnv(env, s),
         (s.Spec.depends_on ?? []).map((name) => {
           const dep = env.Services[name];
-          // Apple addresses keep the container IP and declared port, as before host runtimes.
           return [name, dep?.Host, (dep && serviceAddress(dep, dep.Port)?.port) ?? dep?.Port];
         }),
+        ...artifact,
       ]),
     );
   }
@@ -1423,15 +1427,23 @@ export class Manager {
           }
         }
         // Host processes do not outlive their hub reliably; restart them in dependency order.
+        // A restart can move a reserved port, so running dependents restart with the new address.
         const names = order(
           Object.fromEntries(Object.entries(env.Services).map(([name, s]) => [name, s.Spec])),
         );
-        for (const name of names.filter((name) => restart.has(name))) {
+        const moved = new Set<string>();
+        for (const name of names) {
           const s = env.Services[name];
+          if (!restart.has(name) && !s.Spec.depends_on?.some((dep) => moved.has(dep))) continue;
           try {
             phase(ctx, `${env.Identity.Name}: restarting ${name}`);
+            const ports = JSON.stringify(s.Ports ?? {});
+            await this.stopDevelopment(s.Container);
+            await this.backend(s).stop(ctx, s.Container);
             await this.backend(s).remove(ctx, s.Container);
             await this.startService(ctx, env, s, false);
+            s.deployment = this.deploymentFingerprint(env, s);
+            if (JSON.stringify(s.Ports ?? {}) !== ports) moved.add(name);
           } catch (error) {
             s.Host = "";
             env.Status = "failed";
