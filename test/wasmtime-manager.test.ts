@@ -488,34 +488,42 @@ real(
       await fs.symlink(f.home, link);
       // The CLI resolves --home without following symlinks, such as /tmp -> /private/tmp.
       const cli = new WasmtimeRuntime({ home: link, apple: new FakeRuntime() });
-      for (const id of [f.prepared.identity.ID, branch.identity.ID]) {
-        const service = m.resolve(id).Services.web;
+      const logs = async (name: string) => {
         let output = "";
         await cli.logs(
           context(undefined, (chunk) => {
             output += chunk.toString();
           }),
-          service.Container,
+          name,
           false,
         );
+        return output;
+      };
+      for (const id of [f.prepared.identity.ID, branch.identity.ID]) {
+        const service = m.resolve(id).Services.web;
+        const output = await logs(service.Container);
         expect(output).toContain(`Serving HTTP on http://127.0.0.1:${service.Ports?.["8080"]}/`);
+        expect(output).not.toContain("Cannot read wasmtime record");
+        expect((await cli.inspect(ctx, service.Container))?.Running).toBe(true);
       }
       // A corrupt record is treated as stopped: its log stays readable, with a notice.
       const service = m.resolve(branch.identity.ID).Services.web;
       const path = join(f.home, "wasmtime", `${service.Container}.json`);
       const saved = await fs.readFile(path, "utf8");
-      await fs.writeFile(path, '{"version":1,');
-      let output = "";
-      await cli.logs(
-        context(undefined, (chunk) => {
-          output += chunk.toString();
-        }),
-        service.Container,
-        false,
-      );
-      expect(output).toContain(`Cannot read wasmtime record ${service.Container}`);
-      expect(output).toContain("treated as stopped");
-      expect(output).toContain(`Serving HTTP on http://127.0.0.1:${service.Ports?.["8080"]}/`);
+      const outside = join(f.home, "outside.log");
+      await fs.writeFile(outside, "OUTSIDE-SENTINEL\n");
+      for (const corrupt of [
+        '{"version":1,',
+        JSON.stringify({ ...JSON.parse(saved), log: outside }),
+      ]) {
+        await fs.writeFile(path, corrupt);
+        const output = await logs(service.Container);
+        expect(output).toContain(`wasmtime record ${service.Container}`);
+        expect(output).toContain("treated as stopped");
+        expect(output).toContain(`Serving HTTP on http://127.0.0.1:${service.Ports?.["8080"]}/`);
+        expect(output).not.toContain("OUTSIDE-SENTINEL");
+      }
+      await expect(logs("../outside")).rejects.toThrow("Invalid wasmtime service name");
       await fs.writeFile(path, saved);
     } finally {
       await fs.rm(link, { force: true });

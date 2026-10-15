@@ -416,6 +416,7 @@ export class WasmtimeRuntime implements ServiceRuntime {
     );
   }
   async logs(ctx: Context, name: string, follow = false): Promise<void> {
+    this.path(name); // Reject names that escape the runtime directory before any fallback.
     try {
       if (!(await this.read(name))) return;
     } catch (e) {
