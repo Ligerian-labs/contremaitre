@@ -55,6 +55,7 @@ import {
   serviceAddress,
 } from "./model.js";
 import {
+  type Inspection,
   type RunSpec,
   type RuntimeRegistry,
   runtimeRegistry,
@@ -168,6 +169,14 @@ export class Manager {
   /** The runtime recorded for a deployed service. */
   backend(s: ServiceState): ServiceRuntime {
     return selectRuntime(this.runtimes, s.Runtime ?? "apple", serviceKind(s.Spec));
+  }
+  /** Whether an environment may own Apple resources: a container service, image or volume. */
+  usesContainers(env: Environment): boolean {
+    return (
+      env.Images.length > 0 ||
+      env.Volumes.length > 0 ||
+      Object.values(env.Services).some((s) => this.backend(s).capabilities.network === "container")
+    );
   }
   /** Run a command inside a service whose runtime supports it. */
   exec(ctx: Context, s: ServiceState, args: readonly string[], options?: RunOptions) {
@@ -547,6 +556,12 @@ export class Manager {
           await this.runtime.removeNetwork(ctx, e.Network);
           await this.runtime.network(ctx, e.Network);
         }
+        // The last container service left: delete the network, keep images and volumes for down.
+        if (
+          !containers &&
+          removing.some((name) => this.backend(previous[name]).capabilities.network === "container")
+        )
+          await this.runtime.removeNetwork(ctx, e.Network);
       }
       for (const name of changing) services[name].Host = "";
       e.Services = services;
@@ -1289,6 +1304,7 @@ export class Manager {
       if (env.driver) {
         if (env.driver_directory) rmSync(env.driver_directory, { recursive: true, force: true });
       } else {
+        const containers = this.usesContainers(env);
         while (env.Volumes.length) {
           await this.runtime.removeVolume(ctx, env.Volumes[0]);
           env.Volumes.shift();
@@ -1296,7 +1312,7 @@ export class Manager {
         }
         rmSync(join(this.store.home, "data", env.Identity.ID), { recursive: true, force: true });
         rmSync(join(this.store.home, "sources", env.Identity.ID), { recursive: true, force: true });
-        await this.runtime.removeNetwork(ctx, env.Network);
+        if (containers) await this.runtime.removeNetwork(ctx, env.Network);
         for (const image of env.Images) await this.runtime.removeImage(ctx, image);
       }
       delete this.state.Environments[env.Identity.ID];
@@ -1409,9 +1425,20 @@ export class Manager {
           }
       } else if (env.Status === "running") {
         const restart = new Set<string>();
+        const inspections = new Map<string, Inspection | undefined>();
+        try {
+          for (const s of Object.values(env.Services))
+            inspections.set(s.Name, await this.backend(s).inspect(ctx, s.Container));
+        } catch (error) {
+          // An unavailable container system fails this environment, not the hub.
+          for (const s of Object.values(env.Services)) s.Host = "";
+          env.Status = "failed";
+          env.Error = `Recovery could not inspect services: ${message(error)}`;
+          continue;
+        }
         for (const s of Object.values(env.Services)) {
           const runtime = this.backend(s);
-          const v = await runtime.inspect(ctx, s.Container);
+          const v = inspections.get(s.Name);
           s.Host = v?.Running ? v.Host : "";
           if (!v?.Running && runtime.capabilities.network === "host") restart.add(s.Name);
           else if (!v?.Running) {
