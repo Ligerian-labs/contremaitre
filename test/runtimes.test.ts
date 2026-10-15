@@ -466,3 +466,45 @@ test("Apple deployment fingerprints keep their pre-runtime shape", async () => {
     await f.clean();
   }
 });
+test("recovery refreshes transitive consumers of a moved address and keeps them retained", async () => {
+  const f = fixture(`version: 1
+project: example
+services:
+  db: {kind: postgres, runtime: wasm}
+  relay: {runtime: wasm, wasm: {component: relay.wasm}, port: 8080, depends_on: [db]}
+  web:
+    runtime: wasm
+    wasm: {component: web.wasm}
+    port: 8081
+    depends_on: [relay]
+    environment: {DATABASE_URL: '{{db.url}}'}
+`);
+  let blocker: Server | undefined;
+  try {
+    const p = f.prepare();
+    await f.manager.deploy(context(), p);
+    const env = f.manager.resolve(p.identity.ID),
+      { db, web } = env.Services,
+      previous = db.Ports?.["5432"] ?? 0;
+    await f.host.close(db.Container);
+    blocker = await new Promise<Server>((resolve) => {
+      const server = createServer();
+      server.listen(previous, "127.0.0.1", () => resolve(server));
+    });
+    f.host.calls = [];
+    await f.manager.recover(context());
+    const moved = db.Ports?.["5432"] ?? 0;
+    expect(moved).not.toBe(previous);
+    expect(env.Status).toBe("running");
+    const run = f.host.specs.get(web.Container) as RunSpec & { environment: string };
+    expect(run.environment).toContain(`@127.0.0.1:${moved}/app`);
+    // Recorded fingerprints match the refreshed processes, so nothing restarts again.
+    f.host.calls = [];
+    await f.manager.recover(context());
+    await f.manager.deploy(context(), p);
+    expect(f.host.calls.filter((c) => /^(stop|run) /.test(c))).toEqual([]);
+  } finally {
+    await new Promise<void>((resolve) => (blocker ? blocker.close(() => resolve()) : resolve()));
+    await f.clean();
+  }
+});

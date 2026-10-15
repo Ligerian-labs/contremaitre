@@ -1427,23 +1427,28 @@ export class Manager {
           }
         }
         // Host processes do not outlive their hub reliably; restart them in dependency order.
-        // A restart can move a reserved port, so running dependents restart with the new address.
+        // A restart can move a reserved port. Running host services whose recorded
+        // configuration no longer matches, including transitive references, restart too.
         const names = order(
           Object.fromEntries(Object.entries(env.Services).map(([name, s]) => [name, s.Spec])),
         );
-        const moved = new Set<string>();
+        let restarted = false;
         for (const name of names) {
           const s = env.Services[name];
-          if (!restart.has(name) && !s.Spec.depends_on?.some((dep) => moved.has(dep))) continue;
+          const stale =
+            restarted &&
+            this.backend(s).capabilities.network === "host" &&
+            !!s.deployment &&
+            s.deployment !== this.deploymentFingerprint(env, s);
+          if (!restart.has(name) && !stale) continue;
           try {
             phase(ctx, `${env.Identity.Name}: restarting ${name}`);
-            const ports = JSON.stringify(s.Ports ?? {});
             await this.stopDevelopment(s.Container);
             await this.backend(s).stop(ctx, s.Container);
             await this.backend(s).remove(ctx, s.Container);
             await this.startService(ctx, env, s, false);
             s.deployment = this.deploymentFingerprint(env, s);
-            if (JSON.stringify(s.Ports ?? {}) !== ports) moved.add(name);
+            restarted = true;
           } catch (error) {
             s.Host = "";
             env.Status = "failed";
