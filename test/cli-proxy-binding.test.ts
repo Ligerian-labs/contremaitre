@@ -103,6 +103,8 @@ test("host-runtime proxy stays bound while following its environment's current s
     expect(await connect()).toBe("A");
     portA = ports[2];
     expect(await connect()).toBe("A-redeployed");
+    await Bun.sleep(50);
+    expect(stderrOutput).toBe("");
     for (const unavailable of ["stopped", "missing", "deleted"] as const) {
       state = unavailable;
       expect(await connect()).toBe("");
@@ -116,6 +118,8 @@ test("host-runtime proxy stays bound while following its environment's current s
     }
     state = "running";
     expect(await connect()).toBe("A-redeployed");
+    await Bun.sleep(50);
+    expect(stderrOutput).toBe("");
     expect(requests[0].env).toBe("");
     expect(requests.slice(1).every((request) => request.env === "environment-a")).toBe(true);
   } finally {
