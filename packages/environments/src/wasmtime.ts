@@ -104,7 +104,40 @@ export class WasmtimeRuntime implements ServiceRuntime {
       fail(`Cannot read wasmtime record ${name}: ${message(e)}`);
     }
   }
+  private async broken(ctx: Context, name: string) {
+    if (!existsSync(this.path(name)) && !existsSync(join(this.directory, `${name}.owner`))) return;
+    phase(ctx, `Ignoring corrupt wasmtime record ${name}; cleaning verified process ownership`);
+    for (const path of [this.path(name), join(this.directory, `${name}.owner`)]) {
+      let value: unknown;
+      try {
+        value = JSON.parse(await fs.readFile(path, "utf8"));
+      } catch (e) {
+        if (!isCode(e, "ENOENT")) phase(ctx, `Cannot salvage wasmtime ownership: ${message(e)}`);
+        continue;
+      }
+      if (
+        value &&
+        typeof value === "object" &&
+        "pid" in value &&
+        "identity" in value &&
+        typeof value.pid === "number" &&
+        Number.isSafeInteger(value.pid) &&
+        value.pid >= 2 &&
+        typeof value.identity === "string"
+      )
+        await this.terminate({ pid: value.pid, identity: value.identity });
+    }
+    await fs.rm(this.path(name), { force: true });
+    await fs.rm(join(this.directory, `${name}.owner`), { force: true });
+  }
   private save(name: string, r: RecordState) {
+    atomicWrite(
+      join(this.directory, `${name}.owner`),
+      JSON.stringify({
+        pid: r.pid,
+        identity: r.identity,
+      }),
+    );
     atomicWrite(this.path(name), JSON.stringify(r));
   }
   async preflight(ctx: Context): Promise<void> {
@@ -126,10 +159,10 @@ export class WasmtimeRuntime implements ServiceRuntime {
     };
     inside(component);
     phase(ctx, "Building WASM component on host");
+    const cwd = await fs.realpath(resolve(root, wasm.directory ?? "."));
+    inside(cwd);
     try {
       if (wasm.build) {
-        const cwd = await fs.realpath(resolve(root, wasm.directory ?? "."));
-        inside(cwd);
         await run(ctx, wasm.build, { cwd, stdout: ctx.log, stderr: ctx.log });
       }
     } catch (e) {
@@ -142,7 +175,13 @@ export class WasmtimeRuntime implements ServiceRuntime {
     return previous?.digest === built.digest && previous.image === built.image ? previous : built;
   }
   async inspect(ctx: Context, name: string): Promise<Inspection | undefined> {
-    const r = await this.read(name);
+    let r: RecordState | undefined;
+    try {
+      r = await this.read(name);
+    } catch (e) {
+      phase(ctx, message(e));
+      return { Running: false, Host: this.bind };
+    }
     const running = !!r && identity(r.pid) === r.identity;
     if (running) await this.watchService(ctx, name);
     return r ? { Running: running, Host: this.bind } : undefined;
@@ -197,7 +236,11 @@ export class WasmtimeRuntime implements ServiceRuntime {
     ctx.signal.throwIfAborted();
     await this.preflight(ctx);
     phase(ctx, `Starting wasmtime ${name}`);
-    const digest = hash(await fs.readFile(s.component));
+    const bytes = await fs.readFile(s.component);
+    const digest = hash(bytes);
+    await fs.mkdir(this.directory, { recursive: true, mode: 0o700 });
+    const snapshot = join(this.directory, `${name}.${digest}.wasm`);
+    if (!existsSync(snapshot)) await fs.writeFile(snapshot, bytes, { mode: 0o600 });
     const port = s.port;
     if (await answering(port, this.bind))
       fail(`Wasmtime port ${port} is already in use`, "conflict");
@@ -214,7 +257,7 @@ export class WasmtimeRuntime implements ServiceRuntime {
       "--addr",
       `${this.bind}:${port}`,
       ...Object.keys(s.env).flatMap((k) => ["--env", k]),
-      s.component,
+      snapshot,
     ];
     const fd = openSync(log, "a", 0o600);
     const child = spawn(argv[0], argv.slice(1), {
@@ -243,7 +286,7 @@ export class WasmtimeRuntime implements ServiceRuntime {
         pid,
         identity: started,
         port,
-        component: s.component,
+        component: snapshot,
         digest,
         argv,
         env: s.env,
@@ -285,8 +328,17 @@ export class WasmtimeRuntime implements ServiceRuntime {
     try {
       const watcher = this.watchers.get(name);
       await watcher?.stop();
-      const r = await this.read(name);
-      if (!r) return;
+      let r: RecordState | undefined;
+      try {
+        r = await this.read(name);
+      } catch {
+        await this.broken(ctx, name);
+        return;
+      }
+      if (!r) {
+        await this.broken(ctx, name);
+        return;
+      }
       phase(ctx, `Stopping wasmtime ${name}`);
       try {
         this.save(name, { ...r, desired: "stopped" });
@@ -297,7 +349,7 @@ export class WasmtimeRuntime implements ServiceRuntime {
       this.stopping.delete(name);
     }
   }
-  private async terminate(r: RecordState) {
+  private async terminate(r: Pick<RecordState, "pid" | "identity"> & { port?: number }) {
     if (identity(r.pid) !== r.identity) return;
     const kill = (signal: NodeJS.Signals) => {
       try {
@@ -313,41 +365,25 @@ export class WasmtimeRuntime implements ServiceRuntime {
     const killed = Date.now() + 5000;
     while (identity(r.pid) === r.identity && Date.now() < killed) await delay(50);
     if (identity(r.pid) === r.identity) fail(`Cannot stop wasmtime pid ${r.pid}`);
+    const released = Date.now() + 5000;
+    while (r.port && (await answering(r.port, this.bind)) && Date.now() < released) await delay(50);
   }
   async remove(ctx: Context, name: string): Promise<void> {
     await this.stop(ctx, name);
     await Promise.all(
       [
         this.path(name),
+        join(this.directory, `${name}.owner`),
+        ...(await fs.readdir(this.directory).catch(() => []))
+          .filter(
+            (p) =>
+              p.startsWith(`${name}.`) && /^[a-f0-9]{64}\.wasm$/.test(p.slice(name.length + 1)),
+          )
+          .map((p) => join(this.directory, p)),
         join(this.directory, `${name}.log`),
         join(this.directory, `${name}.log.1`),
       ].map((p) => fs.rm(p, { force: true })),
     );
-  }
-  async recover(ctx: Context): Promise<Record<string, string>> {
-    const outcomes: Record<string, string> = {};
-    if (!existsSync(this.directory)) return outcomes;
-    for (const file of await fs.readdir(this.directory)) {
-      if (!file.endsWith(".json")) continue;
-      const name = file.slice(0, -5);
-      try {
-        const r = await this.read(name);
-        if (!r) continue;
-        if (r.desired === "stopped") {
-          await this.stop(ctx, name);
-          outcomes[name] = "stopped";
-        } else if (identity(r.pid) === r.identity && (await answering(r.port, this.bind))) {
-          await this.watchService(ctx, name);
-          outcomes[name] = "reattached";
-        } else {
-          await this.start(ctx, name);
-          outcomes[name] = "restarted";
-        }
-      } catch (e) {
-        outcomes[name] = `failed: ${message(e)}`;
-      }
-    }
-    return outcomes;
   }
   async logs(ctx: Context, name: string, follow = false): Promise<void> {
     const r = await this.read(name);
@@ -383,7 +419,7 @@ export class WasmtimeRuntime implements ServiceRuntime {
     const root = r.root,
       service: Service = r.service,
       source = r.source,
-      component = r.component;
+      component = resolve(root, service.wasm?.component ?? r.component);
     if (!existsSync(source) || !existsSync(component)) return;
     // No await between this check and registration: concurrent inspect calls share one watcher.
     if (
@@ -444,10 +480,15 @@ export class WasmtimeRuntime implements ServiceRuntime {
             const current = await this.read(name);
             if (!current) break;
             await this.terminate(current);
-            await this.spawn(ctx, name, { ...current, component: built.image });
+            try {
+              await this.spawn(ctx, name, { ...current, component: built.image });
+            } catch (e) {
+              if (controller.signal.aborted) throw e;
+              await this.spawn(ctx, name, current);
+              ctx.log(`WASM restart failed; previous version restored: ${message(e)}\n`);
+            }
           } catch (e) {
-            if (!controller.signal.aborted && (await valid()))
-              ctx.log(`WASM rebuild failed: ${message(e)}\n`);
+            if (!controller.signal.aborted) ctx.log(`WASM rebuild failed: ${message(e)}\n`);
           }
         }
       })().finally(() => {

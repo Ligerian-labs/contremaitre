@@ -382,3 +382,47 @@ afterAll(() => {
       ),
   });
 });
+
+real(
+  "Manager recovery and down isolate corrupt records without orphaning services",
+  async () => {
+    const f = await fixture();
+    try {
+      let m = f.manager();
+      await m.deploy(ctx, f.prepared);
+      const other = { ...f.prepared, identity: newIdentity("wasm-other", f.root, "other") };
+      await m.deploy(ctx, other);
+      const env = m.resolve(f.prepared.identity.ID);
+      const service = env.Services.web;
+      const path = join(f.home, "wasmtime", `${service.Container}.json`);
+      const healthy = m.resolve(other.identity.ID).Services.web;
+      const healthyPath = join(f.home, "wasmtime", `${healthy.Container}.json`);
+      const healthyPid = JSON.parse(await fs.readFile(healthyPath, "utf8")).pid;
+      for (const corrupt of [
+        () => '{"version":1,',
+        (r: Record<string, unknown>) => JSON.stringify({ ...r, version: 999 }),
+        (r: Record<string, unknown>) => JSON.stringify({ ...r, log: "/old-home/service.log" }),
+      ]) {
+        const previous = JSON.parse(await fs.readFile(path, "utf8"));
+        await fs.writeFile(path, corrupt(previous));
+        m = f.manager();
+        await m.recover(ctx);
+        expect(() => process.kill(previous.pid, 0)).toThrow();
+        expect(JSON.parse(await fs.readFile(path, "utf8")).pid).not.toBe(previous.pid);
+        expect(JSON.parse(await fs.readFile(healthyPath, "utf8")).pid).toBe(healthyPid);
+        expect((await m.backend(healthy).inspect(ctx, healthy.Container))?.Running).toBe(true);
+      }
+      for (const deleteData of [false, true]) {
+        const current = JSON.parse(await fs.readFile(path, "utf8"));
+        await fs.writeFile(path, '{"version":1,');
+        await m.down(ctx, m.resolve(f.prepared.identity.ID), deleteData);
+        expect(() => process.kill(current.pid, 0)).toThrow();
+        expect(existsSync(path)).toBe(false);
+        if (!deleteData) await m.deploy(ctx, f.prepared);
+      }
+    } finally {
+      await f.cleanup();
+    }
+  },
+  120000,
+);

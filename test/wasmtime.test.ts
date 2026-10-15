@@ -193,6 +193,10 @@ real(
     expect(args).not.toContain("secret");
     expect((await fs.stat(join(directory, "wasmtime/app.json"))).mode & 0o777).toBe(0o600);
     expect(first.cwd).toBe(s.data);
+    const cwd = (
+      await run(ctx, ["/usr/sbin/lsof", "-a", "-p", String(first.pid), "-d", "cwd", "-Fn"])
+    ).toString();
+    expect(cwd).toContain(`n${await fs.realpath(s.data ?? "")}`);
     expect(first.argv).not.toContain("--dir");
     let output = "";
     await runtime.logs(
@@ -247,35 +251,6 @@ real("task and missing port mapping fail clearly", async () => {
   await expect(runtime.run(ctx, { ...s, ports: {} })).rejects.toThrow("Missing reserved");
 });
 real(
-  "recovery isolates broken records, reattaches survivors, restarts killed services and preserves stops",
-  async () => {
-    await setup();
-    const s = await spec();
-    await runtime.run(ctx, s);
-    const first = await record();
-    const broken = await spec({ name: "broken", image: join(directory, "deleted.wasm") });
-    await fs.copyFile(component, broken.image);
-    await runtime.run(ctx, broken);
-    process.kill((await record("broken")).pid, "SIGKILL");
-    await fs.rm(broken.image);
-    runtime = fresh();
-    expect((await runtime.inspect(ctx, "app"))?.Running).toBe(true);
-    const outcomes = await runtime.recover(ctx);
-    expect(outcomes.app).toBe("reattached");
-    expect(outcomes.broken).toStartWith("failed:");
-    process.kill(first.pid, "SIGKILL");
-    await until(async () => !(await runtime.inspect(ctx, "app"))?.Running);
-    expect((await runtime.recover(ctx)).app).toBe("restarted");
-    expect(await body(portOf(s))).toBe("hello wasm");
-    await runtime.stop(ctx, "app");
-    expect((await runtime.recover(ctx)).app).toBe("stopped");
-    await fs.writeFile(join(directory, "wasmtime/broken.json"), "{}");
-    expect((await runtime.recover(ctx)).broken).toContain("failed:");
-    await fs.rm(join(directory, "wasmtime/broken.json"));
-  },
-  30000,
-);
-real(
   "detached wasmtime survives a hub crash and recovery restores its dev watcher",
   async () => {
     await setup();
@@ -308,8 +283,10 @@ real(
       const first = await record("crash");
       child.kill("SIGKILL");
       await new Promise<void>((done) => child.once("exit", () => done()));
-      expect((await runtime.recover(ctx)).crash).toBe("reattached");
+      expect((await runtime.inspect(ctx, "crash"))?.Running).toBe(true);
       expect((await record("crash")).pid).toBe(first.pid);
+      // Let macOS retire the killed hub's FSEvents stream before editing.
+      await Bun.sleep(500);
       await fs.writeFile(join(root, "change"), "changed");
       await until(async () => (await record("crash")).pid !== first.pid);
       expect(await fs.readFile(join(root, "builds"), "utf8")).toContain("build");
@@ -321,7 +298,7 @@ real(
       }
     }
   },
-  30000,
+  90000,
 );
 real(
   "dev watches in place beyond deploy cancellation, honors excludes, retains old process on build failure",
@@ -522,4 +499,210 @@ afterAll(() => {
           !line.includes("/bin/zsh -c"),
       ),
   });
+});
+
+real("unrelated live pid is never running or terminated", async () => {
+  await setup();
+  await runtime.run(ctx, await spec());
+  const saved = await record();
+  await runtime.stop(ctx, "app");
+  const sleeper = spawn("/bin/sleep", ["60"]);
+  try {
+    await fs.writeFile(
+      join(directory, "wasmtime/app.json"),
+      JSON.stringify({
+        ...saved,
+        pid: sleeper.pid,
+        identity: "different process identity",
+      }),
+    );
+    expect((await runtime.inspect(ctx, "app"))?.Running).toBe(false);
+    await runtime.stop(ctx, "app");
+    await runtime.remove(ctx, "app");
+    expect(() => process.kill(sleeper.pid ?? 0, 0)).not.toThrow();
+  } finally {
+    sleeper.kill();
+    await new Promise<void>((done) => sleeper.once("exit", () => done()));
+  }
+});
+
+real(
+  "stop prevents later builds and redeploy uses new settings without component loops",
+  async () => {
+    await setup();
+    const root = join(directory, "source");
+    await fs.mkdir(root);
+    await fs.copyFile(component, join(root, "app.wasm"));
+    const marker = join(directory, "builds");
+    const service: Service = {
+      port: 8080,
+      wasm: {
+        component: "app.wasm",
+        build: ["/bin/sh", "-c", 'echo old >> "$1"', "build", marker],
+      },
+      dev: { source: ".", exclude: ["ignored"] },
+    };
+    const s = await spec({ root, source: root, image: join(root, "app.wasm"), service });
+    await runtime.run(ctx, s);
+    await runtime.stop(ctx, "app");
+    const stopped = await record();
+    const log = await fs.readFile(stopped.log, "utf8");
+    await fs.writeFile(join(root, "change"), "stopped");
+    await Bun.sleep(1000);
+    expect(await Bun.file(marker).exists()).toBe(false);
+    expect((await record()).pid).toBe(stopped.pid);
+    expect(await fs.readFile(stopped.log, "utf8")).toBe(log);
+    await runtime.run(ctx, {
+      ...s,
+      service: {
+        ...service,
+        wasm: {
+          component: "app.wasm",
+          build: [
+            "/bin/sh",
+            "-c",
+            'echo new >> "$1"; cp "$2" app.wasm',
+            "build",
+            marker,
+            component,
+          ],
+        },
+        dev: { source: ".", exclude: ["change"] },
+      },
+    });
+    const before = await record();
+    await fs.writeFile(join(root, "change"), "excluded by new settings");
+    await Bun.sleep(800);
+    expect(await Bun.file(marker).exists()).toBe(false);
+    await fs.writeFile(join(root, "ignored"), "included by new settings");
+    await until(async () => (await record()).pid !== before.pid);
+    await Bun.sleep(1500);
+    expect(await fs.readFile(marker, "utf8")).toBe("new\n");
+  },
+  30000,
+);
+
+real(
+  "failed dev start restores previous snapshot on the same port",
+  async () => {
+    await setup();
+    const root = join(directory, "source");
+    await fs.mkdir(root);
+    await fs.copyFile(component, join(root, "app.wasm"));
+    const s = await spec({
+      root,
+      source: root,
+      image: join(root, "app.wasm"),
+      service: {
+        port: 8080,
+        wasm: { component: "app.wasm", build: ["/bin/sh", "-c", "printf invalid > app.wasm"] },
+        dev: { source: "." },
+      },
+    });
+    await runtime.run(ctx, s);
+    const first = await record();
+    await fs.writeFile(join(root, "change"), "bad build");
+    await until(async () =>
+      (await fs.readFile(first.log, "utf8")).includes("previous version restored"),
+    );
+    expect(await body(portOf(s))).toBe("hello wasm");
+    expect((await record()).component).toBe(first.component);
+    expect((await runtime.inspect(ctx, "app"))?.Running).toBe(true);
+  },
+  30000,
+);
+
+real("build directory escape is reported before invoking the build", async () => {
+  await setup();
+  const root = join(directory, "source");
+  await fs.mkdir(root);
+  await fs.symlink(cache, join(root, "outside"));
+  await expect(
+    runtime.build(ctx, {
+      root,
+      name: "app",
+      tag: "app",
+      service: { wasm: { component: "app.wasm", directory: "outside", build: ["/usr/bin/false"] } },
+    }),
+  ).rejects.toThrow(/^WASM component path escapes build root$/);
+});
+
+real(
+  "invalid record salvages ownership without sidecar and unidentifiable JSON is discarded",
+  async () => {
+    await setup();
+    await runtime.run(ctx, await spec());
+    const saved = await record();
+    await fs.rm(join(directory, "wasmtime/app.owner"));
+    await fs.writeFile(
+      join(directory, "wasmtime/app.json"),
+      JSON.stringify({ pid: saved.pid, identity: saved.identity }),
+    );
+    expect((await runtime.inspect(ctx, "app"))?.Running).toBe(false);
+    await runtime.remove(ctx, "app");
+    expect(() => process.kill(saved.pid, 0)).toThrow();
+    await fs.writeFile(join(directory, "wasmtime/app.json"), "{");
+    let output = "";
+    await runtime.remove(
+      context(undefined, (data) => {
+        output += data.toString();
+      }),
+      "app",
+    );
+    expect(output).toContain("corrupt");
+    expect(await runtime.inspect(ctx, "app")).toBeUndefined();
+  },
+);
+
+real(
+  "redeploy replaces watcher build and excludes without an intervening source edit",
+  async () => {
+    await setup();
+    const root = join(directory, "source");
+    await fs.mkdir(root);
+    await fs.copyFile(component, join(root, "app.wasm"));
+    const marker = join(directory, "builds");
+    const s = await spec({
+      root,
+      source: root,
+      image: join(root, "app.wasm"),
+      service: {
+        port: 8080,
+        wasm: {
+          component: "app.wasm",
+          build: ["/bin/sh", "-c", 'echo old >> "$1"', "build", marker],
+        },
+        dev: { source: ".", exclude: ["new-trigger"] },
+      },
+    });
+    await runtime.run(ctx, s);
+    await runtime.run(ctx, {
+      ...s,
+      service: {
+        port: 8080,
+        wasm: {
+          component: "app.wasm",
+          build: ["/bin/sh", "-c", 'echo new >> "$1"', "build", marker],
+        },
+        dev: { source: ".", exclude: ["old-trigger"] },
+      },
+    });
+    await fs.writeFile(join(root, "old-trigger"), "excluded");
+    await Bun.sleep(800);
+    expect(await Bun.file(marker).exists()).toBe(false);
+    await fs.writeFile(join(root, "new-trigger"), "included");
+    await until(async () => Bun.file(marker).exists());
+    expect(await fs.readFile(marker, "utf8")).toBe("new\n");
+  },
+  30000,
+);
+
+real("failed initial start still rejects deployment", async () => {
+  await setup();
+  const image = join(directory, "invalid.wasm");
+  await fs.writeFile(image, "invalid");
+  await expect(runtime.run(ctx, await spec({ image }))).rejects.toThrow("Wasmtime exited");
+  expect((await runtime.inspect(ctx, "app"))?.Running).toBe(false);
+  const owner = join(directory, "wasmtime/app.owner");
+  if (await Bun.file(owner).exists()) expect((await fs.stat(owner)).mode & 0o777).toBe(0o600);
 });

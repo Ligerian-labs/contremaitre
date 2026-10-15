@@ -9,7 +9,7 @@ rustup target add wasm32-wasip2
 
 From this directory, `contremaitre deploy` builds the component and serves it through the hub. Open the URL printed by the command. The app answers `hello wasm` and logs requests to stderr.
 
-The included [.contremaitre.yaml](.contremaitre.yaml) watches the source in place and excludes `target`. Change `BODY` in `src/lib.rs` to rebuild and restart automatically. `contremaitre logs web` shows requests and build failures. `contremaitre proxy web` opens a local TCP proxy.
+The included [.contremaitre.yaml](.contremaitre.yaml) watches the source in place and excludes `target`. Change `BODY` in `src/lib.rs` to rebuild and restart automatically. `contremaitre logs web` shows requests and build failures. `contremaitre proxy web 0:8080` opens a local TCP proxy.
 
 Use `contremaitre down` to stop the environment, then deploy again to resume it. `contremaitre stop` and `contremaitre start` control the hub.
 
