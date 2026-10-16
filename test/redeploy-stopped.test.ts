@@ -182,6 +182,56 @@ test("redeploy restarts a running dependent after recovery clears its dead depen
   }
 });
 
+const shared = `  db: {kind: postgres}
+  web:
+    image: nginx
+    port: 8000
+    http: true
+    ready: ["true"]
+    depends_on: [db]
+    environment: {DATABASE_URL: '{{db.url}}', ORIGIN: '{{web.browser_url}}'}
+`;
+
+for (const leftover of [false, true]) {
+  test(`a failed tunnel recovery does not block redeploy after down${leftover ? " with a configuration left by an older hub" : ""}`, async () => {
+    const f = fixture();
+    try {
+      const p = f.prepare("first", shared);
+      await f.manager.deploy(context(), p);
+      const env = f.manager.resolve(p.identity.ID),
+        local = f.manager.localURL(env, "web");
+      // A hub that stopped while sharing journals the public URLs for recovery.
+      env.tunnel_configuration = { urls: { web: "https://web.example.test" }, pending: [] };
+      const run = f.runtime.run.bind(f.runtime);
+      f.runtime.run = async (ctx, spec) => {
+        if (spec.name === env.Services.web.Container) throw Error("simulated restart failure");
+        return run(ctx, spec);
+      };
+      await f.manager.recover(context());
+      expect(env.Status).toBe("failed");
+      expect(env.Error).toStartWith("Tunnel configuration recovery failed");
+      f.runtime.run = run;
+      await f.manager.down(context(), env);
+      expect(env.Status).toBe("stopped");
+      expect(env.tunnel_configuration).toBeUndefined();
+      if (leftover) env.tunnel_configuration = { urls: {}, pending: ["web"] };
+      await f.manager.recover(context());
+      expect(env.Status).toBe("stopped");
+      expect(env.Error).toBe("");
+      expect(env.tunnel_configuration).toBeUndefined();
+      await f.manager.deploy(context(), p);
+      expect(env.Status).toBe("running");
+      const values = f.runtime.runs.at(-1)?.env.split("\n");
+      expect(values).toContain(
+        `DATABASE_URL=postgresql://app:${env.credentials?.db}@${env.Services.db.Host}:5432/app?sslmode=disable`,
+      );
+      expect(values).toContain(`ORIGIN=${local}`);
+    } finally {
+      f.clean();
+    }
+  });
+}
+
 const chain = `  db: {kind: postgres}
   api:
     image: nginx

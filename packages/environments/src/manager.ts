@@ -1298,6 +1298,8 @@ export class Manager {
       }
     }
     env.Status = deleting ? "deleting" : localFailure ? "stopping" : "stopped";
+    // No service runs with the shared URLs anymore; the next deploy uses local ones.
+    if (!localFailure) delete env.tunnel_configuration;
     env.Error = errors.join("; ");
     env.UpdatedAt = now();
     this.save();
@@ -1407,6 +1409,8 @@ export class Manager {
         reservation.Connected = false;
       }
       if (blocked.has(env.Identity.ID)) continue;
+      // Earlier hubs kept the configuration after down; stopped services have nothing to restore.
+      if (env.tunnel_configuration && env.Status === "stopped") delete env.tunnel_configuration;
       if (env.tunnel_configuration) {
         try {
           await this.configureTunnel(ctx, env, {});
