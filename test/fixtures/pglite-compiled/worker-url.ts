@@ -9,5 +9,10 @@ worker.onmessage = (event) => {
     process.exit(0);
   }
 };
-worker.postMessage({ type: "start", dataDir: process.argv[2], port: 48591, host: "127.0.0.1" });
+worker.postMessage({
+  type: "start",
+  dataDir: process.argv[2],
+  port: Number(process.argv[3]),
+  host: "127.0.0.1",
+});
 setTimeout(() => process.exit(8), 10_000);

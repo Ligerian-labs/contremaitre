@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { checkPgliteCleanup } from "./fixtures/pglite-resources/monitor.js";
+import { freePort } from "./ports.js";
 
 checkPgliteCleanup();
 
@@ -45,8 +46,12 @@ test("internal socket is always inside a private directory, cleaned on stop and 
   try {
     await new Promise<void>((resolve, reject) => {
       blocker.once("error", reject);
-      blocker.listen(48534, "127.0.0.1", resolve);
+      blocker.listen(0, "127.0.0.1", resolve);
     });
+    const address = blocker.address();
+    if (!address || typeof address === "string") throw Error("No blocker port assigned");
+    const occupied = address.port;
+    const free = await freePort();
     for (const fail of [false, true]) {
       const dataDir = join(root, fail ? "failure" : "success");
       await mkdir(dataDir);
@@ -60,7 +65,12 @@ test("internal socket is always inside a private directory, cleaned on stop and 
         ),
       );
       const result = response(worker, fail ? "error" : "started");
-      worker.postMessage({ type: "start", dataDir, host: "127.0.0.1", port: fail ? 48534 : 48535 });
+      worker.postMessage({
+        type: "start",
+        dataDir,
+        host: "127.0.0.1",
+        port: fail ? occupied : free,
+      });
       const { socketDirectory, message } = await result;
       expect(socketDirectory).toContain("cm-pglite-socket-");
       if (fail) expect(message).toContain("EADDRINUSE");

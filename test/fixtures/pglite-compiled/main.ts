@@ -1,7 +1,7 @@
 import { SQL } from "bun";
 import { startPglite } from "../../../packages/environments/src/pglite-server.js";
 
-const server = await startPglite({ dataDir: process.argv[2], port: 48590 });
+const server = await startPglite({ dataDir: process.argv[2], port: Number(process.argv[3]) });
 const sql = new SQL(server.url("anything"), { max: 1 });
 try {
   const rows =

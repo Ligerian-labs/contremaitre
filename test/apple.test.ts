@@ -63,7 +63,8 @@ if (args[0] === 'image' && args[1] === 'inspect') {
   );
   const events = async () => (await readFile(join(dir, "events"), "utf8")).trim().split("\n");
   const until = async (value: string) => {
-    const deadline = Date.now() + 3000;
+    // Each fake container command is a separate Bun process.
+    const deadline = Date.now() + 20_000;
     while (!(await events()).includes(value)) {
       if (Date.now() > deadline) throw Error(`Timed out waiting for ${value}`);
       await Bun.sleep(5);

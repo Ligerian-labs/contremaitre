@@ -19,7 +19,7 @@ The CLI lives in `apps/cli`; domain packages live in `packages`. Read [the works
 
 Keep each PR focused on one problem. Describe the trigger, the expected result, and how you verified the change. Add a regression test for behavior changes. Documentation changes should include checked commands and working links.
 
-Run the relevant focused checks while developing and `bun run check` before submitting. Report skipped checks and failures in the PR. Use a conventional commit title such as `fix(routing): preserve WebSocket headers` or `docs: clarify the first deployment`.
+Run the relevant focused checks while developing, for example `bun run test test/pglite.test.ts`, and `bun run check` before submitting. `bun run test` sets a 30-second default test timeout; plain `bun test` keeps Bun's 5-second default, which tests that start processes can exceed on a busy machine. Report skipped checks and failures in the PR. Use a conventional commit title such as `fix(routing): preserve WebSocket headers` or `docs: clarify the first deployment`.
 
 ## Bug reports
 

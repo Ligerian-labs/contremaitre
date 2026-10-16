@@ -10,6 +10,7 @@ import type { ServiceState } from "../packages/environments/src/model.js";
 import { PGliteRuntime } from "../packages/environments/src/pglite-runtime.js";
 import type { RunSpec } from "../packages/environments/src/runtimes.js";
 import { checkPgliteCleanup } from "./fixtures/pglite-resources/monitor.js";
+import { freePort } from "./ports.js";
 
 checkPgliteCleanup();
 
@@ -49,6 +50,8 @@ test("PGliteRuntime lifecycle, redeploy replacement, logs and remove preserve da
   const root = await mkdtemp(join(tmpdir(), "cm-pglite-runtime-"));
   const runtime = new PGliteRuntime({ home: root, apple: {} });
   const ctx = context();
+  const port = await freePort();
+  const idlePort = await freePort();
   let sql: SQL | undefined;
   try {
     expect(runtime.capabilities).toEqual({ network: "host", development: "mount", clone: "files" });
@@ -57,17 +60,19 @@ test("PGliteRuntime lifecycle, redeploy replacement, logs and remove preserve da
       "does not support builds",
     );
     expect(await runtime.inspect(ctx, "db")).toBeUndefined();
-    const run = await spec(root, "db", 48520);
+    const run = await spec(root, "db", port);
     await expect(runtime.run(ctx, { ...run, task: true })).rejects.toThrow("does not support task");
     await runtime.run(ctx, run);
     await rm(run.envFile);
     expect(await runtime.inspect(ctx, "db")).toEqual({ Host: "127.0.0.1", Running: true });
     // V1-F1: readiness must work on three consecutive fresh connections.
     for (let i = 0; i < 3; i++) {
-      expect(await runtime.ready(ctx, state("db"), { host: "127.0.0.1", port: 48520 })).toBe(true);
+      expect(await runtime.ready(ctx, state("db"), { host: "127.0.0.1", port })).toBe(true);
     }
-    expect(await runtime.ready(ctx, state("db"), { host: "127.0.0.1", port: 48521 })).toBe(false);
-    sql = client(48520);
+    expect(await runtime.ready(ctx, state("db"), { host: "127.0.0.1", port: idlePort })).toBe(
+      false,
+    );
+    sql = client(port);
     await sql`CREATE TABLE records (id integer PRIMARY KEY)`;
     await sql`INSERT INTO records VALUES (1)`;
     await sql.close();
@@ -75,14 +80,14 @@ test("PGliteRuntime lifecycle, redeploy replacement, logs and remove preserve da
     expect(await runtime.inspect(ctx, "db")).toEqual({ Host: "127.0.0.1", Running: false });
     expect(existsSync(run.data ?? "")).toBe(true);
     await runtime.start(ctx, "db");
-    sql = client(48520);
+    sql = client(port);
     expect((await sql`SELECT id FROM records`)[0].id).toBe(1);
     await sql.close();
     // Redeploy replaces the server cleanly; the old env file is already gone.
-    const replacement = await spec(root, "db", 48520);
+    const replacement = await spec(root, "db", port);
     await runtime.run(ctx, replacement);
     await rm(replacement.envFile);
-    sql = client(48520);
+    sql = client(port);
     expect((await sql`SELECT id FROM records`)[0].id).toBe(1);
     await sql.close();
     let logs = "";
@@ -92,7 +97,7 @@ test("PGliteRuntime lifecycle, redeploy replacement, logs and remove preserve da
       }),
       "db",
     );
-    expect(logs).toContain("PGlite listening on 127.0.0.1:48520");
+    expect(logs).toContain(`PGlite listening on 127.0.0.1:${port}`);
     let freshLogs = "";
     await new PGliteRuntime({ home: root }).logs(
       context(undefined, (line) => {
@@ -112,8 +117,8 @@ test("PGliteRuntime lifecycle, redeploy replacement, logs and remove preserve da
     expect(await runtime.inspect(ctx, "db")).toBeUndefined();
     expect(existsSync(run.data ?? "")).toBe(true);
     // A fresh runtime can reopen data after the previous runtime forgets it.
-    await runtime.run(ctx, await spec(root, "db", 48520));
-    sql = client(48520);
+    await runtime.run(ctx, await spec(root, "db", port));
+    sql = client(port);
     expect((await sql`SELECT id FROM records`)[0].id).toBe(1);
     await sql.close();
   } finally {
@@ -128,8 +133,10 @@ test("PGliteRuntime clone replaces stopped target, quiesces a writer and isolate
   const runtime = new PGliteRuntime({ home: root });
   const lines: string[] = [];
   const ctx = context(undefined, (line) => lines.push(String(line)));
-  const fromSpec = await spec(root, "source", 48522);
-  const toSpec = await spec(root, "target", 48523);
+  const sourcePort = await freePort();
+  const targetPort = await freePort();
+  const fromSpec = await spec(root, "source", sourcePort);
+  const toSpec = await spec(root, "target", targetPort);
   const from = { name: "source", data: join(root, "source"), service: state("source") };
   const to = { name: "target", data: join(root, "target"), service: state("target") };
   let source: SQL | undefined;
@@ -142,8 +149,8 @@ test("PGliteRuntime clone replaces stopped target, quiesces a writer and isolate
     await runtime.run(ctx, toSpec);
     await rm(fromSpec.envFile);
     await rm(toSpec.envFile);
-    source = client(48522);
-    target = client(48523);
+    source = client(sourcePort);
+    target = client(targetPort);
     await source`CREATE TABLE records (id integer PRIMARY KEY)`;
     await target`CREATE TABLE obsolete (id integer)`;
     await expect(runtime.clone(ctx, from, to)).rejects.toThrow("both services stopped");
@@ -173,8 +180,8 @@ test("PGliteRuntime clone replaces stopped target, quiesces a writer and isolate
     );
     await runtime.start(ctx, "source");
     await runtime.start(ctx, "target");
-    source = client(48522);
-    target = client(48523);
+    source = client(sourcePort);
+    target = client(targetPort);
     expect(Number((await source`SELECT count(*) AS n FROM records`)[0].n)).toBe(atQuiesce);
     expect(Number((await target`SELECT count(*) AS n FROM records`)[0].n)).toBe(atQuiesce);
     expect((await target`SELECT to_regclass('obsolete') AS table_name`)[0].table_name).toBeNull();
@@ -198,6 +205,7 @@ test("V6-F2/F5: truncated or empty logs do not block start; readiness follower i
   const runtime = new PGliteRuntime({ home: root }),
     ctx = context();
   const path = join(root, "db.pglite-log");
+  const port = await freePort();
   try {
     for (const bad of ['{"generation":"truncated', ""]) {
       await writeFile(path, bad);
@@ -214,8 +222,8 @@ test("V6-F2/F5: truncated or empty logs do not block start; readiness follower i
       expect(await Bun.file(`${path}.corrupt`).text()).toBe(bad);
       // Start must independently recover a bad file, rather than relying on logs().
       await writeFile(path, bad);
-      await runtime.run(ctx, await spec(root, "db", 48520));
-      expect(await runtime.ready(ctx, state("db"), { host: "127.0.0.1", port: 48520 })).toBe(true);
+      await runtime.run(ctx, await spec(root, "db", port));
+      expect(await runtime.ready(ctx, state("db"), { host: "127.0.0.1", port })).toBe(true);
       let snapshot = "";
       await new PGliteRuntime({ home: root }).logs(
         context(undefined, (bytes) => {
@@ -236,7 +244,7 @@ test("V6-F2/F5: truncated or empty logs do not block start; readiness follower i
         text: "PGlite listening on earlier-run-marker\n",
       }),
     );
-    await runtime.run(ctx, await spec(root, "db", 48520));
+    await runtime.run(ctx, await spec(root, "db", port));
     const cancel = new AbortController();
     let current = "";
     const follower = runtime
@@ -251,7 +259,7 @@ test("V6-F2/F5: truncated or empty logs do not block start; readiness follower i
         if (!cancel.signal.aborted) throw error;
       });
     try {
-      expect(current).toContain("PGlite listening on 127.0.0.1:48520");
+      expect(current).toContain(`PGlite listening on 127.0.0.1:${port}`);
       expect(current).not.toContain("earlier-run-marker");
       expect(current.match(/PGlite listening/g)?.length).toBe(1);
     } finally {

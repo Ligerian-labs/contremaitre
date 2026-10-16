@@ -79,7 +79,7 @@ The sync excludes `.git`, `.jj`, `node_modules`, common build/cache directories,
 
 Development services default to 2 GiB of memory for dependency installation and the application. Vite and similar development tools can exceed the 512 MiB default used by other services. Set `memory` on a service to override its limit, for example `memory: 3G`. Deployment logs show each service's CPU and memory allocation. Changing the default takes effect on the next deployment after restarting an updated hub.
 
-Run `bun scripts/verify-dependency-cache.ts` for isolated native proof of install failure/retry, offline reuse across environments, source isolation and clean rebuild. It reports timings and removes only its own resources. The Structure fixture scenario `development/install-retry` runs through hub commands in `bun test test/dependency-cache.test.ts`.
+Run `bun scripts/verify-dependency-cache.ts` for isolated native proof of install failure/retry, offline reuse across environments, source isolation and clean rebuild. It reports timings and removes only its own resources. The Structure fixture scenario `development/install-retry` runs through hub commands in `bun run test test/dependency-cache.test.ts`.
 
 Run `bun scripts/verify-development.ts` for an opt-in test against the native Apple container runtime. It creates disposable resources and checks actual Bun hot reload, file deletion, frozen dependency manifests, checkout isolation and recovery.
 
