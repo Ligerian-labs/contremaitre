@@ -1,7 +1,15 @@
 import { constants, existsSync, readdirSync, readFileSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import { join } from "node:path";
-import { type Context, decode, fail, message, phase } from "@contremaitre/execution/context";
+import {
+  type Context,
+  decode,
+  fail,
+  message,
+  phase,
+  progress,
+  serviceContext,
+} from "@contremaitre/execution/context";
 import { atomicWrite, removeFile } from "@contremaitre/execution/files";
 import { order } from "@contremaitre/projects/config";
 import { Schema } from "effect";
@@ -29,6 +37,8 @@ interface Recovery {
 }
 const pathFor = (m: Manager, target: string) => join(m.store.home, "recovery", `${target}.json`);
 const save = (m: Manager, r: Recovery) => atomicWrite(pathFor(m, r.target), JSON.stringify(r));
+// Main shares service names with the target; its restarts must not update the target's rows.
+const withoutProgress = (ctx: Context): Context => ({ ...ctx, progress: undefined });
 async function recover(m: Manager, ctx: Context, r: Recovery) {
   const source = m.state.Environments[r.source];
   if (!source) fail(`Clone recovery source ${r.source} is missing`);
@@ -49,7 +59,7 @@ async function recover(m: Manager, ctx: Context, r: Recovery) {
           const s = source.Services[name];
           phase(ctx, `Resuming main ${name}`);
           await m.backend(s).remove(ctx, s.Container);
-          await m.startService(ctx, source, s, false);
+          await m.startService(withoutProgress(ctx), source, s, false);
           r.writers = r.writers.filter((n) => n !== name);
           save(m, r);
         }
@@ -205,12 +215,16 @@ export async function cloneData(
       if (runtime.capabilities.clone === "files") {
         // File copies need both servers stopped; recovery restarts the source.
         await quiesce(name);
+        // Leaves the row pending if the copy fails, so the deploy does not report it ready.
+        phase(serviceContext(ctx, name), "copying data from main");
         await runtime.stop(ctx, to.Container);
         to.Host = "";
         m.save();
         await runtime.clone(ctx, side(source, from), side(target, to));
         await runtime.remove(ctx, to.Container);
         await m.startService(ctx, target, to, false);
+        // The restart reported progress after this database's first ready.
+        progress(serviceContext(ctx, name), "ready", "ready");
         continue;
       }
       const inspection = await runtime.inspect(ctx, from.Container);
@@ -219,8 +233,8 @@ export async function cloneData(
         save(m, r);
         if (inspection) {
           await runtime.start(ctx, from.Container);
-          await m.waitReady(ctx, from);
-        } else await m.startService(ctx, source, from, false);
+          await m.waitReady(withoutProgress(ctx), from);
+        } else await m.startService(withoutProgress(ctx), source, from, false);
       }
       await runtime.clone(ctx, side(source, from), side(target, to));
     }
