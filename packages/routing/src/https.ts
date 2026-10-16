@@ -9,36 +9,59 @@ import { localCertificates } from "./certificates.js";
 import { type ProxyRequest, type ProxyResponse, trackedServer } from "./proxy.js";
 
 export const statusHost = "contremaitre.localhost";
-// A ClientHello fits one TLS record; larger records are not inspected further.
-const helloLimit = 5 + 16_384;
+// Bytes inspected for a ClientHello; a client sending more gets the default certificate.
+const helloLimit = 32_768;
 
-/** Reads the SNI host name from a TLS record holding a ClientHello. */
-export function serverName(record: Buffer): string | undefined {
+/**
+ * Reassembles a TLS ClientHello from the handshake records at the start of a connection.
+ * `complete` is false while more bytes are needed; non-TLS or malformed input is complete.
+ */
+export function clientHello(data: Buffer): { complete: boolean; servername?: string } {
+  const parts: Buffer[] = [];
+  let size = 0,
+    at = 0;
+  while (at + 5 <= data.length) {
+    if (data[at] !== 22) return { complete: true };
+    const length = data.readUInt16BE(at + 3);
+    if (at + 5 + length > data.length) break;
+    parts.push(data.subarray(at + 5, at + 5 + length));
+    size += length;
+    at += 5 + length;
+    const handshake = Buffer.concat(parts, size);
+    if (handshake.length < 4) continue;
+    if (handshake[0] !== 1) return { complete: true };
+    const total = 4 + handshake.readUIntBE(1, 3);
+    if (handshake.length >= total)
+      return { complete: true, servername: serverName(handshake.subarray(0, total)) };
+  }
+  return { complete: data.length > 0 && data[0] !== 22 };
+}
+
+/** Reads the SNI host name from a complete ClientHello handshake message. */
+export function serverName(hello: Buffer): string | undefined {
   try {
-    if (record[0] !== 22 || record[5] !== 1) return;
-    const end = Math.min(record.length, 5 + record.readUInt16BE(3));
-    // Record header, handshake header, client version and random.
-    let at = 5 + 4 + 2 + 32;
-    at += 1 + record.readUInt8(at);
-    at += 2 + record.readUInt16BE(at);
-    at += 1 + record.readUInt8(at);
-    const extensions = Math.min(end, at + 2 + record.readUInt16BE(at));
+    // Handshake header, client version and random.
+    let at = 4 + 2 + 32;
+    at += 1 + hello.readUInt8(at);
+    at += 2 + hello.readUInt16BE(at);
+    at += 1 + hello.readUInt8(at);
+    const extensions = Math.min(hello.length, at + 2 + hello.readUInt16BE(at));
     at += 2;
     while (at + 4 <= extensions) {
-      const type = record.readUInt16BE(at),
-        length = record.readUInt16BE(at + 2);
+      const type = hello.readUInt16BE(at),
+        length = hello.readUInt16BE(at + 2);
       at += 4;
       if (type === 0) {
         // server_name: list length, name type 0 (host_name), name length, name.
-        const size = record.readUInt16BE(at + 3);
-        if (record.readUInt8(at + 2) !== 0 || 5 + size > length || at + 5 + size > extensions)
+        const size = hello.readUInt16BE(at + 3);
+        if (hello.readUInt8(at + 2) !== 0 || 5 + size > length || at + 5 + size > extensions)
           return;
-        return record.toString("latin1", at + 5, at + 5 + size).toLowerCase();
+        return hello.toString("latin1", at + 5, at + 5 + size).toLowerCase();
       }
       at += length;
     }
   } catch {
-    // Truncated or malformed records select the default certificate.
+    // Truncated or malformed messages select the default certificate.
   }
 }
 
@@ -101,14 +124,14 @@ export async function serveHttps(
     let hello = Buffer.alloc(0);
     const read = (chunk: Buffer) => {
       hello = Buffer.concat([hello, chunk]);
-      const size = hello.length >= 5 ? 5 + hello.readUInt16BE(3) : helloLimit;
-      if (hello[0] === 22 && hello.length < Math.min(size, helloLimit)) return;
+      const parsed = clientHello(hello);
+      if (!parsed.complete && hello.length < helloLimit) return;
       socket.off("data", read);
       socket.pause();
       socket.unshift(hello);
       const secure = new TLSSocket(socket, {
         isServer: true,
-        secureContext: certificate(serverName(hello)),
+        secureContext: certificate(parsed.servername),
         ALPNProtocols: ["h2", "http/1.1"],
       });
       track(secure);

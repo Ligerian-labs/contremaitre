@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs"
 import { createServer } from "node:http";
 import { connect as connectHTTP2 } from "node:http2";
 import { request } from "node:https";
-import { createServer as createTCPServer } from "node:net";
+import { createConnection, createServer as createTCPServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, type PeerCertificate } from "node:tls";
@@ -14,7 +14,7 @@ import { startServer } from "@contremaitre/hub/server";
 import { parseManifest } from "@contremaitre/projects/config";
 import { newIdentity } from "@contremaitre/projects/model";
 import { localCertificates } from "@contremaitre/routing/certificates";
-import { serverName } from "@contremaitre/routing/https";
+import { clientHello as parseHello } from "@contremaitre/routing/https";
 import { closeServer, listen } from "@contremaitre/routing/proxy";
 import { FakeRuntime } from "./fake-runtime.js";
 
@@ -37,13 +37,50 @@ async function clientHello(servername?: string) {
   }
 }
 
-test("ClientHello parsing finds the requested host and tolerates malformed records", async () => {
+/** Re-frames the first TLS record's payload as two records, split after `at` bytes. */
+function splitRecord(data: Buffer, at: number) {
+  const length = data.readUInt16BE(3),
+    payload = data.subarray(5, 5 + length);
+  const record = (part: Buffer) =>
+    Buffer.concat([data.subarray(0, 3), Buffer.from([part.length >> 8, part.length & 255]), part]);
+  return Buffer.concat([
+    record(payload.subarray(0, at)),
+    record(payload.subarray(at)),
+    data.subarray(5 + length),
+  ]);
+}
+
+/** Forwards connections to `port`, delivering the client's first chunk as separate writes. */
+async function relay(port: number, pieces: (first: Buffer) => Buffer[]) {
+  const server = createTCPServer((client) => {
+    const upstream = createConnection({ host: "127.0.0.1", port });
+    client.on("error", () => upstream.destroy());
+    upstream.on("error", () => client.destroy());
+    client.once("data", async (first: Buffer) => {
+      client.pause();
+      for (const piece of pieces(first)) {
+        upstream.write(piece);
+        await sleep(50, new AbortController().signal);
+      }
+      client.pipe(upstream);
+      upstream.pipe(client);
+      client.resume();
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return { server, port: (server.address() as { port: number }).port };
+}
+
+test("ClientHello parsing finds the requested host across records and partial input", async () => {
   const hello = await clientHello("App.Example.localhost");
-  expect(serverName(hello)).toBe("app.example.localhost");
-  expect(serverName(await clientHello())).toBeUndefined();
+  expect(parseHello(hello)).toEqual({ complete: true, servername: "app.example.localhost" });
+  expect(parseHello(await clientHello())).toEqual({ complete: true, servername: undefined });
   for (let size = 0; size < hello.length; size += 7)
-    expect(["app.example.localhost", undefined]).toContain(serverName(hello.subarray(0, size)));
-  expect(serverName(Buffer.from("GET / HTTP/1.1\r\n\r\n"))).toBeUndefined();
+    expect(parseHello(hello.subarray(0, size)).complete).toBe(false);
+  for (const at of [1, 3, 40, 100])
+    expect(parseHello(splitRecord(hello, at)).servername).toBe("app.example.localhost");
+  expect(parseHello(splitRecord(hello, 40).subarray(0, 60)).complete).toBe(false);
+  expect(parseHello(Buffer.from("GET / HTTP/1.1\r\n\r\n"))).toEqual({ complete: true });
 });
 
 test.skipIf(!Bun.which("mkcert"))(
@@ -75,7 +112,10 @@ test.skipIf(!Bun.which("mkcert"))(
         setTimeout(() => res.end("second\n"), 300);
         return;
       }
+      // Connection-specific headers that an HTTP/2 response must not carry.
       res.setHeader("connection", "keep-alive");
+      res.setHeader("keep-alive", "timeout=5");
+      res.setHeader("proxy-connection", "keep-alive");
       res.end(JSON.stringify(req.headers));
     });
     upstream.on("upgrade", (req, socket) => {
@@ -207,6 +247,12 @@ test.skipIf(!Bun.which("mkcert"))(
       expect(forwarded["x-forwarded-proto"]).toBe("https");
       expect(Object.keys(forwarded).filter((key) => key.startsWith(":"))).toEqual([]);
       expect(environment.last_activity_at).toBe(new Date(idleTime).toISOString());
+      const active = environment.last_activity_at;
+      idleTime += 500;
+      expect((await get("contremaitre.localhost")).status).toBe(200);
+      expect((await get2("contremaitre.localhost")).status).toBe(200);
+      // The status page lists environments without keeping them awake.
+      expect(environment.last_activity_at).toBe(active);
       const streamed = await get2(identity.Host, "/stream");
       expect(streamed.body).toBe("first\nsecond\n");
       expect(streamed.chunks.length).toBeGreaterThan(1);
@@ -246,6 +292,32 @@ test.skipIf(!Bun.which("mkcert"))(
         (reply) => reply.status === 200,
       );
       expect(alias.cert.subjectaltname).toBe("DNS:main.hub-test.localhost");
+      // Clients may split the ClientHello across TCP writes and across TLS records.
+      for (const pieces of [
+        (first: Buffer) => [first.subarray(0, 3), first.subarray(3, 50), first.subarray(50)],
+        (first: Buffer) => [splitRecord(first, 40)],
+        (first: Buffer) => {
+          const split = splitRecord(first, 40);
+          return [split.subarray(0, 30), split.subarray(30)];
+        },
+      ]) {
+        const fragmenting = await relay(port, pieces);
+        try {
+          const cert = await new Promise<PeerCertificate>((resolve, reject) => {
+            const socket = connect(
+              { host: "127.0.0.1", port: fragmenting.port, servername: identity.Host, ca },
+              () => {
+                resolve(socket.getPeerCertificate());
+                socket.destroy();
+              },
+            );
+            socket.on("error", reject);
+          });
+          expect(cert.subjectaltname).toBe(`DNS:${identity.Host}`);
+        } finally {
+          await new Promise<void>((resolve) => fragmenting.server.close(() => resolve()));
+        }
+      }
       const listing = await get("contremaitre.localhost");
       expect(listing.body).toContain(`https://${identity.Host}</a> online`);
 

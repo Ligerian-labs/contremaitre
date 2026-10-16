@@ -24,6 +24,8 @@ const hopHeaders = [
   "keep-alive",
   "proxy-authenticate",
   "proxy-authorization",
+  // Connection-specific headers that HTTP/2 rejects (RFC 9113 section 8.2.2).
+  "proxy-connection",
   "te",
   "trailer",
   "transfer-encoding",
