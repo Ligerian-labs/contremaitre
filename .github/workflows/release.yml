@@ -19,7 +19,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: '1.4.2'
-      - run: brew install traefik mkcert shellcheck wasmtime
+      - run: brew install mkcert shellcheck wasmtime
       - run: rustup target add wasm32-wasip2
       - run: bun install --frozen-lockfile
       - name: Parse version from tag

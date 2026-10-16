@@ -11,7 +11,7 @@ bun install --frozen-lockfile
 bun run check
 ```
 
-`bun run check` runs formatting and lint checks, package boundaries, agent asset consistency, TypeScript checks, tests, the standalone ARM64 build, and packaging checks. Install `traefik` and `mkcert` to include the real HTTPS integration test. Native runtime verification requires Apple's `container` tool. See [the README](README.md#get-started) for runtime setup.
+`bun run check` runs formatting and lint checks, package boundaries, agent asset consistency, TypeScript checks, tests, the standalone ARM64 build, and packaging checks. Install `mkcert` to include the real HTTPS integration test. Native runtime verification requires Apple's `container` tool. See [the README](README.md#get-started) for runtime setup.
 
 The CLI lives in `apps/cli`; domain packages live in `packages`. Read [the workspace layout](docs/workspace-layout.md) before adding a dependency between packages.
 

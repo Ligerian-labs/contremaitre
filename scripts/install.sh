@@ -51,7 +51,7 @@ main() (
     *) printf '\nAdd this directory to PATH in your shell profile: %s\n' "$install_dir" ;;
   esac
   missing=''
-  for dependency in container traefik mkcert; do
+  for dependency in container mkcert; do
     command -v "$dependency" >/dev/null || missing="$missing $dependency"
   done
   if [ -n "$missing" ]; then

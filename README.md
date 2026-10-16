@@ -41,7 +41,7 @@ The installer verifies the release checksum and installs to `~/.local/bin`. Add 
 
 ```sh
 export PATH="$HOME/.local/bin:$PATH"
-brew install container traefik mkcert
+brew install container mkcert
 mkcert -install
 contremaitre https-service install
 contremaitre start
@@ -169,7 +169,7 @@ Contremaitre is in early development. The local runtime supports managed Postgre
 | Guide | Read it for |
 | --- | --- |
 | [Full reference](docs/reference.md) | Manifest fields, environment identity, data lifecycle, commands, and tunnels |
-| [Local HTTPS](docs/local-https.md) | Certificates, port forwarding, and the Traefik dashboard |
+| [Local HTTPS](docs/local-https.md) | Certificates, port forwarding, and the hub status page |
 | [Compact configuration](docs/compact-config.md) | Minimal app config, setup detection, shared containers, endpoints and automatic lock refresh |
 | [Initialization and hot reload](docs/assisted-init.md) | Agent-assisted setup, Dockerfiles, and development containers |
 | [Agent verification](docs/agent-workflow.md) | Test profiles, artifacts, review pages, and source freshness |

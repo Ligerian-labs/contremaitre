@@ -18,8 +18,15 @@ import { lockHome } from "@contremaitre/execution/files";
 import { reapProcesses } from "@contremaitre/execution/process-journal";
 import { sleep } from "@contremaitre/execution/sleep";
 import { type Operation, Operations, terminal } from "@contremaitre/operations/operations";
-import { closeServer, listen, proxyServer, type Route } from "@contremaitre/routing/proxy";
-import { type LocalRoute, startTraefik } from "@contremaitre/routing/traefik";
+import { startLocalHttps, statusHost, statusPage } from "@contremaitre/routing/https";
+import {
+  closeServer,
+  listen,
+  proxyHandlers,
+  proxyServer,
+  type Route,
+  routeHost,
+} from "@contremaitre/routing/proxy";
 import { startReview } from "@contremaitre/verification/review";
 import { AgentWorkflow } from "@contremaitre/verification/workflow";
 import { load, Settings } from "@structure-ai/config";
@@ -160,7 +167,7 @@ export async function startServer(
   let idle: IdleShutdown | undefined;
   let closeReview: (() => Promise<void>) | undefined;
   let closeApp: (() => Promise<void>) | undefined;
-  let stopTraefik: (() => Promise<void>) | undefined;
+  let stopHttps: (() => Promise<void>) | undefined;
   let stopDevelopment: (() => Promise<void>) | undefined;
   let shutdownPromise: Promise<void> | undefined;
   let ready = false;
@@ -175,7 +182,7 @@ export async function startServer(
         () => ops?.shutdown(),
         () => tunnels?.shutdown(),
         () => stopDevelopment?.(),
-        () => stopTraefik?.(),
+        () => stopHttps?.(),
         () => control && closeServer(control),
         () => publicServer && closeServer(publicServer),
         () => closeReview?.(),
@@ -546,41 +553,48 @@ export async function startServer(
       publicServer = proxyServer(lookup);
       proxyPort = await listen(publicServer, options.port);
     } else {
-      publicServer = proxyServer(lookup);
-      const bridgePort = await listen(publicServer, 0);
-      proxyPort = bridgePort;
-      const snapshot = (): LocalRoute[] => {
-        const hosts = new Set<string>();
+      const hosts = () => {
+        const names = new Set<string>();
         for (const env of Object.values(manager.state.Environments)) {
           for (const name of Object.keys(httpEndpoints(env)))
-            hosts.add(new URL(manager.localURL(env, name)).hostname);
+            names.add(new URL(manager.localURL(env, name)).hostname);
           if (manager.state.Main[env.Identity.Project] === env.Identity.ID)
-            hosts.add(`main.${env.Identity.Project}.localhost`);
+            names.add(`main.${env.Identity.Project}.localhost`);
         }
-        return [...hosts].sort().flatMap((host) => {
-          const route = lookup(host);
-          return route ? [{ host, upstream: `http://127.0.0.1:${bridgePort}` }] : [];
-        });
+        return [...names].sort().filter((host) => lookup(host));
       };
-      const traefik = await startTraefik(
-        {
-          ...context(signal, (chunk) => process.stderr.write(chunk)),
-          processDirectory: join(store.home, "processes"),
-        },
+      const proxy = proxyHandlers(lookup);
+      const https = await startLocalHttps(
+        context(signal, (chunk) => process.stderr.write(chunk)),
         store.home,
         options.httpsPort,
-        snapshot,
+        hosts,
+        {
+          request: (req, res) => {
+            if (routeHost(req) !== statusHost) return proxy.request(req, res);
+            // Status lookups must not count as environment activity.
+            statusPage(
+              res,
+              hosts().map((host) => ({
+                url: `https://${host}`,
+                online: !!routes(manager, host)?.upstream,
+              })),
+            );
+          },
+          upgrade: proxy.upgrade,
+        },
         (error) => {
           process.stderr.write(`${message(error)}\n`);
           closeInBackground();
         },
       );
-      stopTraefik = traefik.close;
+      stopHttps = https.close;
       if (shutdownPromise) {
-        await traefik.close();
-        fail("Traefik exited during hub startup; see daemon.log");
+        await https.close();
+        fail("Hub closed during HTTPS startup");
       }
-      manager.onSave = traefik.update;
+      proxyPort = https.port;
+      manager.onSave = https.update;
     }
     ready = true;
     inactivity.start();
