@@ -1,16 +1,16 @@
 # Local HTTPS
 
-Contremaitre uses one local Traefik process for browser-facing services. URLs use
+The hub terminates local HTTPS for browser-facing services itself. URLs use
 `https://HOST.localhost`, with no explicit port. Application containers continue
 listening on their existing internal ports. PostgreSQL, Redis and SMTP connections
 keep their existing internal protocols.
 
 ## Setup on macOS
 
-Install the runtime tools and trust a local development certificate authority:
+Install mkcert and trust a local development certificate authority:
 
 ```sh
-brew install traefik mkcert
+brew install mkcert
 mkcert -install
 ```
 
@@ -42,9 +42,8 @@ contremaitre start
 contremaitre deploy
 ```
 
-Contremaitre starts and stops Traefik with the hub. Do not also start a Homebrew
-Traefik service on the same port. If 8443 is occupied, use the same custom target
-in both commands:
+The hub opens and closes its HTTPS listener itself. If 8443 is occupied, use the
+same custom target in both commands:
 
 ```sh
 contremaitre https-service install --https-port 18443
@@ -83,42 +82,53 @@ The foreground command remains available for temporary use.
 
 The service uses Apple's [launchd lifecycle](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html).
 
-## Traefik dashboard
+## Hub status page
 
-Open [https://contremaitre.localhost](https://contremaitre.localhost). The root URL
-redirects to `/dashboard/`. The dashboard and its `/api` endpoints use this hostname
-on the same loopback HTTPS listener as applications, with a dedicated mkcert
-certificate. They are available as soon as the HTTPS hub starts, even with no
-deployed applications. The dashboard requires no login and is local to your Mac.
+Open [https://contremaitre.localhost](https://contremaitre.localhost). The hub
+answers every path on this hostname with a small read-only HTML page: it confirms
+the hub is running and lists each routed local URL as online or offline. Use
+`contremaitre list` and `contremaitre show` for details. Earlier releases showed
+the Traefik dashboard here; it was removed together with Traefik.
+
+The page uses the same loopback HTTPS listener as applications, with a dedicated
+mkcert certificate. It is available as soon as the HTTPS hub starts, even with no
+deployed applications, requires no login and is local to your Mac. Visiting it
+does not count as activity for idle shutdown.
 
 The usual certificate trust and port-443 forwarder setup above applies. Clients
 that do not resolve `.localhost` must resolve `contremaitre.localhost` to
 `127.0.0.1`. With a custom HTTPS listener port, the forwarder still provides the
-same dashboard URL. The dashboard is unavailable in legacy `--http` mode.
+same URL. The page is unavailable in legacy `--http` mode.
 
 ## Routing and certificates
 
-The hub writes Traefik configuration under `<home>/traefik/dynamic/routes.yml`
-using the [file provider](https://doc.traefik.io/traefik/reference/install-configuration/providers/others/file/).
-It updates routes as services become ready, change address, stop, or are deleted.
-Traefik reloads these changes without restarting. Each service and the designated
-main alias get their own host route. Offline services return 503.
+The hub routes each HTTPS request by its host name from its live environment
+state, so routes follow services as they become ready, change address, stop, or
+are deleted. Each service and the designated main alias get their own host route.
+Offline services return 503 and unknown hosts return 404.
 
-The hub asks mkcert for certificates for its recorded local hostnames. Leaf
+The hub asks mkcert for one certificate per recorded local hostname, including
+hosts deployed after it started, and selects it from the TLS server name (SNI)
+of each connection. A new host is served with its certificate as soon as mkcert
+issues it, without a hub restart. Connections without a known server name get
+the `localhost` certificate. Leaf
 certificates and private keys live under `<home>/certificates`, with private keys
 restricted to their owner. The CA stays in mkcert's own directory. Certificates
 are reused and checked hourly, with renewal during the last 30 days of validity.
 Restart the hub after replacing the mkcert CA. No project manifest needs TLS
-fields or Traefik configuration.
+fields or proxy configuration.
 
-Traefik terminates TLS and proxies HTTP and WebSockets directly to the service.
+The listener negotiates HTTP/2 or HTTP/1.1 with each browser (ALPN), so pages
+loading hundreds of dev-server modules use one multiplexed connection. It proxies
+HTTP, streaming responses and WebSocket upgrades directly to the service, and
+records them as environment activity for idle shutdown.
 `{{service.local_url}}`, `{{contremaitre.local_url}}`, and
 `CONTREMAITRE_LOCAL_URL` use HTTPS. Vite HMR should use `wss` and client port 443;
 the assisted-init instructions already derive these from the local URL.
 
-The hub supervises Traefik and records its child process for crash recovery. A
-Traefik exit or configuration-publication failure closes the hub rather than
-leaving it reporting healthy HTTPS routing. Application containers remain intact.
+The listener runs inside the hub process, so there is no separate router to
+supervise. A certificate-issuance failure closes the hub rather than leaving it
+reporting healthy HTTPS routing. Application containers remain intact.
 Diagnostics go to `<home>/daemon.log`. Port-443 forwarding is a separate process;
 the hub does not report its availability through the control API. `start` and
 `deploy` check the local forwarder separately and warn if it is missing or its
@@ -126,7 +136,9 @@ configured target differs from the requested HTTPS port.
 
 ## Upgrading and troubleshooting
 
-Restart a running HTTP hub after installing the updated binary. Sending SIGTERM
+Restart a running HTTP hub after installing the updated binary. Releases before
+in-process HTTPS ran Traefik; after upgrading, the hub no longer needs it, and
+`<home>/traefik` and the Homebrew `traefik` formula can be removed. Sending SIGTERM
 to the hub preserves running application containers; `contremaitre stop` also
 stops the applications. Redeploy to update app origins, cookies and HMR settings.
 The CLI rejects a routing-mode mismatch with a restart message.
@@ -150,10 +162,10 @@ their existing routing and certificate ownership.
 ## Verification
 
 `bun run check` runs the repository checks and standalone packaging test. With
-Traefik and mkcert installed, `test/traefik.test.ts` also exercises a real Traefik
-process, verified HTTPS requests, WebSocket upgrades, certificate reuse, and
-route addition, removal and readiness changes. It also checks the dashboard
-redirect, HTML and API access, hostname isolation, and availability without apps.
-Its disposable CA is never installed in the system trust store. The test is
-skipped when those tools are unavailable. Port 443 and browser trust require the
-macOS setup above.
+mkcert installed, `test/local-https.test.ts` also starts a hub with a real HTTPS
+listener and checks trusted HTTP/2 and HTTP/1.1 requests, streamed responses,
+WebSocket upgrades, per-host certificates, a host deployed after startup, offline
+and unknown hosts, idle activity, and the status page. It also checks certificate
+reuse and key permissions. Its disposable CA is never installed in the system
+trust store. The test is skipped when mkcert is unavailable. Port 443 and browser
+trust require the macOS setup above.

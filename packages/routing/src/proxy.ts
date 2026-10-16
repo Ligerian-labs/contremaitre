@@ -1,5 +1,13 @@
-import { createServer, type IncomingMessage, request, type Server } from "node:http";
+import {
+  createServer,
+  type IncomingMessage,
+  request,
+  type Server,
+  type ServerResponse,
+} from "node:http";
+import type { Http2ServerRequest, Http2ServerResponse } from "node:http2";
 import { createConnection, createServer as createTCPServer, type Socket } from "node:net";
+import type { Duplex } from "node:stream";
 import { type Context, fail } from "@contremaitre/execution/context";
 
 const sockets = new WeakMap<Server, Set<Socket>>();
@@ -16,22 +24,36 @@ const hopHeaders = [
   "keep-alive",
   "proxy-authenticate",
   "proxy-authorization",
+  // Connection-specific headers that HTTP/2 rejects (RFC 9113 section 8.2.2).
+  "proxy-connection",
   "te",
   "trailer",
   "transfer-encoding",
   "upgrade",
 ];
-export function forwardedHeaders(req: IncomingMessage, route: Route, upgrade = false) {
+export type ProxyRequest = IncomingMessage | Http2ServerRequest;
+export type ProxyResponse = ServerResponse | Http2ServerResponse;
+/** HTTP/2 requests carry their host in `:authority`. */
+export function requestHost(req: ProxyRequest) {
+  const host = req.headers.host ?? req.headers[":authority"];
+  return typeof host === "string" ? host : undefined;
+}
+/** The lowercase host name a request is routed by, without port or trailing dot. */
+export function routeHost(req: ProxyRequest) {
+  return (requestHost(req) ?? "").toLowerCase().replace(/:\d+$/, "").replace(/\.$/, "");
+}
+export function forwardedHeaders(req: ProxyRequest, route: Route, upgrade = false) {
   const headers = { ...req.headers };
   for (const key of Object.keys(headers))
-    if (key === "forwarded" || key.startsWith("x-forwarded-")) delete headers[key];
+    if (key === "forwarded" || key.startsWith("x-forwarded-") || key.startsWith(":"))
+      delete headers[key];
   for (const token of String(req.headers.connection ?? "").split(","))
     delete headers[token.trim().toLowerCase()];
   for (const key of hopHeaders) delete headers[key];
   // Dev servers accept their local address; the public origin belongs in forwarding headers.
   headers.host = route.publicHost
     ? route.localHost || new URL(route.upstream).host
-    : req.headers.host;
+    : requestHost(req);
   headers["x-forwarded-host"] = route.publicHost || headers.host;
   headers["x-forwarded-proto"] = route.publicHost ? "https" : (route.protocol ?? "http");
   headers["x-forwarded-for"] = req.socket.remoteAddress ?? "127.0.0.1";
@@ -41,12 +63,11 @@ export function forwardedHeaders(req: IncomingMessage, route: Route, upgrade = f
   }
   return headers;
 }
-export function proxyServer(lookup: Lookup, fixed?: () => Route | undefined): Server {
-  const select = (req: IncomingMessage) =>
-    fixed
-      ? fixed()
-      : lookup((req.headers.host ?? "").toLowerCase().replace(/:\d+$/, "").replace(/\.$/, ""));
-  const server = createServer((req, res) => {
+export function proxyHandlers(lookup: Lookup, fixed?: () => Route | undefined) {
+  const select = (req: ProxyRequest) => (fixed ? fixed() : lookup(routeHost(req)));
+  const handle = (req: ProxyRequest, response: ProxyResponse) => {
+    // The HTTP/2 compatibility response implements the writeHead/pipe/close subset used here.
+    const res = response as ServerResponse;
     const route = select(req);
     if (!route) {
       res.writeHead(404);
@@ -100,14 +121,8 @@ export function proxyServer(lookup: Lookup, fixed?: () => Route | undefined): Se
       up.destroy();
     });
     req.pipe(up);
-  });
-  const clients = new Set<Socket>();
-  sockets.set(server, clients);
-  server.on("connection", (socket) => {
-    clients.add(socket);
-    socket.once("close", () => clients.delete(socket));
-  });
-  server.on("upgrade", (req, socket, head) => {
+  };
+  const upgrade = (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     const route = select(req);
     if (!route?.upstream) {
       socket.end(`HTTP/1.1 ${route ? 503 : 404} Unavailable\r\nConnection: close\r\n\r\n`);
@@ -156,7 +171,26 @@ export function proxyServer(lookup: Lookup, fixed?: () => Route | undefined): Se
       up.destroy();
     });
     up.end();
+  };
+  return { request: handle, upgrade };
+}
+export function proxyServer(lookup: Lookup, fixed?: () => Route | undefined): Server {
+  const handlers = proxyHandlers(lookup, fixed);
+  return trackedServer(handlers.request, handlers.upgrade);
+}
+/** An HTTP/1.1 server whose sockets `closeServer` destroys, including TLS sockets it is handed. */
+export function trackedServer(
+  handle: (req: IncomingMessage, res: ServerResponse) => void,
+  upgrade: (req: IncomingMessage, socket: Duplex, head: Buffer) => void,
+): Server {
+  const server = createServer(handle);
+  const clients = new Set<Socket>();
+  sockets.set(server, clients);
+  server.on("connection", (socket) => {
+    clients.add(socket);
+    socket.once("close", () => clients.delete(socket));
   });
+  server.on("upgrade", upgrade);
   return server;
 }
 export async function listen(server: Server, port: number, host = "127.0.0.1") {

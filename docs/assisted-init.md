@@ -100,4 +100,4 @@ The CLI owns agent selection, subprocess adapters and terminal input. The projec
 
 The old detector only considered a root `Dockerfile`, named `docker/*.Dockerfile` files and a root Node start script. It did not follow Turbo's development tasks or Compose overlays. Stagiaire.AI's `Dockerfile.server` and development dependency Compose file therefore fell through to the root start-script error.
 
-Browser-facing service URLs use HTTPS on port 443 by default. See [local HTTPS setup](local-https.md) for Traefik, certificate trust and the macOS forwarder. Applications keep their internal HTTP ports.
+Browser-facing service URLs use HTTPS on port 443 by default. See [local HTTPS setup](local-https.md) for certificate trust and the macOS forwarder. Applications keep their internal HTTP ports.

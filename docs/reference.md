@@ -9,7 +9,7 @@ Run isolated local application stacks for Git branches and Jujutsu workspaces on
 Requires Apple silicon, macOS 26, Bun 1.4.2 for building, and Apple `container`. Tested with `container` 1.3.1 on an M2 Max.
 
 ```sh
-brew install container traefik mkcert
+brew install container mkcert
 mkcert -install
 bun install --frozen-lockfile
 make install
@@ -18,8 +18,8 @@ contremaitre start
 
 The standalone binary includes Bun and installs to `~/.local/bin`. Go and Node are not required to run it. Add that directory to your PATH if needed. Starting the hub starts Apple container and installs its recommended kernel if missing. No Kubernetes cluster is required.
 
-Services use HTTPS URLs without an explicit port. Contremaitre runs Traefik as
-its local HTTPS router and uses mkcert for trusted development certificates.
+Services use HTTPS URLs without an explicit port. The hub terminates local
+HTTPS itself and uses mkcert for trusted development certificates.
 On macOS, run `contremaitre https-service install` once and approve the administrator
 prompt. The background service forwards port 443 to the TLS listener on 8443,
 starts at boot, and survives terminal closure and hub restarts.
@@ -28,7 +28,7 @@ Run the hub and application containers as your normal user. See
 custom listener ports.
 
 Open [https://contremaitre.localhost](https://contremaitre.localhost) for the
-Traefik dashboard. It starts with the HTTPS hub, even before any apps are deployed.
+hub status page. It lists routed local URLs and is available as soon as the HTTPS hub starts.
 
 For explicit legacy HTTP, use `contremaitre start --http --http-port 8080` and
 `contremaitre deploy --http`. The control API uses a private Unix socket. A
@@ -385,7 +385,7 @@ make check   # lint, typecheck, tests, standalone build and crash/restart checks
 make build
 ```
 
-See [docs/acceptance.md](acceptance.md) and [docs/verification.md](verification.md) for scope and verification results. The HTTP router supports WebSocket upgrades and streaming through the Bun/Node HTTP adapter. Local TLS uses Traefik; development source synchronization supports native hot reload.
+See [docs/acceptance.md](acceptance.md) and [docs/verification.md](verification.md) for scope and verification results. The HTTP router supports WebSocket upgrades and streaming through the Bun/Node HTTP adapter. The hub terminates local TLS with HTTP/2 and HTTP/1.1; development source synchronization supports native hot reload.
 
 ## Existing Kubernetes projects
 

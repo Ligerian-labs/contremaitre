@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./traefik": "./src/traefik.ts",
+    "./https": "./src/https.ts",
     "./certificates": "./src/certificates.ts",
     "./proxy": "./src/proxy.ts"
   },
