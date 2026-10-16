@@ -135,7 +135,8 @@ test("list filters and orders the same environments in text and JSON without cha
     await hub.close();
     rmSync(home, { recursive: true, force: true });
   }
-}, 30000);
+  // 22 CLI processes, each loading the full command code.
+}, 120_000);
 
 test("list documents filters and rejects invalid statuses before contacting a hub", async () => {
   const home = mkdtempSync(join(tmpdir(), "cm-list-help-"));

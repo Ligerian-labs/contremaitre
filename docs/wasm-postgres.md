@@ -63,7 +63,7 @@ Run the focused checks with the repository's Bun version:
 
 ```sh
 bun install --frozen-lockfile
-bun test test/pglite*.test.ts
+bun run test test/pglite*.test.ts
 ```
 
 The dependency pins are PGlite `0.5.10` and pglite-socket `0.2.13`, whose PGlite peer requires exactly `0.5.10`. The socket package declares seven extension peers as required, so Bun resolves them transitively. No extension peers are added directly, enabled, or embedded by this runtime.

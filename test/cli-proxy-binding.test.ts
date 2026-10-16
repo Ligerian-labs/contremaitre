@@ -133,4 +133,4 @@ test("host-runtime proxy stays bound while following its environment's current s
     );
     rmSync(home, { recursive: true, force: true });
   }
-}, 15_000);
+});

@@ -6,6 +6,7 @@ import { context } from "@contremaitre/execution/context";
 import { forkPgliteData } from "../packages/environments/src/pglite-fork.js";
 import { startPglite } from "../packages/environments/src/pglite-server.js";
 import { checkPgliteCleanup } from "./fixtures/pglite-resources/monitor.js";
+import { freePort } from "./ports.js";
 
 checkPgliteCleanup();
 
@@ -31,7 +32,7 @@ test.skipIf(missingHdiutil)(
       return code;
     }
     try {
-      const server = await startPglite({ dataDir: source, port: 48532 });
+      const server = await startPglite({ dataDir: source, port: await freePort() });
       await server.stop();
       await mkdir(mount);
       expect(
@@ -84,7 +85,7 @@ test.skipIf(missingHdiutil)(
           })
         ).method,
       ).toBe("copy");
-      const fork = await startPglite({ dataDir: join(mount, "fork"), port: 48533 });
+      const fork = await startPglite({ dataDir: join(mount, "fork"), port: await freePort() });
       try {
         expect(fork.running).toBe(true);
       } finally {

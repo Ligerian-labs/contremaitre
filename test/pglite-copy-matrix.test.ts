@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { bufferPgliteCopy } from "../packages/environments/src/pglite-copy.js";
 import { startPglite } from "../packages/environments/src/pglite-server.js";
 import { checkPgliteCleanup } from "./fixtures/pglite-resources/monitor.js";
+import { freePort } from "./ports.js";
 
 checkPgliteCleanup();
 type PGlite = Parameters<typeof bufferPgliteCopy>[0];
@@ -146,7 +147,7 @@ function binaryRows(): Buffer {
 
 test("systematic COPY matrix: protocol × transaction × scenario, wire status and committed data", async () => {
   const root = await mkdtemp(join(tmpdir(), "cm-pglite-copy-matrix-"));
-  const server = await startPglite({ dataDir: join(root, "db"), port: 48546 });
+  const server = await startPglite({ dataDir: join(root, "db"), port: await freePort() });
   const outcomes: object[] = [];
   let client: Awaited<ReturnType<typeof connect>> | undefined;
   try {
@@ -331,7 +332,7 @@ test("systematic COPY matrix: protocol × transaction × scenario, wire status a
 
 test("V5 extended error differential cells: Execute/Bind/Describe, Flush, Close and multiple Syncs", async () => {
   const root = await mkdtemp(join(tmpdir(), "cm-pglite-pipeline-"));
-  const server = await startPglite({ dataDir: join(root, "db"), port: 48546 });
+  const server = await startPglite({ dataDir: join(root, "db"), port: await freePort() });
   const client = await connect(server.port);
   const pipeline = (sql: string) => {
     client.send("P", Buffer.concat([Buffer.from(`\0${sql}\0`), Buffer.alloc(2)]));
@@ -436,7 +437,7 @@ test("V5 extended error differential cells: Execute/Bind/Describe, Flush, Close 
 
 test("V5 COPY statement errors and client CopyFail, autocommit and BEGIN", async () => {
   const root = await mkdtemp(join(tmpdir(), "cm-pglite-copy-errors-"));
-  const server = await startPglite({ dataDir: join(root, "db"), port: 48546 });
+  const server = await startPglite({ dataDir: join(root, "db"), port: await freePort() });
   const client = await connect(server.port);
   try {
     await client.query("CREATE TABLE statement_errors(id int)");
@@ -504,10 +505,12 @@ test("V6-F3: large Execute DataRows are forwarded incrementally before the sourc
   } as unknown as PGlite;
   bufferPgliteCopy(db);
   const listener = createServer();
-  listener.listen(48547, "127.0.0.1");
+  listener.listen(0, "127.0.0.1");
   await once(listener, "listening");
+  const address = listener.address();
+  if (!address || typeof address === "string") throw Error("No listener port assigned");
   const accepted = once(listener, "connection");
-  const client = createConnection(48547, "127.0.0.1");
+  const client = createConnection(address.port, "127.0.0.1");
   const [socket] = await accepted;
   socket.on("error", () => {});
   client.on("error", () => {});

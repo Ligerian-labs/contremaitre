@@ -22,6 +22,7 @@ import {
 } from "@structure-ai/fixtures";
 import { Effect, Schema } from "effect";
 import { FakeRuntime } from "./fake-runtime.js";
+import { freePort } from "./ports.js";
 
 const available = !!(
   Bun.which("wasmtime") &&
@@ -158,24 +159,13 @@ real(
             })(),
         ),
       );
-      const [low, high] = (process.env.CONTREMAITRE_WASMTIME_TEST_PORTS ?? "48300-48399")
-        .split("-")
-        .map(Number);
-      let bound = false;
-      for (let port = low; port <= high; port++) {
-        try {
-          await new Promise<void>((done, reject) => {
-            proxy.once("error", reject);
-            proxy.listen(port, "127.0.0.1", () => {
-              proxy.removeListener("error", reject);
-              done();
-            });
-          });
-          bound = true;
-          break;
-        } catch {}
-      }
-      if (!bound) throw Error("Test proxy port band exhausted");
+      await new Promise<void>((done, reject) => {
+        proxy.once("error", reject);
+        proxy.listen(0, "127.0.0.1", () => {
+          proxy.removeListener("error", reject);
+          done();
+        });
+      });
       const address = proxy.address();
       if (!address || typeof address === "string") throw Error("Proxy not listening");
       expect(
@@ -326,9 +316,7 @@ real(
   "real hub routes the runnable WASM example through its localhost hostname",
   async () => {
     const f = await fixture();
-    const port = Number(
-      (process.env.CONTREMAITRE_WASMTIME_TEST_PORTS ?? "48300-48399").split("-")[1],
-    );
+    const port = await freePort();
     const hub = await startServer({
       home: f.home,
       port,

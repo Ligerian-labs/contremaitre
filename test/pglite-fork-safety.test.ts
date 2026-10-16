@@ -8,6 +8,7 @@ import { SQL } from "bun";
 import { forkPgliteData } from "../packages/environments/src/pglite-fork.js";
 import { startPglite } from "../packages/environments/src/pglite-server.js";
 import { checkPgliteCleanup } from "./fixtures/pglite-resources/monitor.js";
+import { freePort } from "./ports.js";
 
 checkPgliteCleanup();
 
@@ -24,8 +25,8 @@ test("M1: primitive fork refuses a running locked source and a running locked ta
   const root = await mkdtemp(join(tmpdir(), "cm-pglite-locked-fork-"));
   const source = join(root, "source"),
     target = join(root, "target");
-  const from = await startPglite({ dataDir: source, port: 48544 });
-  const to = await startPglite({ dataDir: target, port: 48545 });
+  const from = await startPglite({ dataDir: source, port: await freePort() });
+  const to = await startPglite({ dataDir: target, port: await freePort() });
   const sql = new SQL(to.url(), { max: 1 });
   try {
     await sql`CREATE TABLE preserved (id int)`;
@@ -97,7 +98,8 @@ test("M10: concurrent process observes no missing target during repeated atomic 
 test("V3-F1: crash between fallback renames restores the old database before start or fork", async () => {
   const root = await mkdtemp(join(tmpdir(), "cm-pglite-publish-"));
   const target = join(root, "target");
-  let server = await startPglite({ dataDir: target, port: 48544 });
+  const port = await freePort();
+  let server = await startPglite({ dataDir: target, port });
   try {
     const sql = new SQL(server.url(), { max: 1 });
     try {
@@ -113,7 +115,7 @@ test("V3-F1: crash between fallback renames restores the old database before sta
     await writeFile(join(target, ".DS_Store"), "Finder metadata");
     await mkdir(`${target}.fork-interrupted`);
     await writeFile(`${target}.fork-interrupted/partial`, "unfinished copy");
-    server = await startPglite({ dataDir: target, port: 48544 });
+    server = await startPglite({ dataDir: target, port });
     const reopened = new SQL(server.url(), { max: 1 });
     try {
       expect((await reopened`SELECT id FROM preserved`)[0].id).toBe(42);

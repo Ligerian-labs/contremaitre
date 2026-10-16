@@ -11,6 +11,7 @@ import { forkPgliteData } from "../packages/environments/src/pglite-fork.js";
 import { waitPgliteReady } from "../packages/environments/src/pglite-ready.js";
 import { startPglite } from "../packages/environments/src/pglite-server.js";
 import { checkPgliteCleanup } from "./fixtures/pglite-resources/monitor.js";
+import { freePort } from "./ports.js";
 
 checkPgliteCleanup();
 
@@ -23,16 +24,18 @@ const client = (port: number, password = "secret") =>
 test("wire queries, app identity, exclusive data ownership, connection limit and persistence", async () => {
   const root = await mkdtemp(join(tmpdir(), "cm-pglite-"));
   const dataDir = join(root, "db");
-  let server = await startPglite({ dataDir, port: 48500 });
-  let sql = client(48500);
+  const port = await freePort();
+  const otherPort = await freePort();
+  let server = await startPglite({ dataDir, port });
+  let sql = client(port);
   try {
-    await expect(startPglite({ dataDir, port: 48501 })).rejects.toThrow("locked");
+    await expect(startPglite({ dataDir, port: otherPort })).rejects.toThrow("locked");
     await sql`CREATE TABLE items (id integer PRIMARY KEY)`;
     await sql`INSERT INTO items VALUES (1)`;
     expect((await sql`SELECT current_user AS username, current_database() AS database`)[0]).toEqual(
       { username: "app", database: "app" },
     );
-    const second = client(48500);
+    const second = client(port);
     try {
       try {
         await second`SELECT 1`;
@@ -51,8 +54,8 @@ test("wire queries, app identity, exclusive data ownership, connection limit and
     await sql.close();
     await server.stop();
     expect(existsSync(dataDir)).toBe(true);
-    server = await startPglite({ dataDir, port: 48500 });
-    sql = client(48500, "wrong-password");
+    server = await startPglite({ dataDir, port });
+    sql = client(port, "wrong-password");
     expect((await sql`SELECT * FROM items`)[0].id).toBe(1);
     await sql.close();
     await server.stop();
@@ -69,8 +72,11 @@ test("quiesced active writer forks consistently and both databases stay isolated
   const root = await mkdtemp(join(tmpdir(), "cm-pglite-fork-"));
   const source = join(root, "source"),
     target = join(root, "target");
-  let server = await startPglite({ dataDir: source, port: 48502 });
-  let sql = client(48502);
+  const port = await freePort();
+  const forkPort = await freePort();
+  const copyPort = await freePort();
+  let server = await startPglite({ dataDir: source, port });
+  let sql = client(port);
   let fork: Awaited<ReturnType<typeof startPglite>> | undefined;
   let forkSql: SQL | undefined;
   let running = true,
@@ -97,14 +103,14 @@ test("quiesced active writer forks consistently and both databases stay isolated
         await sql.close();
         await server.stop();
         return async () => {
-          server = await startPglite({ dataDir: source, port: 48502 });
-          sql = client(48502);
+          server = await startPglite({ dataDir: source, port });
+          sql = client(port);
         };
       },
     });
     expect(result.method).toBe(process.platform === "darwin" ? "clonefile" : "copy");
-    fork = await startPglite({ dataDir: target, port: 48503 });
-    forkSql = client(48503);
+    fork = await startPglite({ dataDir: target, port: forkPort });
+    forkSql = client(forkPort);
     expect(Number((await forkSql`SELECT count(*) AS n FROM items`)[0].n)).toBe(atQuiesce);
     await forkSql`INSERT INTO items VALUES (10001)`;
     await sql`INSERT INTO items VALUES (10002)`;
@@ -122,8 +128,8 @@ test("quiesced active writer forks consistently and both databases stay isolated
         })
       ).method,
     ).toBe("copy");
-    const copy = await startPglite({ dataDir: join(root, "copy"), port: 48504 });
-    const copySql = client(48504);
+    const copy = await startPglite({ dataDir: join(root, "copy"), port: copyPort });
+    const copySql = client(copyPort);
     try {
       expect(Number((await copySql`SELECT count(*) AS n FROM items`)[0].n)).toBe(atQuiesce + 1);
     } finally {
@@ -143,10 +149,11 @@ test("quiesced active writer forks consistently and both databases stay isolated
 
 test("readiness retries queries, times out and aborts", async () => {
   const root = await mkdtemp(join(tmpdir(), "cm-pglite-ready-"));
-  const url = "postgresql://app:pw@127.0.0.1:48505/app?sslmode=disable";
+  const port = await freePort();
+  const url = `postgresql://app:pw@127.0.0.1:${port}/app?sslmode=disable`;
   const ready = waitPgliteReady(url, { timeout: 15_000 });
   await Bun.sleep(100);
-  const server = await startPglite({ dataDir: root, port: 48505 });
+  const server = await startPglite({ dataDir: root, port });
   try {
     await ready;
   } finally {
@@ -158,7 +165,7 @@ test("readiness retries queries, times out and aborts", async () => {
   const aborted = waitPgliteReady(url, { signal: controller.signal });
   controller.abort(new Error("cancel readiness"));
   await expect(aborted).rejects.toThrow("cancel readiness");
-}, 25_000);
+});
 
 test("managed postgres rejects migration commands", () => {
   expect(() =>
@@ -174,6 +181,7 @@ test("compiled Worker embeds PGlite assets and runs without node_modules", async
   const root = await mkdtemp(join(tmpdir(), "cm-pglite-compiled-"));
   try {
     const binary = join(root, "fixture");
+    const port = await freePort();
     const build = Bun.spawn(
       [
         process.execPath,
@@ -188,7 +196,7 @@ test("compiled Worker embeds PGlite assets and runs without node_modules", async
     );
     const output = await new Response(build.stderr).text();
     expect(await build.exited, output).toBe(0);
-    const run = Bun.spawn([binary, join(root, "data")], {
+    const run = Bun.spawn([binary, join(root, "data"), String(port)], {
       cwd: root,
       stdout: "pipe",
       stderr: "pipe",
@@ -223,7 +231,7 @@ test("Bun 1.4.2 does not automatically embed URL or string Worker entrypoints", 
       );
       const errors = await new Response(build.stderr).text();
       expect(await build.exited, errors).toBe(0);
-      const run = Bun.spawn([binary, join(root, "data")], {
+      const run = Bun.spawn([binary, join(root, "data"), String(await freePort())], {
         cwd: root,
         stdout: "pipe",
         stderr: "pipe",
@@ -242,7 +250,7 @@ test.skipIf(!Bun.which("psql"))(
   "psql connects with the ordinary managed Postgres URL",
   async () => {
     const root = await mkdtemp(join(tmpdir(), "cm-pglite-psql-"));
-    const server = await startPglite({ dataDir: join(root, "db"), port: 48506 });
+    const server = await startPglite({ dataDir: join(root, "db"), port: await freePort() });
     try {
       const command = Bun.spawn(
         [
@@ -269,14 +277,14 @@ test.skipIf(!Bun.which("psql"))(
       await rm(root, { recursive: true, force: true });
     }
   },
-  15_000,
 );
 
 test("fork failure restarts the quiesced source and preserves the existing target", async () => {
   const root = await mkdtemp(join(tmpdir(), "cm-pglite-fork-failure-"));
   const source = join(root, "source"),
     target = join(root, "target");
-  let server = await startPglite({ dataDir: source, port: 48507 });
+  const port = await freePort();
+  let server = await startPglite({ dataDir: source, port });
   try {
     await forkPgliteData({
       source,
@@ -285,7 +293,7 @@ test("fork failure restarts the quiesced source and preserves the existing targe
       quiesce: async () => {
         await server.stop();
         return async () => {
-          server = await startPglite({ dataDir: source, port: 48507 });
+          server = await startPglite({ dataDir: source, port });
         };
       },
     });
@@ -299,7 +307,7 @@ test("fork failure restarts the quiesced source and preserves the existing targe
         quiesce: async () => {
           await server.stop();
           return async () => {
-            server = await startPglite({ dataDir: source, port: 48507 });
+            server = await startPglite({ dataDir: source, port });
             resumed = true;
           };
         },
@@ -311,7 +319,7 @@ test("fork failure restarts the quiesced source and preserves the existing targe
     expect(String(failure)).toContain("target already exists");
     expect(resumed).toBe(true);
     await waitPgliteReady(server.url());
-    const fork = await startPglite({ dataDir: target, port: 48508 });
+    const fork = await startPglite({ dataDir: target, port: await freePort() });
     try {
       await waitPgliteReady(fork.url());
     } finally {

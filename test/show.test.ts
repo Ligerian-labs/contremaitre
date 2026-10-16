@@ -119,4 +119,4 @@ services:
     await hub.close();
     rmSync(home, { recursive: true, force: true });
   }
-}, 20000);
+});

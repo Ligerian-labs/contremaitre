@@ -10,12 +10,13 @@ import {
 } from "../packages/environments/src/pglite-initialize.js";
 import { startPglite } from "../packages/environments/src/pglite-server.js";
 import { checkPgliteCleanup } from "./fixtures/pglite-resources/monitor.js";
+import { freePort } from "./ports.js";
 
 checkPgliteCleanup();
 
-async function fixture(name: string, path: string) {
+async function fixture(name: string, ...args: string[]) {
   const child = Bun.spawn(
-    [process.execPath, resolve(`test/fixtures/pglite-compiled/${name}.ts`), path],
+    [process.execPath, resolve(`test/fixtures/pglite-compiled/${name}.ts`), ...args],
     { stdout: "pipe", stderr: "pipe" },
   );
   const [stdout, stderr, code] = await Promise.all([
@@ -29,6 +30,7 @@ async function fixture(name: string, path: string) {
 
 test("V1-F2: interrupted initdb and PG_VERSION-only staging recover; completed databases are never reset", async () => {
   const root = await mkdtemp(join(tmpdir(), "cm-pglite-init-"));
+  const port = await freePort();
   let server: Awaited<ReturnType<typeof startPglite>> | undefined;
   try {
     for (const phase of ["initdb-without-app", "partial-pg-version"]) {
@@ -43,7 +45,7 @@ test("V1-F2: interrupted initdb and PG_VERSION-only staging recover; completed d
       }
       expect(existsSync(join(staging, "PG_VERSION"))).toBe(true);
       expect(existsSync(join(staging, pgliteCompletionFile))).toBe(false);
-      server = await startPglite({ dataDir: `${dataDir}/`, port: 48542 });
+      server = await startPglite({ dataDir: `${dataDir}/`, port });
       const sql = new SQL(server.url(), { max: 1 });
       try {
         expect((await sql`SELECT current_user AS u, current_database() AS d`)[0]).toEqual({
@@ -66,7 +68,7 @@ test("V1-F2: interrupted initdb and PG_VERSION-only staging recover; completed d
       // Simulate interruption after the completion marker, before atomic publish.
       await rename(dataDir, staging);
       await mkdir(dataDir, { mode: 0o700 });
-      server = await startPglite({ dataDir, port: 48542 });
+      server = await startPglite({ dataDir, port });
       let check = new SQL(server.url(), { max: 1 });
       try {
         expect((await check`SELECT id FROM preserved`)[0].id).toBe(42);
@@ -76,7 +78,7 @@ test("V1-F2: interrupted initdb and PG_VERSION-only staging recover; completed d
       }
       // A completed, published database must also survive a missing marker.
       await rm(join(dataDir, pgliteCompletionFile));
-      server = await startPglite({ dataDir, port: 48542 });
+      server = await startPglite({ dataDir, port });
       check = new SQL(server.url(), { max: 1 });
       try {
         expect((await check`SELECT id FROM preserved`)[0].id).toBe(42);
@@ -95,7 +97,9 @@ test("V1-F3: corrupt published PG_VERSION fails identically three times and surv
   const root = await mkdtemp(join(tmpdir(), "cm-pglite-start-fail-"));
   try {
     await writeFile(join(root, "PG_VERSION"), "17\n");
-    const errors: string[] = JSON.parse(await fixture("failed-start", root));
+    const errors: string[] = JSON.parse(
+      await fixture("failed-start", root, String(await freePort())),
+    );
     expect(errors).toHaveLength(3);
     expect(errors[0]).toContain("PGlite failed to initialize properly");
     expect(errors[0]).not.toContain("locked");

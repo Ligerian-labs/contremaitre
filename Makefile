@@ -2,7 +2,7 @@
 build:
 	bun run build
 test:
-	bun test
+	bun run test
 check:
 	bun run check
 install: build

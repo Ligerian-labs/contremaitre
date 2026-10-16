@@ -11,14 +11,11 @@ import { privateEnv } from "@contremaitre/execution/files";
 import { run } from "@contremaitre/execution/process";
 import type { Service } from "@contremaitre/projects/model";
 import { FakeRuntime } from "./fake-runtime.js";
+import { freePort } from "./ports.js";
 
 const fixture = resolve("test/fixtures/wasm-http");
 const cache = join(tmpdir(), "contremaitre-wasm-fixture");
 const component = join(cache, "wasm32-wasip2/release/wasm_http.wasm");
-const range = (process.env.CONTREMAITRE_WASMTIME_TEST_PORTS ?? "48300-48399")
-  .split("-")
-  .map(Number);
-let nextPort = range[0];
 const ctx = context();
 const available = !!(
   Bun.which("wasmtime") &&
@@ -81,20 +78,31 @@ async function record(name = "app") {
 async function body(port: number) {
   return (await fetch(`http://127.0.0.1:${port}`)).text();
 }
-async function until(check: () => Promise<boolean>) {
-  const deadline = Date.now() + 60000;
+async function within(check: () => Promise<boolean>, timeout: number) {
+  const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
-    if (await check()) return;
+    if (await check()) return true;
     await Bun.sleep(100);
   }
-  throw new Error("Condition timed out");
+  return false;
+}
+async function until(check: () => Promise<boolean>) {
+  if (!(await within(check, 60000))) throw new Error("Condition timed out");
+}
+// FSEvents can miss a write made just after a watcher starts. Repeat the change,
+// beyond the rebuild debounce, until the watcher reacts; returns the writes made.
+async function change(path: string, check: () => Promise<boolean>) {
+  for (let writes = 1; writes <= 30; writes++) {
+    await fs.writeFile(path, `changed ${writes}`);
+    if (await within(check, 2000)) return writes;
+  }
+  throw new Error("Watcher did not react to source changes");
 }
 async function spec(
   options: Partial<RunSpec> = {},
   env: Record<string, string> = {},
 ): Promise<RunSpec> {
-  const port = nextPort++;
-  if (port > range[1]) throw new Error("Test port band exhausted");
+  const port = await freePort();
   const data = join(directory, options.name ?? "app");
   await fs.mkdir(data, { recursive: true });
   return {
@@ -428,11 +436,14 @@ real(
     // The original runtime represents a retired hub; stop its watcher without removing state.
     await runtime.stop(ctx, "app");
     await recovered.start(ctx, "app");
-    await fs.writeFile(join(root, "change"), "changed");
-    await until(async () => await Bun.file(join(root, "builds")).exists());
+    const writes = await change(join(root, "change"), () =>
+      Bun.file(join(root, "builds")).exists(),
+    );
     await recovered.remove(ctx, "app");
-    const builds = await fs.readFile(join(root, "builds"), "utf8");
-    expect(builds.trim()).toBe("build");
+    // Duplicate watchers would build more than once per change.
+    const builds = (await fs.readFile(join(root, "builds"), "utf8")).trim().split("\n");
+    expect(builds.every((line) => line === "build")).toBe(true);
+    expect(builds.length).toBeLessThanOrEqual(writes);
     await fs.rm(root, { recursive: true });
     await Bun.sleep(700);
     expect(await recovered.inspect(ctx, "app")).toBeUndefined();
@@ -496,8 +507,7 @@ real(
     };
     const s = await spec({ root, source: root, image: join(root, "app.wasm"), service });
     await runtime.run(ctx, s);
-    await fs.writeFile(join(root, "change"), "changed");
-    await until(async () => Bun.file(join(root, "child")).exists());
+    await change(join(root, "change"), () => Bun.file(join(root, "child")).exists());
     const pid = Number(await fs.readFile(join(root, "child"), "utf8"));
     await fs.writeFile(join(root, "change"), "queued");
     const stopping = runtime.stop(ctx, "app");

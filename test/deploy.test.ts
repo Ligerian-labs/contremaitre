@@ -95,7 +95,7 @@ test("deploy CLI prints compact readiness, nested logs print and exit, and -d de
   } finally {
     await f.clean();
   }
-}, 15000);
+});
 
 test("Ctrl-C cancels the hub deployment and waits for its active subprocess", async () => {
   const f = await fixture();
@@ -129,7 +129,7 @@ test("Ctrl-C cancels the hub deployment and waits for its active subprocess", as
   } finally {
     await f.clean();
   }
-}, 15000);
+});
 
 test("failure logs select failed services, preserve shared errors, and survive restart", async () => {
   const home = directory();

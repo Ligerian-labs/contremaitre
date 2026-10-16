@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { SQL } from "bun";
 import { startPglite } from "../packages/environments/src/pglite-server.js";
 import { checkPgliteCleanup } from "./fixtures/pglite-resources/monitor.js";
+import { freePort } from "./ports.js";
 
 checkPgliteCleanup();
 
@@ -12,7 +13,7 @@ const client = (url: string) => new SQL(url, { max: 1, connectionTimeout: 5 });
 
 test("V1-F1: sequential clients reuse extended-protocol statements without session leakage", async () => {
   const root = await mkdtemp(join(tmpdir(), "cm-pglite-session-"));
-  const server = await startPglite({ dataDir: join(root, "db"), port: 48540 });
+  const server = await startPglite({ dataDir: join(root, "db"), port: await freePort() });
   let sql = client(server.url());
   try {
     const originalPath = (await sql.unsafe("SHOW search_path"))[0].search_path;
@@ -69,7 +70,7 @@ test("V1-F1: sequential clients reuse extended-protocol statements without sessi
 
 test("V1-F4: thirty immediate reconnects succeed; an occupied slot waits two seconds then rejects", async () => {
   const root = await mkdtemp(join(tmpdir(), "cm-pglite-reconnect-"));
-  const server = await startPglite({ dataDir: join(root, "db"), port: 48541 });
+  const server = await startPglite({ dataDir: join(root, "db"), port: await freePort() });
   let sql: SQL | undefined;
   try {
     for (let i = 0; i < 30; i++) {

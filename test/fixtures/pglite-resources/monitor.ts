@@ -12,11 +12,19 @@ export function checkPgliteCleanup(): void {
   const workers = new Map<Worker, string>();
   const timers = new Map<unknown, string>();
   const intervals = new Map<unknown, string>();
+  // Tests allocate ephemeral ports; remember every port a worker was told to bind.
+  const ports = new Set<number>();
   globalThis.Worker = class extends NativeWorker {
     constructor(...args: ConstructorParameters<typeof Worker>) {
       super(...args);
       created++;
       workers.set(this, String(args[0]));
+      const post = this.postMessage.bind(this) as (...message: unknown[]) => void;
+      this.postMessage = ((...message: unknown[]) => {
+        const port = (message[0] as { port?: unknown } | null | undefined)?.port;
+        if (typeof port === "number") ports.add(port);
+        post(...message);
+      }) as Worker["postMessage"];
       this.addEventListener(
         "close",
         () => {
@@ -71,9 +79,18 @@ export function checkPgliteCleanup(): void {
     globalThis.setInterval = nativeInterval;
     globalThis.clearInterval = nativeClearInterval;
     assertClosed();
-    if (Bun.which("lsof")) {
+    if (ports.size > 0 && Bun.which("lsof")) {
       const sockets = Bun.spawnSync(
-        ["lsof", "-a", "-p", String(process.pid), "-iTCP:48500-48599", "-sTCP:LISTEN"],
+        [
+          "lsof",
+          "-a",
+          "-p",
+          String(process.pid),
+          `-iTCP:${[...ports].join(",")}`,
+          "-sTCP:LISTEN",
+          "-P",
+          "-n",
+        ],
         { stdout: "pipe", stderr: "pipe" },
       );
       expect(sockets.exitCode, sockets.stderr.toString()).toBe(1);

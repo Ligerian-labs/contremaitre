@@ -190,7 +190,7 @@ test("tunnel logs expose failed connector diagnostics after cleanup without star
   } finally {
     await f.close();
   }
-}, 15000);
+});
 
 test("tunnel logs distinguish missing output, reject unknown services and bound large output", async () => {
   const f = await fixture();
@@ -217,7 +217,7 @@ test("tunnel logs distinguish missing output, reject unknown services and bound 
   } finally {
     await f.close();
   }
-}, 15000);
+});
 
 test("foreground group gates startup, configures browser URLs, restores local config and reuses reservations", async () => {
   const f = await fixture();
@@ -273,7 +273,7 @@ test("foreground group gates startup, configures browser URLs, restores local co
   } finally {
     await f.close();
   }
-}, 20000);
+});
 
 test("tunnel prepares services concurrently and checks capabilities once per service", async () => {
   const f = await fixture();
@@ -312,7 +312,7 @@ test("tunnel prepares services concurrently and checks capabilities once per ser
     await opening.catch(() => {});
     await f.close();
   }
-}, 10000);
+});
 
 test("a connector that exits during application preparation cannot activate the group", async () => {
   const f = await fixture();
@@ -345,7 +345,7 @@ test("a connector that exits during application preparation cannot activate the 
     await opening.catch(() => {});
     await f.close();
   }
-}, 10000);
+});
 
 test("hub uses the CLI-selected provider even when another command changes the default", async () => {
   const f = await fixture();
@@ -394,7 +394,7 @@ test("failed connector startup rolls back the entire group and refuses legacy un
   } finally {
     await f.close();
   }
-}, 20000);
+});
 
 test("a branch switch closes the session even with an explicit deployment branch override", async () => {
   const f = await fixture();
@@ -416,7 +416,7 @@ test("a branch switch closes the session even with an explicit deployment branch
   } finally {
     await f.close();
   }
-}, 10000);
+});
 
 test("killing the foreground CLI expires exposure and restores local configuration", async () => {
   const f = await fixture();
@@ -441,7 +441,7 @@ test("killing the foreground CLI expires exposure and restores local configurati
     await child.exited;
     await f.close();
   }
-}, 25000);
+});
 
 test("SIGTERM waits for session cleanup and down ends sharing before taking the environment lock", async () => {
   const f = await fixture();
@@ -465,7 +465,7 @@ test("SIGTERM waits for session cleanup and down ends sharing before taking the 
     await child.exited;
     await f.close();
   }
-}, 15000);
+});
 
 test("failed restoration is journaled and a hub recovery retries local configuration without resuming sharing", async () => {
   const f = await fixture();
@@ -492,7 +492,7 @@ test("failed restoration is journaled and a hub recovery retries local configura
   } finally {
     await f.close();
   }
-}, 10000);
+});
 
 test("permanent provider revocation ends the whole session instead of reconnecting", async () => {
   const f = await fixture();
@@ -505,7 +505,7 @@ test("permanent provider revocation ends the whole session instead of reconnecti
   } finally {
     await f.close();
   }
-}, 10000);
+});
 
 test("installation identity separates equal local environment IDs on different computers", async () => {
   const first = await fixture();
@@ -524,7 +524,7 @@ test("installation identity separates equal local environment IDs on different c
     await first.close();
     await second.close();
   }
-}, 10000);
+});
 
 test("hub stop reports provider failures after stopping every local service", async () => {
   const f = await fixture();

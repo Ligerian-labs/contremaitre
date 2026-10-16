@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { SQL } from "bun";
 import { startPglite } from "../packages/environments/src/pglite-server.js";
 import { checkPgliteCleanup } from "./fixtures/pglite-resources/monitor.js";
+import { freePort } from "./ports.js";
 
 checkPgliteCleanup();
 
@@ -58,7 +59,7 @@ async function wire(port: number) {
 
 test("V2-F1/V3-F3/F4: COPY disconnect recovery, SQL size error and statement detection", async () => {
   const root = await mkdtemp(join(tmpdir(), "cm-pglite-copy-"));
-  const server = await startPglite({ dataDir: join(root, "db"), port: 48545 });
+  const server = await startPglite({ dataDir: join(root, "db"), port: await freePort() });
   const query = async (text: string) => {
     const sql = new SQL(server.url(), { max: 1, prepare: false, connectionTimeout: 5 });
     try {
@@ -191,11 +192,11 @@ test("V2-F1/V3-F3/F4: COPY disconnect recovery, SQL size error and statement det
     await server.stop();
     await rm(root, { recursive: true, force: true });
   }
-}, 20000);
+});
 
 test("V4-F1: COPY rejections abort explicit transactions and COMMIT rolls back the restore", async () => {
   const root = await mkdtemp(join(tmpdir(), "cm-pglite-copy-tx-"));
-  const server = await startPglite({ dataDir: join(root, "db"), port: 48545 });
+  const server = await startPglite({ dataDir: join(root, "db"), port: await freePort() });
   const client = await wire(server.port);
   const simple = async (sql: string) => {
     const ready = client.next("Z");
@@ -279,4 +280,4 @@ test("V4-F1: COPY rejections abort explicit transactions and COMMIT rolls back t
     await server.stop();
     await rm(root, { recursive: true, force: true });
   }
-}, 20000);
+});

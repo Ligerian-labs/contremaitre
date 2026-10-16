@@ -72,7 +72,7 @@ test("agent commands reuse environments and report missing checks without claimi
   } finally {
     await f.close();
   }
-}, 15000);
+});
 
 test("verification captures output and artifacts, bounds diagnostics, and detects source changes", async () => {
   const script = `const fs=require('node:fs');fs.writeFileSync(process.env.CONTREMAITRE_ARTIFACTS+'/result.txt','evidence');console.log('x'.repeat(12000));process.exit(7)`;
@@ -99,7 +99,7 @@ test("verification captures output and artifacts, bounds diagnostics, and detect
   } finally {
     await f.close();
   }
-}, 15000);
+});
 
 test("passing checks link immutable artifacts, reject foreign hosts and become stale after redeploy", async () => {
   const script = `const fs=require('node:fs');fs.writeFileSync(process.env.CONTREMAITRE_ARTIFACTS+'/screenshot.png',Buffer.from('89504e470d0a1a0a','hex'));fs.writeFileSync(process.env.CONTREMAITRE_ARTIFACTS+'/output.log','artifact content');console.log('execution content')`;
@@ -135,7 +135,7 @@ test("passing checks link immutable artifacts, reject foreign hosts and become s
   } finally {
     await f.close();
   }
-}, 15000);
+});
 
 test("cancelled verification persists an interrupted result and quiet wait exits nonzero", async () => {
   const f = await fixture(
@@ -165,7 +165,7 @@ test("cancelled verification persists an interrupted result and quiet wait exits
   } finally {
     await f.close();
   }
-}, 15000);
+});
 
 test("timeouts and source edits during checks cannot produce a passing handoff", async () => {
   const f = await fixture(
@@ -181,7 +181,7 @@ test("timeouts and source edits during checks cannot produce a passing handoff",
   } finally {
     await f.close();
   }
-}, 15000);
+});
 
 test("host artifact symlinks are rejected and successful evidence survives hub restart", async () => {
   const script = `const fs=require('node:fs');fs.symlinkSync('/etc/passwd',process.env.CONTREMAITRE_ARTIFACTS+'/leak.txt')`;
@@ -213,4 +213,4 @@ test("host artifact symlinks are rejected and successful evidence survives hub r
   } finally {
     await f.close();
   }
-}, 15000);
+});

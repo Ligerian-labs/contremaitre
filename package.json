@@ -5,11 +5,11 @@
   "type": "module",
   "packageManager": "bun@1.4.2",
   "scripts": {
-    "check": "bun run lint && bun run check:boundaries && bun run typecheck && bun test && bun run build && bun run test:packaging",
+    "check": "bun run lint && bun run check:boundaries && bun run typecheck && bun run test && bun run build && bun run test:packaging",
     "lint": "biome check apps packages test scripts integrations",
     "format": "biome check --write apps packages test scripts integrations",
     "typecheck": "tsc --noEmit",
-    "test": "bun test",
+    "test": "bun test --timeout 30000",
     "build": "bun scripts/package-agents.ts && bun build apps/cli/src/cli.ts packages/environments/src/pglite-worker.ts --compile --bytecode --format=esm --target=bun-darwin-arm64 --no-compile-autoload-dotenv --no-compile-autoload-bunfig --outfile bin/contremaitre",
     "test:packaging": "bun scripts/verify-packaging.ts",
     "check:boundaries": "bun scripts/verify-boundaries.ts && bun scripts/package-agents.ts --check"

@@ -12,6 +12,7 @@ import * as pgliteServer from "../packages/environments/src/pglite-server.js";
 import { startPglite } from "../packages/environments/src/pglite-server.js";
 import { terminatePgliteWorker } from "../packages/environments/src/pglite-worker-lifecycle.js";
 import { checkPgliteCleanup } from "./fixtures/pglite-resources/monitor.js";
+import { freePort } from "./ports.js";
 
 checkPgliteCleanup();
 
@@ -19,7 +20,7 @@ const directory = () => mkdtemp(join(tmpdir(), "cm-pglite-recovery-"));
 
 test("V2-F2: first and subsequent sessions retain app identity after RESET ROLE and own their tables", async () => {
   const root = await directory();
-  const server = await startPglite({ dataDir: join(root, "db"), port: 48546 });
+  const server = await startPglite({ dataDir: join(root, "db"), port: await freePort() });
   try {
     for (const name of ["first_table", "second_table"]) {
       const sql = new SQL(server.url(), { max: 1, prepare: false });
@@ -41,12 +42,13 @@ test("V2-F2: first and subsequent sessions retain app identity after RESET ROLE 
     await server.stop();
     await rm(root, { recursive: true, force: true });
   }
-}, 15000);
+});
 
 test("V2-F4: a published database removes stale initialization staging without resetting data", async () => {
   const root = await directory();
   const dataDir = join(root, "db");
-  let server = await startPglite({ dataDir, port: 48547 });
+  const port = await freePort();
+  let server = await startPglite({ dataDir, port });
   try {
     const sql = new SQL(server.url(), { max: 1 });
     await sql`CREATE TABLE preserved AS SELECT 42 AS id`;
@@ -54,7 +56,7 @@ test("V2-F4: a published database removes stale initialization staging without r
     await server.stop();
     await mkdir(`${dataDir}.pglite-init`);
     await writeFile(join(`${dataDir}.pglite-init`, "PG_VERSION"), "partial");
-    server = await startPglite({ dataDir, port: 48547 });
+    server = await startPglite({ dataDir, port });
     expect(existsSync(`${dataDir}.pglite-init`)).toBe(false);
     const check = new SQL(server.url(), { max: 1 });
     try {
@@ -66,18 +68,19 @@ test("V2-F4: a published database removes stale initialization staging without r
     await server.stop();
     await rm(root, { recursive: true, force: true });
   }
-}, 15000);
+});
 
 for (const mode of ["failure", "timeout"])
   test(`V2-F3: reset ${mode} terminates the worker, cleans sockets and permits direct restart`, async () => {
     const root = await directory();
     const dataDir = join(root, "db");
+    const port = await freePort();
     let worker: Worker | undefined;
     let socketDirectory = "";
     const logs: string[] = [];
     let server = await startPglite({
       dataDir,
-      port: 48548,
+      port,
       log: (line) => logs.push(line),
       createWorker: () => {
         worker = new Worker(
@@ -105,7 +108,7 @@ for (const mode of ["failure", "timeout"])
       ).toBe(true);
       expect(socketDirectory).not.toBe("");
       expect(existsSync(socketDirectory)).toBe(false);
-      server = await startPglite({ dataDir, port: 48548 });
+      server = await startPglite({ dataDir, port });
       const sql = new SQL(server.url(), { max: 1 });
       try {
         expect((await sql`SELECT 1 AS n`)[0].n).toBe(1);
@@ -170,6 +173,7 @@ test("V2-F3: Runtime.start directly awaits failed worker teardown and restarts i
   const runtime = new PGliteRuntime({ home: root });
   const ctx = context();
   const envFile = join(root, "env");
+  const port = await freePort();
   await writeFile(envFile, "POSTGRES_USER=app\nPOSTGRES_DB=app\nPOSTGRES_PASSWORD=test\n");
   let worker: Worker | undefined;
   const original = pgliteServer.startPglite;
@@ -192,7 +196,7 @@ test("V2-F3: Runtime.start directly awaits failed worker teardown and restarts i
       volumes: {},
       envFile,
       data: join(root, "db"),
-      ports: { "5432": 48549 },
+      ports: { "5432": port },
       service: parseManifest(
         "version: 1\nproject: test\nservices:\n  db: {kind: postgres, runtime: wasm}\n",
       ).services.db,
@@ -203,7 +207,7 @@ test("V2-F3: Runtime.start directly awaits failed worker teardown and restarts i
     while ((await runtime.inspect(ctx, "db"))?.Running && Date.now() < deadline) await Bun.sleep(5);
     expect((await runtime.inspect(ctx, "db"))?.Running).toBe(false);
     await runtime.start(ctx, "db");
-    const sql = new SQL("postgresql://app:test@127.0.0.1:48549/app?sslmode=disable", { max: 1 });
+    const sql = new SQL(`postgresql://app:test@127.0.0.1:${port}/app?sslmode=disable`, { max: 1 });
     try {
       expect((await sql`SELECT 42 AS n`)[0].n).toBe(42);
     } finally {
@@ -214,14 +218,14 @@ test("V2-F3: Runtime.start directly awaits failed worker teardown and restarts i
     await runtime.remove(ctx, "db");
     await rm(root, { recursive: true, force: true });
   }
-}, 20000);
+});
 
 test("clean shutdown with a retained client does not arm the session reset watchdog", async () => {
   const root = await directory();
   const logs: string[] = [];
   const server = await startPglite({
     dataDir: join(root, "db"),
-    port: 48550,
+    port: await freePort(),
     log: (line) => logs.push(line),
     createWorker: () =>
       new Worker(new URL("./fixtures/pglite-compiled/lifecycle-worker.ts", import.meta.url)),
@@ -238,4 +242,4 @@ test("clean shutdown with a retained client does not arm the session reset watch
     await server.stop();
     await rm(root, { recursive: true, force: true });
   }
-}, 15000);
+});
