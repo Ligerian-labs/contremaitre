@@ -27,7 +27,7 @@ import {
   type ServiceRuntime,
 } from "@contremaitre/environments/runtimes";
 import { Store } from "@contremaitre/environments/store";
-import { type Context, context, hash } from "@contremaitre/execution/context";
+import { type Context, context, hash, type ServiceProgress } from "@contremaitre/execution/context";
 import { routes } from "@contremaitre/hub/server";
 import { parseManifest, prepareManifest } from "@contremaitre/projects/config";
 import { newIdentity } from "@contremaitre/projects/model";
@@ -355,10 +355,16 @@ test("file-level Postgres clone quiesces main and restarts both servers", async 
     const source = f.manager.resolve(main.identity.ID);
     writeFileSync(join(f.manager.dataDirectory(source, source.Services.db), "marker"), "main");
     f.host.calls = [];
-    const feature = f.prepare("feature");
-    await f.manager.deploy(context(), feature);
+    const feature = f.prepare("feature"),
+      progress: Record<string, ServiceProgress> = {};
+    await f.manager.deploy(
+      { ...context(), progress: (name, value) => (progress[name] = value) },
+      feature,
+    );
     const target = f.manager.resolve(feature.identity.ID);
     expect(target.CloneComplete).toBe(true);
+    // The copy restarts the database after it first reported ready.
+    expect(progress.db).toEqual({ status: "ready", detail: "ready" });
     const [from, to] = f.host.clones[0];
     expect(from.data).toBe(join(f.home, "data", source.Identity.ID, ".services", "db"));
     expect(to.data).toBe(join(f.home, "data", target.Identity.ID, ".services", "db"));
@@ -373,6 +379,50 @@ test("file-level Postgres clone quiesces main and restarts both servers", async 
     expect(source.Services.db.Host).toBe("127.0.0.1");
     expect(target.Status).toBe("running");
     expect(existsSync(join(f.home, "recovery", `${target.Identity.ID}.json`))).toBe(false);
+  } finally {
+    await f.clean();
+  }
+});
+test("a failed file-level copy does not report the stopped target database ready", async () => {
+  const f = fixture();
+  try {
+    const main = f.prepare();
+    await f.manager.deploy(context(), main);
+    const source = f.manager.resolve(main.identity.ID);
+    writeFileSync(join(f.manager.dataDirectory(source, source.Services.db), "marker"), "main");
+    f.host.clone = async () => {
+      throw Error("simulated copy failure");
+    };
+    const progress: Record<string, ServiceProgress> = {};
+    await expect(
+      f.manager.deploy(
+        { ...context(), progress: (name, value) => (progress[name] = value) },
+        f.prepare("feature"),
+      ),
+    ).rejects.toThrow("simulated copy failure");
+    expect(progress.db).toEqual({ status: "running", detail: "copying data from main" });
+  } finally {
+    await f.clean();
+  }
+});
+test("an Apple clone from a stopped main leaves the target database ready", async () => {
+  const f = fixture(
+    'version: 1\nproject: example\nservices:\n  db: {kind: postgres}\n  web: {image: nginx, port: 80, ready: ["true"], depends_on: [db]}\n',
+  );
+  try {
+    const main = f.prepare();
+    await f.manager.deploy(context(), main);
+    const source = f.manager.resolve(main.identity.ID);
+    await f.manager.down(context(), source);
+    f.apple.calls = [];
+    const progress: Record<string, ServiceProgress> = {};
+    await f.manager.deploy(
+      { ...context(), progress: (name, value) => (progress[name] = value) },
+      f.prepare("feature"),
+    );
+    // Main's database is started for the copy and stopped again.
+    expect(f.apple.calls).toContain(`run ${source.Services.db.Container}`);
+    expect(progress.db).toEqual({ status: "ready", detail: "ready" });
   } finally {
     await f.clean();
   }
