@@ -14,6 +14,7 @@ import {
   strings,
 } from "@contremaitre/execution/context";
 import { atomicWrite } from "@contremaitre/execution/files";
+import { EnvironmentLocks } from "@contremaitre/execution/locks";
 import { run } from "@contremaitre/execution/process";
 import { type Service, serviceSchema } from "@contremaitre/projects/model";
 import { Schema } from "effect";
@@ -76,6 +77,8 @@ export class WasmtimeRuntime implements ServiceRuntime {
   private watchers = new Map<string, { stop: () => Promise<void> }>();
   private watcherEpochs = new Map<string, number>();
   private stopping = new Set<string>();
+  // Services may share a build directory or output; concurrent builds race on the files.
+  private builds = new EnvironmentLocks();
   constructor(options: RegistryOptions & { bind?: string }) {
     // The hub's store canonicalizes its home; a CLI may spell it through a symlink.
     const home = resolve(options.home);
@@ -172,17 +175,19 @@ export class WasmtimeRuntime implements ServiceRuntime {
     phase(ctx, "Building WASM component on host");
     const cwd = await fs.realpath(resolve(root, wasm.directory ?? "."));
     inside(cwd);
-    try {
-      if (wasm.build) {
-        await run(ctx, wasm.build, { cwd, stdout: ctx.log, stderr: ctx.log });
+    const built = await this.builds.use([cwd, component], ctx.signal, async () => {
+      try {
+        if (wasm.build) {
+          await run(ctx, wasm.build, { cwd, stdout: ctx.log, stderr: ctx.log });
+        }
+      } catch (e) {
+        ctx.signal.throwIfAborted();
+        fail(`WASM build command failed; read the logs: ${message(e)}`);
       }
-    } catch (e) {
-      ctx.signal.throwIfAborted();
-      fail(`WASM build command failed; read the logs: ${message(e)}`);
-    }
-    if (!existsSync(component)) fail(`WASM build did not produce ${component}; read the logs`);
-    inside(await fs.realpath(component));
-    const built = { image: component, digest: hash(await fs.readFile(component)) };
+      if (!existsSync(component)) fail(`WASM build did not produce ${component}; read the logs`);
+      inside(await fs.realpath(component));
+      return { image: component, digest: hash(await fs.readFile(component)) };
+    });
     return previous?.digest === built.digest && previous.image === built.image ? previous : built;
   }
   async inspect(ctx: Context, name: string): Promise<Inspection | undefined> {

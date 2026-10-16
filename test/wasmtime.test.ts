@@ -153,6 +153,30 @@ real("build checks root boundaries and retains an unchanged previous record", as
   expect(built.image).toBe(await fs.realpath(component));
   expect(await runtime.build(ctx, request, built)).toBe(built);
 });
+test("services sharing a build directory and component build one after another", async () => {
+  const root = await fs.mkdtemp(join(tmpdir(), "cm-wasm-shared-"));
+  try {
+    // Like cargo, the first build writes its output and keeps working; a second
+    // build replaces the output, removing it first.
+    const script = `if mkdir first 2>/dev/null; then printf component > app.wasm; sleep 0.3
+else sleep 0.1; rm -f app.wasm; sleep 0.5; printf component > app.wasm; fi`;
+    const shared = new WasmtimeRuntime({ home: join(root, "home"), apple: new FakeRuntime() });
+    const request = (name: string) => ({
+      root,
+      name,
+      tag: name,
+      service: { wasm: { build: ["/bin/sh", "-c", script], component: "app.wasm" } },
+    });
+    const [api, web] = await Promise.all([
+      shared.build(ctx, request("api")),
+      shared.build(ctx, request("web")),
+    ]);
+    expect(api.digest).toBe(hash(Buffer.from("component")));
+    expect(web).toEqual(api);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
 real("build directory is inside root and component remains relative to root", async () => {
   await setup();
   const root = join(directory, "build");
