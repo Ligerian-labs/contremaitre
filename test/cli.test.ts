@@ -3,9 +3,10 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { makeRoot, normalizeArguments } from "@contremaitre/cli/cli";
+import { normalizeArguments } from "@contremaitre/cli/cli";
 import { runCliForTest } from "@structure-ai/cli";
 import { Effect } from "effect";
+import { makeRoot } from "../apps/cli/src/run.js";
 import { version } from "../apps/cli/src/version.js";
 
 test("preserves exec passthrough and global flag ordering", async () => {

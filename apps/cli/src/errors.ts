@@ -1,7 +1,7 @@
 import { HubError } from "@contremaitre/execution/context";
 import { exitCodeFor } from "@structure-ai/cli";
 import { Cause } from "effect";
-import { AgentResultError } from "./agents.js";
+import { AgentResultError } from "./agent-result-error.js";
 import { UsageError } from "./help.js";
 
 // A process boundary owns complete causes. Never let one expected failure hide

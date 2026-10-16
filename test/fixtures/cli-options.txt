@@ -1,0 +1,64 @@
+Parser keys: status project listBranch workspace noAI agent home env branch port http httpsPort publicPort json deleteData main rebuild detach failure follow compose offset global profile run check updateCheck timeout
+
+Defaults | framework help (names, aliases, types, choices and descriptions)
+agent: "" | --agent text A user-defined piece of text. Coding agent: codex, claude, pi or opencode. Overrides saved selection. This setting is optional.
+json: false | --json A true or false value. Print the result as JSON. This setting is optional. This setting is optional.
+global: false | --global A true or false value. Install agent integration in your home directory. This setting is optional. This setting is optional.
+home: "<hub home>" | --home text A user-defined piece of text. Hub data directory. Default: CONTREMAITRE_HOME or ~/.local/share/contremaitre. This setting is optional.
+branch: "" | --branch text A user-defined piece of text. Override the detected branch or bookmark name. This setting is optional.
+port: 8080 | --http-port integer An integer. Hub HTTP port when starting it. Default: 8080. This setting is optional.
+http: false | --http A true or false value. Use legacy HTTP routing instead of local HTTPS. This setting is optional. This setting is optional.
+httpsPort: 8443 | --https-port integer An integer. Local TLS listener. Default: 8443; forward port 443 to this port. This setting is optional.
+publicPort: 0 | --public-port integer An integer. Legacy HTTP public port. Requires --http. Default: the HTTP port. This setting is optional.
+main: false | --main A true or false value. Designate this environment as the initial clone source. This setting is optional. This setting is optional.
+rebuild: false | --rebuild A true or false value. Build again instead of reusing an unchanged image. This setting is optional. This setting is optional.
+detach: false | ( -d, --detach ) A true or false value. Return the operation immediately without following it. This setting is optional. This setting is optional.
+timeout: 1800 | --timeout integer An integer. Wait deadline in seconds, 1..7200. Timeout leaves the operation running. This setting is optional.
+env: "" | --env text A user-defined piece of text. Environment ID or name. Default: current workspace. This setting is optional.
+profile: "smoke" | --profile text A user-defined piece of text. Verification profile. Default: smoke. This setting is optional.
+offset: 0 | --offset integer An integer. Resume operation logs at this byte offset. Default: 0. This setting is optional.
+run: "" | --run text A user-defined piece of text. Verification or deployment operation ID. This setting is optional.
+check: "" | --check text A user-defined piece of text. Read diagnostics for this check. This setting is optional.
+noAI: false | --no-ai A true or false value. Use conventional detection without a coding agent. This setting is optional. This setting is optional.
+compose: "" | --compose text A user-defined piece of text. Select Compose input. With --no-ai, import the supported subset. This setting is optional.
+status: [] | --status running | deploying | pending | stopping | deleting | failed | stopped ... One of the following: running, deploying, pending, stopping, deleting, failed, stopped Filter by status: running, deploying, pending, stopping, deleting, failed, stopped. Repeat to match any selected status. This option may be repeated zero or more times. This setting is optional.
+project: "" | --project text A user-defined piece of text. Filter by exact project name. This setting is optional.
+listBranch: "" | --branch text A user-defined piece of text. Filter by exact branch or bookmark name across projects. This setting is optional.
+deleteData: false | --delete-data A true or false value. Also delete retained environment data. Default: false. This setting is optional. This setting is optional.
+workspace: "" | --workspace text A user-defined piece of text. SaaS workspace ID. Overrides the saved selection. This setting is optional.
+updateCheck: false | --check A true or false value. Check the latest release without downloading or restarting the hub. This setting is optional. This setting is optional.
+failure: false | --failure A true or false value. Print logs from failed services in the latest deployment; empty after success. This setting is optional. This setting is optional.
+follow: false | ( -f, --follow ) A true or false value. Follow deployment output until completion. Default: print and exit. This setting is optional. This setting is optional.
+
+Commands (parser order)
+agents: agent json global
+ensure: home branch port http httpsPort publicPort json main rebuild detach timeout
+verify: home env branch json detach profile timeout
+report: home env branch json
+status: home env branch json
+diagnose: home json offset run check
+wait: home json timeout
+init: noAI agent home json compose
+deploy: home branch port http httpsPort publicPort json main rebuild detach
+show: home env branch json
+list: status project listBranch home json
+main: home env branch json
+down: home env branch json deleteData
+prune: home json deleteData
+logs: home env branch
+exec: home env branch
+proxy: home env branch json
+tunnel: workspace home env branch json
+operations: home json
+attach: home json offset
+cancel: home json
+update: home json updateCheck
+self-install: home
+start: home port http httpsPort publicPort json
+stop: home json
+serve: home port http httpsPort publicPort
+forward-https: httpsPort json
+https-service: httpsPort json
+forward-http: json
+version: json
+deploy logs: home env branch failure follow

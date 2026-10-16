@@ -1,14 +1,10 @@
 import type { Request } from "@contremaitre/environments/model";
-import { type Context, decode, fail, HubError } from "@contremaitre/execution/context";
+import { type Context, decode, fail } from "@contremaitre/execution/context";
 import { sleep } from "@contremaitre/execution/sleep";
 import { type Operation, operationSchema, terminal } from "@contremaitre/operations/operations";
 import { call, launch } from "./client.js";
 
-export class AgentResultError extends HubError {
-  constructor() {
-    super({ message: "Agent operation did not pass", classification: "permanent", exitCode: 1 });
-  }
-}
+export { AgentResultError } from "./agent-result-error.js";
 export async function waitOperation(ctx: Context, home: string, id: string, seconds = 1800) {
   if (seconds < 1 || seconds > 7200) fail("--timeout must be 1..7200 seconds");
   const deadline = Date.now() + seconds * 1000;
