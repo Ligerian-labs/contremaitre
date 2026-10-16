@@ -1,11 +1,14 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { Options } from "@structure-ai/cli";
 import { listStatuses } from "./list.js";
+
+export type Parser =
+  | { readonly kind: "text" | "integer" | "boolean"; readonly alias?: string }
+  | { readonly kind: "choices"; readonly values: readonly string[] };
 
 function flag<A>(
   name: string,
-  parser: Options.Options<A>,
+  parser: Parser,
   fallback: A,
   description: string,
   value = "",
@@ -17,77 +20,77 @@ function flag<A>(
     description,
     shared,
     fallback,
-    parser: parser.pipe(Options.withDefault(fallback), Options.withDescription(description)),
+    parser,
   };
 }
 
-const flags = {
+export const flags = {
   status: flag(
     "status",
-    Options.choice("status", listStatuses).pipe(Options.repeated),
-    [],
+    { kind: "choices", values: listStatuses },
+    [] as string[],
     `Filter by status: ${listStatuses.join(", ")}. Repeat to match any selected status.`,
     "STATUS",
   ),
-  project: flag("project", Options.text("project"), "", "Filter by exact project name.", "NAME"),
+  project: flag("project", { kind: "text" }, "", "Filter by exact project name.", "NAME"),
   listBranch: flag(
     "branch",
-    Options.text("branch"),
+    { kind: "text" },
     "",
     "Filter by exact branch or bookmark name across projects.",
     "NAME",
   ),
   global: flag(
     "global",
-    Options.boolean("global"),
+    { kind: "boolean" },
     false,
     "Install agent integration in your home directory.",
   ),
   profile: flag(
     "profile",
-    Options.text("profile"),
+    { kind: "text" },
     "smoke",
     "Verification profile. Default: smoke.",
     "NAME",
   ),
-  run: flag("run", Options.text("run"), "", "Verification or deployment operation ID.", "ID"),
-  check: flag("check", Options.text("check"), "", "Read diagnostics for this check.", "NAME"),
+  run: flag("run", { kind: "text" }, "", "Verification or deployment operation ID.", "ID"),
+  check: flag("check", { kind: "text" }, "", "Read diagnostics for this check.", "NAME"),
   updateCheck: flag(
     "check",
-    Options.boolean("check"),
+    { kind: "boolean" },
     false,
     "Check the latest release without downloading or restarting the hub.",
   ),
   timeout: flag(
     "timeout",
-    Options.integer("timeout"),
+    { kind: "integer" },
     1800,
     "Wait deadline in seconds, 1..7200. Timeout leaves the operation running.",
     "SECONDS",
   ),
   workspace: flag(
     "workspace",
-    Options.text("workspace"),
+    { kind: "text" },
     "",
     "SaaS workspace ID. Overrides the saved selection.",
     "ID",
   ),
   noAI: flag(
     "no-ai",
-    Options.boolean("no-ai"),
+    { kind: "boolean" },
     false,
     "Use conventional detection without a coding agent.",
   ),
   agent: flag(
     "agent",
-    Options.text("agent"),
+    { kind: "text" },
     "",
     "Coding agent: codex, claude, pi or opencode. Overrides saved selection.",
     "NAME",
   ),
   home: flag(
     "home",
-    Options.text("home"),
+    { kind: "text" },
     process.env.CONTREMAITRE_HOME || join(homedir(), ".local", "share", "contremaitre"),
     "Hub data directory. Default: CONTREMAITRE_HOME or ~/.local/share/contremaitre.",
     "PATH",
@@ -95,99 +98,94 @@ const flags = {
   ),
   env: flag(
     "env",
-    Options.text("env"),
+    { kind: "text" },
     "",
     "Environment ID or name. Default: current workspace.",
     "ENV",
   ),
   branch: flag(
     "branch",
-    Options.text("branch"),
+    { kind: "text" },
     "",
     "Override the detected branch or bookmark name.",
     "NAME",
   ),
   port: flag(
     "http-port",
-    Options.integer("http-port"),
+    { kind: "integer" },
     8080,
     "Hub HTTP port when starting it. Default: 8080.",
     "PORT",
   ),
-  http: flag(
-    "http",
-    Options.boolean("http"),
-    false,
-    "Use legacy HTTP routing instead of local HTTPS.",
-  ),
+  http: flag("http", { kind: "boolean" }, false, "Use legacy HTTP routing instead of local HTTPS."),
   httpsPort: flag(
     "https-port",
-    Options.integer("https-port"),
+    { kind: "integer" },
     8443,
     "Local TLS listener. Default: 8443; forward port 443 to this port.",
     "PORT",
   ),
   publicPort: flag(
     "public-port",
-    Options.integer("public-port"),
+    { kind: "integer" },
     0,
     "Legacy HTTP public port. Requires --http. Default: the HTTP port.",
     "PORT",
   ),
-  json: flag("json", Options.boolean("json"), false, "Print the result as JSON.", "", true),
+  json: flag("json", { kind: "boolean" }, false, "Print the result as JSON.", "", true),
   deleteData: flag(
     "delete-data",
-    Options.boolean("delete-data"),
+    { kind: "boolean" },
     false,
     "Also delete retained environment data. Default: false.",
   ),
   main: flag(
     "main",
-    Options.boolean("main"),
+    { kind: "boolean" },
     false,
     "Designate this environment as the initial clone source.",
   ),
   rebuild: flag(
     "rebuild",
-    Options.boolean("rebuild"),
+    { kind: "boolean" },
     false,
     "Build again instead of reusing an unchanged image.",
   ),
   detach: flag(
     "detach",
-    Options.boolean("detach").pipe(Options.withAlias("d")),
+    { kind: "boolean", alias: "d" },
     false,
     "Return the operation immediately without following it.",
   ),
   failure: flag(
     "failure",
-    Options.boolean("failure"),
+    { kind: "boolean" },
     false,
     "Print logs from failed services in the latest deployment; empty after success.",
   ),
   follow: flag(
     "follow",
-    Options.boolean("follow").pipe(Options.withAlias("f")),
+    { kind: "boolean", alias: "f" },
     false,
     "Follow deployment output until completion. Default: print and exit.",
   ),
   compose: flag(
     "compose",
-    Options.text("compose"),
+    { kind: "text" },
     "",
     "Select Compose input. With --no-ai, import the supported subset.",
     "FILE",
   ),
   offset: flag(
     "offset",
-    Options.integer("offset"),
+    { kind: "integer" },
     0,
     "Resume operation logs at this byte offset. Default: 0.",
     "BYTES",
   ),
 };
 
-type FlagName = keyof typeof flags;
+export type FlagName = keyof typeof flags;
 type Group = "Environments" | "Inspect and connect" | "Operations" | "Hub and tools";
 export interface CommandHelp {
   readonly name: string;
@@ -545,44 +543,6 @@ export const deployLogsHelp: CommandHelp = {
     "contremaitre deploy logs -f",
   ],
 };
-
-export function optionsFor(command: Pick<CommandHelp, "flags">) {
-  function option<A>(key: FlagName, spec: { parser: Options.Options<A>; fallback: A }) {
-    return command.flags.includes(key)
-      ? spec.parser
-      : Options.none.pipe(Options.map(() => spec.fallback));
-  }
-  return {
-    status: option("status", flags.status),
-    project: option("project", flags.project),
-    listBranch: option("listBranch", flags.listBranch),
-    workspace: option("workspace", flags.workspace),
-    noAI: option("noAI", flags.noAI),
-    agent: option("agent", flags.agent),
-    home: option("home", flags.home),
-    env: option("env", flags.env),
-    branch: option("branch", flags.branch),
-    port: option("port", flags.port),
-    http: option("http", flags.http),
-    httpsPort: option("httpsPort", flags.httpsPort),
-    publicPort: option("publicPort", flags.publicPort),
-    json: option("json", flags.json),
-    deleteData: option("deleteData", flags.deleteData),
-    main: option("main", flags.main),
-    rebuild: option("rebuild", flags.rebuild),
-    detach: option("detach", flags.detach),
-    failure: option("failure", flags.failure),
-    follow: option("follow", flags.follow),
-    compose: option("compose", flags.compose),
-    offset: option("offset", flags.offset),
-    global: option("global", flags.global),
-    profile: option("profile", flags.profile),
-    run: option("run", flags.run),
-    check: option("check", flags.check),
-    updateCheck: option("updateCheck", flags.updateCheck),
-    timeout: option("timeout", flags.timeout),
-  };
-}
 
 const builtins = [
   { name: "help", value: "", description: "Show help for this command." },

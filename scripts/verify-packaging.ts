@@ -147,6 +147,10 @@ async function update(release: string, check = false) {
 try {
   await makeInstall();
   assert.equal(await health(ctx, home), false, "installation must leave a stopped hub stopped");
+  const versionCommand = Bun.spawn([binary, "--version"], { stdout: "pipe", stderr: "pipe" });
+  assert.equal(await new Response(versionCommand.stdout).text(), `${version}\n\n`);
+  assert.equal(await new Response(versionCommand.stderr).text(), "");
+  assert.equal(await versionCommand.exited, 0);
   const help = Bun.spawn([binary, "--help"], { stdout: "pipe", stderr: "pipe" });
   const helpText = await new Response(help.stdout).text();
   assert.equal(await help.exited, 0);
