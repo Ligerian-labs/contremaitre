@@ -23,7 +23,8 @@ function closure(entry: string) {
     chains.set(file, next);
     if (!/\.[cm]?[jt]sx?$/.test(file)) return;
     for (const dependency of imports(file)) {
-      if (dependency.kind !== "import-statement") continue;
+      // TS/JS imports and require() load code; dynamic imports, resolution and scan metadata do not.
+      if (dependency.kind !== "import-statement" && dependency.kind !== "require-call") continue;
       if (dependency.path.startsWith("node:") || builtins.has(dependency.path)) continue;
       visit(Bun.resolveSync(dependency.path, dirname(file)), next);
     }
@@ -86,6 +87,10 @@ test("runner retains literal dynamic imports for each command implementation", (
 
 test("source version preserves exact framework output", () => {
   const command = Bun.spawnSync([process.execPath, entry, "--version"]);
+  const framework = Bun.spawnSync([process.execPath, entry, "--version", "--version"]);
+  expect(framework.exitCode).toBe(0);
+  expect(framework.stderr.toString()).toBe("");
+  expect(command.stdout).toEqual(framework.stdout);
   expect(command.exitCode).toBe(0);
   expect(command.stdout.toString()).toBe(`${version}\n\n`);
   expect(command.stderr.toString()).toBe("");
