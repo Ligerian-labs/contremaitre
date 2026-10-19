@@ -139,7 +139,7 @@ Services receive `CONTREMAITRE_ENVIRONMENT`, `CONTREMAITRE_LOCAL_URL`, and, when
 
 ### Service runtime
 
-Each service runs on one runtime, selected with `runtime`. The default, `apple`, runs the service in an Apple container as described above. Existing manifests without the field keep this behavior. `runtime: wasm` runs the service as a WebAssembly process on the host:
+Each service runs on one runtime, selected with `runtime`. The default, `apple`, runs the service in an Apple container as described above. Existing manifests without the field keep this behavior. See the [Wasm runtime guide](wasm-runtime.md) for whole-application setup. `runtime: wasm` runs the service as a WebAssembly process on the host:
 
 ```yaml
 services:
@@ -164,6 +164,8 @@ services:
 A WASM app needs `wasm.component` and `port`. `wasm.build` is an optional command run on the host in `wasm.directory` (default: the project root) before each deployment; it must produce `wasm.component`. Both paths are relative to the project root. With `dev`, the runtime uses `dev.source` in place: there is no copy into a container and no `dev.install`; `dev.target` is optional. WASM apps don't accept `image`, `build`, `dockerfile`, `command`, `working_dir`, `init`, `migrate`, `ready`, `endpoints`, or `dev.install`. A WASM Postgres takes no `image`. Redis runs only on `apple`. Verification checks with `service:` run inside a container, so they can't select a WASM service.
 
 `wasm.engine` defaults to `wasmtime` for WASI HTTP components. Use `wasmer` for a self-contained WASIX WEBC package in `wasm.component`; Wasmer 7.5.0 or newer must be on the hub's `PATH`. WASIX applications must listen on the injected `HOST` and `PORT`. The runtime grants host network access, mounts no host directories, and passes declared variables through a private environment file. See the [WASIX guide](wasm-backend.md#wasix-applications).
+
+For a Wasm Postgres service, `postgres.pooling` defaults to `session`, requiring an application pool size of one. Set it to `transaction` to accept ordinary application pools through a managed PgBouncer 1.26+ host process. Transactions still execute one at a time; session state cannot span transaction boundaries. Other service kinds and the Apple backend reject `postgres` settings. See [transaction pooling](wasm-postgres.md#transaction-pooling).
 
 WASM services listen on loopback. Contremaitre reserves a free `127.0.0.1` port for each declared port and keeps it across redeploys while it stays free. `{{db.host}}`, `{{db.port}}` and `{{db.url}}` resolve to that address, the hub routes HTTP to it, and `contremaitre proxy` connects to it, so the declared port still identifies the service.
 

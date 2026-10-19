@@ -8,7 +8,7 @@
 
 **Every branch gets its own stack.**
 
-Run your app, PostgreSQL, Redis, and uploaded files in isolated local environments for Git branches and Jujutsu workspaces. New environments copy data from your designated main environment and get their own HTTPS `.localhost` URLs. Built on [Apple container](https://github.com/apple/container) for Apple silicon Macs.
+Run your app, PostgreSQL, Redis, and uploaded files in isolated local environments for Git branches and Jujutsu workspaces. New environments copy data from your designated main environment and get their own HTTPS `.localhost` URLs. Choose [Apple container](https://github.com/apple/container) or the [WebAssembly runtime](docs/wasm-runtime.md) for supported services on Apple silicon Macs.
 
 [Get started](#get-started) · [Try a data fork](#try-a-data-fork) · [Coding agents](#use-with-coding-agents) · [Documentation](#documentation) · [Contribute](CONTRIBUTING.md)
 
@@ -156,7 +156,7 @@ Environments automatically stop after two idle hours and retain their data. Set 
 
 ## What to expect
 
-Contremaitre is in early development. The local runtime supports managed PostgreSQL 17, Redis, application containers, data forks, local HTTPS, and source sync. See the [recorded runtime verification](docs/structure-verification.md) for the tested setup and its limits.
+Contremaitre is in early development. The local runtime supports managed Postgres, Redis, application containers, Wasm servers, data forks, local HTTPS, and source sync. See the [recorded container verification](docs/structure-verification.md) and [Wasm runtime guide](docs/wasm-runtime.md) for the tested setups and their limits.
 
 - macOS and Apple silicon only. No Linux, Windows, or Intel Mac runtime support.
 - Build-based services need redeployment after edits. Source sync and hot reload require a [development-service configuration](docs/assisted-init.md#development-services).
@@ -169,6 +169,7 @@ Contremaitre is in early development. The local runtime supports managed Postgre
 | Guide | Read it for |
 | --- | --- |
 | [Full reference](docs/reference.md) | Manifest fields, environment identity, data lifecycle, commands, and tunnels |
+| [WebAssembly runtime](docs/wasm-runtime.md) | WASI/WASIX engines, JavaScript packages, PGlite pooling, setup, recovery and limits |
 | [Local HTTPS](docs/local-https.md) | Certificates, port forwarding, and the hub status page |
 | [Compact configuration](docs/compact-config.md) | Minimal app config, setup detection, shared containers, endpoints and automatic lock refresh |
 | [Initialization and hot reload](docs/assisted-init.md) | Agent-assisted setup, Dockerfiles, and development containers |

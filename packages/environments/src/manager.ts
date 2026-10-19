@@ -419,7 +419,7 @@ export class Manager {
               checks = new Map();
               preflights.set(backend, checks);
             }
-            const engine = s.wasm?.engine ?? "default";
+            const engine = s.postgres?.pooling ?? s.wasm?.engine ?? "default";
             if (!checks.has(engine)) checks.set(engine, backend.preflight(ctx, s));
             await checks.get(engine);
             if (!s.build && !s.wasm) {
