@@ -9,6 +9,7 @@ export const serviceSchema = Schema.Struct({
   runtime: Schema.optional(Schema.Literal(...runtimeKinds)),
   wasm: Schema.optional(
     Schema.Struct({
+      engine: Schema.optional(Schema.Literal("wasmtime", "wasmer")),
       build: Schema.optional(Schema.Array(Schema.String)),
       directory: Schema.optional(Schema.String),
       component: Schema.String,

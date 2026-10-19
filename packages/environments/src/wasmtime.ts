@@ -154,13 +154,22 @@ export class WasmtimeRuntime implements ServiceRuntime {
     );
     atomicWrite(this.path(name), JSON.stringify(r));
   }
-  async preflight(ctx: Context): Promise<void> {
-    const binary = Bun.which("wasmtime", { PATH: process.env.PATH ?? "" });
+  async preflight(ctx: Context, service?: Service): Promise<void> {
+    const engine = service?.wasm?.engine ?? "wasmtime";
+    const binary = Bun.which(engine, { PATH: process.env.PATH ?? "" });
     if (!binary)
       fail(
-        "wasmtime is missing. Install with brew install wasmtime or curl https://wasmtime.dev/install.sh -sSf | bash",
+        engine === "wasmer"
+          ? "wasmer is missing. Install Wasmer 7.5.0 or newer and add it to the hub's PATH"
+          : "wasmtime is missing. Install with brew install wasmtime or curl https://wasmtime.dev/install.sh -sSf | bash",
       );
-    phase(ctx, (await run(ctx, [binary, "--version"])).toString().trim());
+    const version = (await run(ctx, [binary, "--version"])).toString().trim();
+    if (engine === "wasmer") {
+      const match = /^wasmer (\d+)\.(\d+)\.(\d+)(?:\s|$)/.exec(version);
+      if (!match || Number(match[1]) < 7 || (Number(match[1]) === 7 && Number(match[2]) < 5))
+        fail("WASIX packages require Wasmer 7.5.0 or newer; update the hub's PATH");
+    }
+    phase(ctx, version);
   }
   async build(ctx: Context, spec: BuildRequest, previous?: BuildRecord): Promise<BuildRecord> {
     const wasm = spec.service.wasm ?? fail("WASM service requires wasm settings");
@@ -225,11 +234,7 @@ export class WasmtimeRuntime implements ServiceRuntime {
       source: spec.source,
       service: {
         port: spec.service.port,
-        wasm: spec.service.wasm && {
-          build: spec.service.wasm.build,
-          directory: spec.service.wasm.directory,
-          component: spec.service.wasm.component,
-        },
+        wasm: spec.service.wasm,
         dev: spec.service.dev && {
           source: spec.service.dev.source,
           exclude: spec.service.dev.exclude,
@@ -250,8 +255,9 @@ export class WasmtimeRuntime implements ServiceRuntime {
     s: Pick<RecordState, "component" | "env" | "cwd" | "port" | "root" | "source" | "service">,
   ): Promise<void> {
     ctx.signal.throwIfAborted();
-    await this.preflight(ctx);
-    phase(ctx, `Starting wasmtime ${name}`);
+    const engine = s.service?.wasm?.engine ?? "wasmtime";
+    await this.preflight(ctx, s.service);
+    phase(ctx, `Starting ${engine} ${name}`);
     const bytes = await fs.readFile(s.component);
     const digest = hash(bytes);
     await fs.mkdir(this.directory, { recursive: true, mode: 0o700 });
@@ -271,22 +277,44 @@ export class WasmtimeRuntime implements ServiceRuntime {
     const log = join(this.directory, `${name}.log`);
     if (existsSync(log) && (await fs.stat(log)).size > 5 * 1024 ** 2)
       await fs.rename(log, `${log}.1`);
-    const argv = [
-      Bun.which("wasmtime", { PATH: process.env.PATH ?? "" }) ??
-        fail("wasmtime is missing; brew install wasmtime"),
-      "serve",
-      "-S",
-      "cli=y", // WASI CLI imports provide guest environment and stderr.
-      "--addr",
-      `${this.bind}:${port}`,
-      ...Object.keys(s.env).flatMap((k) => ["--env", k]),
-      snapshot,
-    ];
+    const binary =
+      Bun.which(engine, { PATH: process.env.PATH ?? "" }) ?? fail(`${engine} is missing`);
+    const environment =
+      engine === "wasmer" ? { ...s.env, HOST: this.bind, PORT: String(port) } : s.env;
+    const envPath = join(this.directory, `${name}.env`);
+    if (engine === "wasmer") {
+      // dotenvy expands dollars inside double quotes and accepts only selected escapes.
+      const quote = (value: string) =>
+        `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\$/g, "\\$").replace(/\n/g, "\\n").replace(/\r/g, "\\r")}"`;
+      atomicWrite(
+        envPath,
+        Object.entries(environment)
+          .map(([key, value]) => `${key}=${quote(value)}\n`)
+          .join(""),
+      );
+    }
+    const argv =
+      engine === "wasmer"
+        ? [binary, "run", "--net", "--env-file", envPath, snapshot]
+        : [
+            binary,
+            "serve",
+            "-S",
+            "cli=y", // WASI CLI imports provide guest environment and stderr.
+            "--addr",
+            `${this.bind}:${port}`,
+            ...Object.keys(s.env).flatMap((k) => ["--env", k]),
+            snapshot,
+          ];
     const fd = openSync(log, "a", 0o600);
+    const childEnv = { ...process.env, ...environment };
+    // Wasmer also accepts this capability through an ambient CLI environment flag.
+    // Only the declared variables in our private env file may enter the guest.
+    if (engine === "wasmer") delete childEnv.FORWARD_HOST_ENV;
     const child = spawn(argv[0], argv.slice(1), {
       detached: true,
       cwd: s.cwd,
-      env: { ...process.env, ...s.env },
+      env: childEnv,
       stdio: ["ignore", fd, fd],
     });
     closeSync(fd);
@@ -409,6 +437,7 @@ export class WasmtimeRuntime implements ServiceRuntime {
       [
         this.path(name),
         join(this.directory, `${name}.owner`),
+        join(this.directory, `${name}.env`),
         ...(await fs.readdir(this.directory).catch(() => []))
           .filter(
             (p) =>

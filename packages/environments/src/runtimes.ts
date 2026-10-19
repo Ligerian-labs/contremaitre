@@ -78,7 +78,7 @@ export interface RuntimeCapabilities {
 export interface ServiceRuntime {
   readonly capabilities: RuntimeCapabilities;
   /** Check host prerequisites before a deployment uses this runtime. */
-  preflight(ctx: Context): Promise<void>;
+  preflight(ctx: Context, service?: Service): Promise<void>;
   /** Produce the runnable artifact for a service with `build` or `wasm`. */
   build(ctx: Context, request: BuildRequest, previous?: BuildRecord): Promise<BuildRecord>;
   /** Start a service, or run a task to completion when `spec.task` is set. */

@@ -22,6 +22,12 @@ jobs:
       - run: brew install mkcert shellcheck wasmtime
       - run: rustup target add wasm32-wasip2
       - run: bun install --frozen-lockfile
+      - name: Install Wasmer for WASIX integration tests
+        run: |
+          mkdir -p "$RUNNER_TEMP/wasmer"
+          curl --fail --location --silent --show-error https://github.com/wasmerio/wasmer/releases/download/v7.5.0/wasmer-darwin-arm64.tar.gz | tar -xz -C "$RUNNER_TEMP/wasmer"
+          echo "$RUNNER_TEMP/wasmer/bin" >> "$GITHUB_PATH"
+      - run: bun scripts/prepare-wasix-tests.ts
       - name: Parse version from tag
         if: startsWith(github.ref, 'refs/tags/v')
         id: version
@@ -54,6 +60,7 @@ jobs:
       - run: bun run check
         env:
           CONTREMAITRE_REQUIRE_WASMTIME: '1'
+          CONTREMAITRE_REQUIRE_WASMER: '1'
       - name: Package release
         if: startsWith(github.ref, 'refs/tags/v')
         env:

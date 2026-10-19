@@ -121,6 +121,12 @@ services:
     environment: {DATABASE_URL: '{{db.url}}', DB_PORT: '{{db.port}}', REDIS_URL: '{{cache.url}}'}
     dev: {source: src}
 `;
+
+test("WASIX packages select Wasmer while existing WASI components keep their engine", () => {
+  const text = `version: 1\nproject: wasm-app\nservices:\n  api:\n    runtime: wasm\n    wasm: {engine: wasmer, component: api.webc}\n    port: 3000\n`;
+  expect(parseManifest(text).services.api.wasm?.engine).toBe("wasmer");
+  expect(() => parseManifest(text.replace("wasmer", "native"))).toThrow();
+});
 function fixture(text = mixed) {
   const home = realpathSync(mkdtempSync(join(tmpdir(), "cm-runtimes-"))),
     root = join(home, "project");

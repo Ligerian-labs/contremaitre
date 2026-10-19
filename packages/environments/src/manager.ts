@@ -408,14 +408,20 @@ export class Manager {
           );
       }
       const images: Record<string, string> = {};
-      const preflights = new Map<ServiceRuntime, Promise<void>>();
+      const preflights = new Map<ServiceRuntime, Map<string, Promise<void>>>();
       const builds = await Promise.allSettled(
         names.map((name) =>
           attemptService(name, async () => {
             const s = manifest.services[name],
               backend = this.specBackend(s);
-            if (!preflights.has(backend)) preflights.set(backend, backend.preflight(ctx));
-            await preflights.get(backend);
+            let checks = preflights.get(backend);
+            if (!checks) {
+              checks = new Map();
+              preflights.set(backend, checks);
+            }
+            const engine = s.wasm?.engine ?? "default";
+            if (!checks.has(engine)) checks.set(engine, backend.preflight(ctx, s));
+            await checks.get(engine);
             if (!s.build && !s.wasm) {
               progress(scopes[name], "waiting", "waiting for builds");
               images[name] = s.image ?? "";
