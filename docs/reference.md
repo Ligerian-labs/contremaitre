@@ -139,7 +139,7 @@ Services receive `CONTREMAITRE_ENVIRONMENT`, `CONTREMAITRE_LOCAL_URL`, and, when
 
 ### Service runtime
 
-Each service runs on one runtime, selected with `runtime`. The default, `apple`, runs the service in an Apple container as described above. Existing manifests without the field keep this behavior. `runtime: wasm` runs the service as a WebAssembly process on the host:
+Each service runs on one runtime, selected with `runtime`. The default, `apple`, runs the service in an Apple container as described above. Existing manifests without the field keep this behavior. See the [Wasm runtime guide](wasm-runtime.md) for whole-application setup. `runtime: wasm` runs the service as a WebAssembly process on the host:
 
 ```yaml
 services:

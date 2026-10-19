@@ -4,6 +4,8 @@ PGlite runs Postgres in a Bun worker and serves the Postgres wire protocol on a 
 
 The runtime is selected by `runtime: wasm`; see the [service runtime reference](reference.md#service-runtime).
 
+The [complete Wasm runtime guide](wasm-runtime.md) explains application packaging, engine selection and setup alongside this database backend.
+
 ## Setup
 
 Declare a managed Postgres service without an image:

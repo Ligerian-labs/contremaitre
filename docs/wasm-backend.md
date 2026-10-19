@@ -2,6 +2,8 @@
 
 Contremaitre runs Wasm applications as detached processes. The default engine uses `wasmtime serve` for WASI HTTP components that export `wasi:http/proxy`. Set `wasm.engine: wasmer` for a WASIX application packaged as a self-contained WEBC file. Both engines use the same process supervision, artifact snapshots, logs, routing and recovery.
 
+Start with the [complete Wasm runtime guide](wasm-runtime.md) for engine selection, Postgres pooling and whole-application setup.
+
 Install Wasmtime and a component toolchain. For Rust:
 
 ```sh
