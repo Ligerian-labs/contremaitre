@@ -152,7 +152,7 @@ contremaitre down                      # Stop this environment, retain its data
 
 Use your manifest's service name in place of `web`. Run `contremaitre --help` for the full command list.
 
-Environments automatically stop after two idle hours and retain their data. Set top-level `idle_timeout_seconds: 3600` for one hour or `idle_timeout_seconds: 0` to keep background workers running, then run deploy or ensure. CLI use and proxied traffic reset activity; active commands and sharing sessions keep environments alive. [Shutdown policy and activity rules](docs/compact-config.md#automatic-shutdown).
+Wasm services suspend after 60 seconds with no open connections and wake when a new connection arrives. Set service-level `idle_timeout_seconds` to change the delay or `0` to keep a service running. Fully Wasm environments remain wakeable. Apple and mixed environments stop after two idle hours and retain their data; a top-level `idle_timeout_seconds` overrides that environment shutdown policy. Apply settings with deploy or ensure. See [Wasm suspension and wake](docs/wasm-runtime.md#idle-suspension-and-wake) and [environment shutdown rules](docs/compact-config.md#automatic-shutdown).
 
 ## What to expect
 

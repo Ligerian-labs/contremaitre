@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { call, keepActive } from "@contremaitre/cli/client";
+import { environmentIdleTimeout } from "@contremaitre/environments/model";
 import { context } from "@contremaitre/execution/context";
 import { startServer } from "@contremaitre/hub/server";
 import { loadManifest, parseManifest } from "@contremaitre/projects/config";
@@ -48,6 +49,23 @@ test("idle policy validates integers and retains a zero opt-out", () => {
   expect(parseManifest(manifest("example", 0)).idle_timeout_seconds).toBe(0);
   for (const value of [-1, 0.5, 2_147_484])
     expect(() => parseManifest(manifest("example", value))).toThrow();
+});
+test("fully Wasm environments remain wakeable by default and retain explicit environment shutdown policy", async () => {
+  const f = await fixture();
+  try {
+    const env = await f.deploy("wasm-policy");
+    delete env.idle_timeout_seconds;
+    expect(environmentIdleTimeout(env)).toBe(7200);
+    env.Services.web.Runtime = "wasm";
+    expect(environmentIdleTimeout(env)).toBe(0);
+    f.advance(10_000_000);
+    await f.hub.idle.sweep();
+    expect(env.Status).toBe("running");
+    env.idle_timeout_seconds = 30;
+    expect(environmentIdleTimeout(env)).toBe(30);
+  } finally {
+    await f.close();
+  }
 });
 test("idle expiry stops at the boundary, preserves data, and explicit deploy resumes", async () => {
   const f = await fixture();

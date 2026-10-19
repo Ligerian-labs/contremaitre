@@ -8,6 +8,13 @@ import {
 } from "@contremaitre/projects/model";
 import { Schema } from "effect";
 export const defaultIdleTimeoutSeconds = 7200;
+export function environmentIdleTimeout(env: Environment): number {
+  if (env.idle_timeout_seconds !== undefined) return env.idle_timeout_seconds;
+  const services = Object.values(env.Services);
+  return services.length && services.every((s) => s.Runtime === "wasm")
+    ? 0
+    : defaultIdleTimeoutSeconds;
+}
 export interface BuildRecord {
   digest: string;
   image: string;

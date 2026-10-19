@@ -75,6 +75,9 @@ export class WasmtimeRuntime implements ServiceRuntime {
   private directory: string;
   private bind: string;
   private watchers = new Map<string, { stop: () => Promise<void> }>();
+  async shutdown(): Promise<void> {
+    for (const watcher of this.watchers.values()) await watcher.stop();
+  }
   private watcherEpochs = new Map<string, number>();
   private stopping = new Set<string>();
   // Services may share a build directory or output; concurrent builds race on the files.
@@ -205,7 +208,7 @@ export class WasmtimeRuntime implements ServiceRuntime {
       r = await this.read(name);
     } catch (e) {
       phase(ctx, message(e));
-      return { Running: false, Host: this.bind };
+      return { Running: false, Host: this.bind, RecordInvalid: true };
     }
     const running = !!r && identity(r.pid) === r.identity;
     if (running) await this.watchService(ctx, name);
@@ -243,10 +246,10 @@ export class WasmtimeRuntime implements ServiceRuntime {
     });
     await this.watchService(ctx, spec.name);
   }
-  async start(ctx: Context, name: string): Promise<void> {
+  async start(ctx: Context, name: string, ports?: Record<string, number>): Promise<void> {
     const r = (await this.read(name)) ?? fail(`Unknown wasmtime service ${name}`);
     await this.stop(ctx, name);
-    await this.spawn(ctx, name, r);
+    await this.spawn(ctx, name, { ...r, port: ports?.[String(r.service?.port)] ?? r.port });
     await this.watchService(ctx, name);
   }
   private async spawn(

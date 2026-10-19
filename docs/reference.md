@@ -173,6 +173,8 @@ In a mixed environment, a WASM service can depend on an Apple service: it reache
 
 The first deployment records each service's runtime. Contremaitre never converts a service between runtimes. A deployment that changes a recorded runtime fails before it stops anything. To move a service, remove it from the manifest and deploy, or delete the environment with `contremaitre down --delete-data`; then deploy with the new runtime. Forking Postgres from main requires the same runtime for that service in both environments.
 
+Wasm services suspend after 60 seconds with no open connections and wake on new connections at their stable address. Service-level `idle_timeout_seconds` accepts an integer from `0` to `2147483`; `0` disables suspension. This field requires `runtime: wasm`. The guest listens on a separate backend port. Fully Wasm environments have no default environment-wide idle shutdown; an explicit top-level timeout still stops the environment. See [suspension and wake](wasm-runtime.md#idle-suspension-and-wake).
+
 The [WASM app runtime](wasm-backend.md) is available. WASM Postgres runs on [PGlite](wasm-postgres.md).
 
 Contremaitre gives the shared Apple builder up to 4 CPUs and 8 GB RAM, capped at
@@ -310,7 +312,7 @@ Redeploy preserves data and does not recopy main. Upload directory names are sco
 
 `prune` removes superseded Contremaitre build images. `prune --delete-data` also removes stopped environments that have no tunnel reservations. It never runs Apple's global prune or removes unrelated containers. Missing cached images can be removed from the registry idempotently.
 
-`stop` stops all Contremaitre environments and exits the hub. The shared Apple container system remains available to other applications. RAM/CPU allocations are configurable per service; admission currently relies on Apple container errors. There is no automatic suspension or eviction.
+`stop` stops all Contremaitre environments and exits the hub. The shared Apple container system remains available to other applications. RAM/CPU allocations are configurable per service; admission currently relies on Apple container errors. Wasm services support [idle suspension and wake](wasm-runtime.md#idle-suspension-and-wake). Apple containers have no automatic suspension or memory-pressure eviction.
 
 `proxy` binds only `127.0.0.1` and stays in the foreground until interrupted. Omit the local port or use 0 for automatic allocation. An occupied explicit port is an error. Each new connection resolves the container's current address. Use `exec postgres -- psql -U app -d app` when you do not need an external database client.
 

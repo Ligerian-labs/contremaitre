@@ -1,5 +1,5 @@
 import type { Manager } from "@contremaitre/environments/manager";
-import { defaultIdleTimeoutSeconds, type Environment } from "@contremaitre/environments/model";
+import { type Environment, environmentIdleTimeout } from "@contremaitre/environments/model";
 import { context, message } from "@contremaitre/execution/context";
 import type { Operations } from "@contremaitre/operations/operations";
 
@@ -53,7 +53,7 @@ export class IdleShutdown {
     );
   }
   private expired(env: Environment): boolean {
-    const seconds = env.idle_timeout_seconds ?? defaultIdleTimeoutSeconds;
+    const seconds = environmentIdleTimeout(env);
     return (
       seconds > 0 &&
       (["running", "failed"].includes(env.Status) || this.retries.has(env.Identity.ID)) &&
@@ -87,7 +87,7 @@ export class IdleShutdown {
           this.log({
             event: "contremaitre.environment.idle_stop",
             environment_id: env.Identity.ID,
-            idle_timeout_seconds: env.idle_timeout_seconds ?? defaultIdleTimeoutSeconds,
+            idle_timeout_seconds: environmentIdleTimeout(env),
           });
           await this.manager.down(ctx, env, false);
           this.retries.delete(env.Identity.ID);

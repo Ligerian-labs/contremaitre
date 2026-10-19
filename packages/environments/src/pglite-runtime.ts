@@ -142,10 +142,14 @@ export class PGliteRuntime implements ServiceRuntime {
     const instance = this.instances.get(name);
     return instance ? { Host: "127.0.0.1", Running: instance.handle?.running ?? false } : undefined;
   }
-  async start(ctx: Context, name: string): Promise<void> {
+  async start(ctx: Context, name: string, ports?: Record<string, number>): Promise<void> {
     await this.locks.use([name], ctx.signal, async () => {
       const instance = this.instances.get(name);
       if (!instance) fail(`Unknown PGlite service ${name}`);
+      if (!instance.handle?.running && ports) {
+        instance.port = ports[String(instance.spec.service.port ?? 5432)] ?? instance.port;
+        instance.spec.ports = ports;
+      }
       if (!instance.handle?.running) await this.launch(ctx, instance);
     });
   }
@@ -201,5 +205,8 @@ export class PGliteRuntime implements ServiceRuntime {
           : "copied Postgres data (clonefile unavailable)",
       );
     });
+  }
+  async shutdown(): Promise<void> {
+    for (const instance of this.instances.values()) await this.stopInstance(instance);
   }
 }
