@@ -1,6 +1,6 @@
 # Postgres with PGlite
 
-PGlite runs Postgres in a Bun worker and serves the Postgres wire protocol on a reserved loopback port. The database needs no container or separate Postgres installation. WASM-only environments make no Apple container calls, including hub startup and network cleanup.
+PGlite runs Postgres in a Bun worker and serves the Postgres wire protocol through a stable loopback activation listener. The backend suspends after 60 seconds without open client connections and wakes on a new connection; set service-level `idle_timeout_seconds: 0` to keep it running. The database needs no container or separate Postgres installation. WASM-only environments make no Apple container calls, including hub startup and network cleanup.
 
 The runtime is selected by `runtime: wasm`; see the [service runtime reference](reference.md#service-runtime).
 
@@ -50,7 +50,7 @@ services:
       pooling: transaction
 ```
 
-On macOS, `brew install pgbouncer` supplies the helper. Only this mode requires it. Contremaitre starts a native host PgBouncer process for each database. PGlite remains the Wasm database engine. The worker exposes its managed connection through a private Unix socket, and PgBouncer owns the reserved loopback TCP port. Applications keep using `{{db.url}}`; their pools can retain multiple idle connections without monopolizing PGlite.
+On macOS, `brew install pgbouncer` supplies the helper. Only this mode requires it. Contremaitre starts a native host PgBouncer process for each database. PGlite remains the Wasm database engine. The worker exposes its managed connection through a private Unix socket, and PgBouncer listens on a private backend TCP port behind the activation listener. Applications keep using `{{db.url}}`; their pools can retain multiple idle connections without monopolizing PGlite.
 
 PgBouncer admits up to 128 clients and uses exactly one backend connection, with no reserve connections. It pins that connection until the transaction commits or rolls back. Other work queues for up to 30 seconds; an idle transaction is disconnected after 30 seconds. Protocol-level prepared statements are tracked with a cache of 100 server statements. A standalone `DISCARD ALL` resets the backend after every transaction. PgBouncer restores tracked parameters, including session authorization, before reuse.
 

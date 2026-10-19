@@ -29,6 +29,13 @@ const real = available ? test : test.skip;
 // biome-ignore lint/suspicious/noTemplateCurlyInString: Verify literal dotenv substitutions.
 const greeting = 'private = "hello" \\ $HOME ${USER}';
 const ctx = context();
+async function until(check: () => Promise<boolean>) {
+  const deadline = Date.now() + 10000;
+  while (!(await check())) {
+    if (Date.now() > deadline) throw Error("WASIX idle state did not settle");
+    await Bun.sleep(25);
+  }
+}
 
 real(
   "wasix/host-http deploys isolated WASM guests, retains private env, and restarts without source",
@@ -64,6 +71,7 @@ project: wasix-fixture
 services:
   web:
     runtime: wasm
+    idle_timeout_seconds: 1
     wasm: {engine: wasmer, component: app.webc}
     port: 8080
     http: true
@@ -109,6 +117,13 @@ services:
           input: Schema.Struct({}),
           fixtures: () => ({ web }),
         }),
+        defineScenario({
+          name: "wasix/idle-wake",
+          description:
+            "Idle WASIX guests wake on concurrent connections without their source checkout",
+          input: Schema.Struct({}),
+          fixtures: () => ({ web }),
+        }),
       ],
     });
     const previous = process.env.WASIX_HOST_ONLY;
@@ -116,7 +131,7 @@ services:
     process.env.WASIX_HOST_ONLY = "must-not-enter-guest";
     process.env.FORWARD_HOST_ENV = "true";
     try {
-      const fixtures = await Effect.runPromise(catalog.prepare("wasix/host-http", {}));
+      const fixtures = await Effect.runPromise(catalog.prepare("wasix/idle-wake", {}));
       const report = await app.runPromise(
         runFixtures({
           fixtures,
@@ -132,12 +147,15 @@ services:
                 ports.push(port);
                 const check = async () => {
                   const result = await (await fetch(`http://127.0.0.1:${port}`)).json();
+                  const backendPort = JSON.parse(
+                    await readFile(join(home, "wasmtime", `${service.Container}.json`), "utf8"),
+                  ).port;
                   expect(result).toEqual({
                     platform: "wasi",
                     arch: "wasm32",
                     greeting,
                     host: "127.0.0.1",
-                    port: String(port),
+                    port: String(backendPort),
                   });
                 };
                 await check();
@@ -161,6 +179,21 @@ services:
               const env = hub.manager.resolve(environments[0]);
               const service = env.Services.web;
               const backend = hub.manager.backend(service);
+              const recordPath = join(home, "wasmtime", `${service.Container}.json`);
+              await until(
+                async () => JSON.parse(await readFile(recordPath, "utf8")).desired === "stopped",
+              );
+              const host = new URL(hub.manager.localURL(env, "web")).hostname;
+              const responses = await Promise.all(
+                Array.from({ length: 12 }, async () => {
+                  const result = await fetch(`http://127.0.0.1:${hub.proxyPort}`, {
+                    headers: { Host: host, Connection: "close" },
+                  });
+                  expect(result.status).toBe(200);
+                  return (await result.json()).greeting;
+                }),
+              );
+              expect(responses).toEqual(Array(12).fill(greeting));
               await backend.stop(ctx, service.Container);
               await backend.start(ctx, service.Container);
               expect(
@@ -171,6 +204,16 @@ services:
         }),
       );
       expect(report.values.web).toHaveLength(2);
+      console.log(
+        JSON.stringify({
+          scenario: "wasix/idle-wake",
+          run_id: report.runId,
+          target: "isolated Wasmer",
+          environments: report.values.web,
+          source_removed: true,
+          concurrent_cold_requests: 12,
+        }),
+      );
       expect(apple.calls).toEqual([]);
     } finally {
       if (previous === undefined) delete process.env.WASIX_HOST_ONLY;

@@ -80,11 +80,39 @@ services:
 
 Contremaitre runs the build on the host and snapshots its output. A WEBC package must include its entrypoint, runtime module, JavaScript and required filesystem assets. Package the runtime itself to avoid resolving registry dependencies during startup or recovery. Bigatelier's [Wasm implementation](https://github.com/Ligerian-labs/bigatelier/pull/79) includes a complete application packager.
 
-`port: 3000` identifies the service. Contremaitre reserves an available loopback port and injects `HOST=127.0.0.1` and the actual `PORT`, overriding manifest values for those keys. Bind the server to those values. Use `{{db.url}}` and other service references instead of hard-coded host ports.
+`port: 3000` identifies the service. Contremaitre reserves a stable loopback activation address and a separate backend port. It injects `HOST=127.0.0.1` and the backend `PORT`, overriding manifest values for those keys. Bind the server to those values. Service references such as `{{db.url}}` point to the activation address, so consumers keep the same address through suspension and wake.
 
 WASIX variables come from declared service configuration through a private mode-0600 environment file. Values stay out of command-line arguments, and the runtime disables ambient host-environment forwarding. A package sees its packaged files; Contremaitre mounts no host source directories into the guest.
 
 The generic artifact field remains `wasm.component`, including when it points to a `.webc` package. WASM app services reject container commands, images, `ready`, `init` and `migrate`. The runtime provides no guest `exec` facility. Run database migrations at application startup. See [all accepted manifest fields](reference.md#service-runtime).
+
+## Idle suspension and wake
+
+Every newly deployed Wasm application and managed Postgres service suspends after **60 seconds with no open connections** by default. Run `ensure --rebuild` once for services deployed before activation support; upgrading the hub alone retains their existing processes. The hub keeps its loopback activation listener running. A new connection starts the backend, waits for startup, and forwards the connection once. HTTP routing, service-to-service TCP and `contremaitre proxy` use this listener. The hub must be running to accept connections.
+
+Set an integer `idle_timeout_seconds` from `0` to `2147483` on an individual Wasm service. Zero disables suspension for that service. Apply changes with `ensure` or `deploy`:
+
+```yaml
+services:
+  api:
+    runtime: wasm
+    idle_timeout_seconds: 15
+    wasm:
+      engine: wasmer
+      component: dist/api.webc
+    port: 3000
+    http: true
+```
+
+The timer starts after initial startup and restarts when the final connection closes. Open HTTP keep-alive connections, streams, WebSockets and retained database connections prevent suspension. A database pool can therefore keep Postgres awake until the application stops or closes its connections. Background work and source edits do not keep a service awake; use zero for a service that must run continuously. Source watchers stop with a suspended backend and reattach when it wakes. Run `ensure` after edits made while asleep, or use zero during continuous development.
+
+Each listener accepts at most 128 simultaneous connections. Concurrent arrivals share backend startup. For HTTP applications, an `OPTIONS /` probe must receive a response before any user bytes are forwarded. This handles frameworks that open their TCP port before attaching their HTTP handler. Any HTTP response establishes protocol readiness; application verification remains separate. A connection waiting for startup or upstream connection has a 35-second deadline; failed startup closes waiting connections, and a later connection can try again. The listener pauses incoming reads during startup and uses stream backpressure when forwarding. It does not replay requests after forwarding begins. The HTTP router retains its own request deadlines.
+
+Suspension terminates the backend; wake runs application startup again. In-memory application state is lost. Artifact snapshots and database files remain. A backend port claimed by another process while asleep is replaced before wake; the public activation address stays unchanged.
+
+Fully Wasm environments have no default environment-wide idle shutdown, so their services remain wakeable. An explicit top-level `idle_timeout_seconds` still performs a hard environment shutdown. Apple and mixed environments retain their two-hour default. `contremaitre down` and `contremaitre stop` also perform hard stops; visiting those offline environments returns 503 until an explicit deploy or ensure.
+
+The hub journals activation configuration privately. Recovery restores listeners, keeps previously suspended services asleep, reattaches surviving application processes and reopens active databases. Hub shutdown releases listeners and workers; detached application processes may survive until the next hub reattaches. Lifecycle events use `contremaitre.service.idle_suspend`, `wake`, `idle_suspend_failed` and `wake_failed` in the daemon log.
 
 ## Database pooling
 
@@ -123,12 +151,14 @@ Run `ensure` after source changes, then verify again. Without `dev.source`, pack
 
 | Event | Application processes | Database and pooler |
 | --- | --- | --- |
+| Service idle timeout | Stop backend, retain package and activation listener | Stop worker and pooler when their last client disconnects and their own timeout expires; retain data |
+| Connection to a suspended service | Start from retained package and forward after startup | Reopen data and start pooler before forwarding |
 | Successful redeploy | Replace the snapshot on the assigned port | Reuse retained database data |
 | Build failure | Keep the previous process serving | Keep retained data |
 | New artifact fails to start | Restore the previous snapshot | Keep retained data |
 | `contremaitre down` | Stop this environment and remove app runtime records | Stop worker and pooler, retain database data |
 | `contremaitre stop` | Stop all environments and shut down the hub | Stop workers and poolers, retain data |
-| Hub signal or crash | Reattach surviving detached processes on startup; restart missing ones | Reopen retained PGlite data and reclaim recorded pooler processes before binding their ports |
+| Hub signal or crash | Restore listeners, reattach surviving active processes and restart missing active ones; keep suspended services asleep | Reopen active databases and reclaim recorded poolers before binding; keep suspended databases asleep |
 | First deployment of a branch | Start the target's application packages | Pause source writers, stop databases and poolers, copy database data, then restart independently |
 
 On APFS, database forks use `clonefile`; unsupported filesystems fall back to a full copy. Forking requires a quiesced database. The target receives its own worker, pooler and loopback address. The pooler's configuration and process records stay outside the copied database directory.
@@ -167,6 +197,7 @@ The app runtime exposes no persistent host volume to the guest. Package snapshot
 | [Project schema](../packages/projects/src/model.ts), [validation](../packages/projects/src/config.ts) | Runtime, engine and pooling settings; incompatible combinations |
 | [Environment manager](../packages/environments/src/manager.ts) | Dependencies, per-runtime preflight, assigned ports, deployment and clone orchestration |
 | [App supervisor](../packages/environments/src/wasmtime.ts) | Both Wasmtime and Wasmer, artifact snapshots, process records, logs and recovery |
+| [Activation runtime](../packages/environments/src/activation.ts) | Stable listeners, connection leases, idle suspension, bounded wake, private restart configuration |
 | [PGlite runtime](../packages/environments/src/pglite-runtime.ts) | Managed database service lifecycle, readiness and clone dispatch |
 | [PGlite owner](../packages/environments/src/pglite-server.ts), [worker](../packages/environments/src/pglite-worker.ts) | Database lock, worker lifetime, sockets, session reset and failure cleanup |
 | [Pooler helper](../packages/environments/src/pglite-pooler.ts) | PgBouncer configuration, process journal, startup, termination and stale-process recovery |

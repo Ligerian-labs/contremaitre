@@ -88,6 +88,15 @@ export class Manager {
         await watcher.stop();
       }
   }
+  async closeRuntimes() {
+    const results = await Promise.allSettled(
+      [...new Set(Object.values(this.runtimes).flatMap(Object.values))].map((runtime) =>
+        runtime.shutdown?.(),
+      ),
+    );
+    const errors = results.filter((r) => r.status === "rejected").map((r) => r.reason);
+    if (errors.length) throw new AggregateError(errors, "Runtime shutdown failed");
+  }
   private watchDevelopment(s: ServiceState, spec: RunSpec, source: DevelopmentSource) {
     const controller = new AbortController();
     const ctx = {
@@ -1445,8 +1454,12 @@ export class Manager {
         const restart = new Set<string>();
         const inspections = new Map<string, Inspection | undefined>();
         try {
-          for (const s of Object.values(env.Services))
+          for (const name of order(
+            Object.fromEntries(Object.entries(env.Services).map(([name, s]) => [name, s.Spec])),
+          )) {
+            const s = env.Services[name];
             inspections.set(s.Name, await this.backend(s).inspect(ctx, s.Container));
+          }
         } catch (error) {
           // An unavailable container system fails this environment, not the hub.
           for (const s of Object.values(env.Services)) s.Host = "";

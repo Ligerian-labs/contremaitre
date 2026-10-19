@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./activation": "./src/activation.ts",
     "./development": "./src/development.ts",
     "./apple": "./src/apple.ts",
     "./build-context": "./src/build-context.ts",

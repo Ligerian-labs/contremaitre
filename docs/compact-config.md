@@ -17,9 +17,9 @@ apps:
 
 ## Automatic shutdown
 
-Environments stop after two hours without activity by default. Stops preserve their data and identity. Run `contremaitre ensure` or `contremaitre deploy` to resume one; visiting an offline URL returns 503.
+Apple and mixed environments stop after two hours without activity by default. Stops preserve their data and identity. Run `contremaitre ensure` or `contremaitre deploy` to resume one; visiting an offline URL returns 503. Fully Wasm environments instead use [service suspension and wake](wasm-runtime.md#idle-suspension-and-wake), with a default of 60 seconds after the last connection closes. They have no default environment-wide shutdown. An explicit top-level timeout still performs a hard shutdown for any runtime.
 
-Set `idle_timeout_seconds` at the top level of either config format. It accepts integer seconds from `0` to `2147483`. Use `3600` for one hour, or `0` to keep background workers running:
+Set `idle_timeout_seconds` at the top level of either config format. It accepts integer seconds from `0` to `2147483`. Use `3600` for one hour, or `0` to disable environment shutdown. A Wasm background worker also needs service-level `idle_timeout_seconds: 0` to disable its own suspension:
 
 ```yaml
 project: example
@@ -28,7 +28,7 @@ apps:
   app: .
 ```
 
-Run deploy or ensure after changing the setting. The resolved policy applies to that environment until its next deploy or ensure. Existing environments without a stored setting use 7200 seconds. A daemon restart grants a fresh full window.
+Run deploy or ensure after changing the setting. The resolved policy applies to that environment until its next deploy or ensure. Existing Apple and mixed environments without a stored setting use 7200 seconds; fully Wasm environments use zero. A daemon restart grants a fresh full window.
 
 Environment-specific CLI requests and HTTP/HTTPS requests through Contremaitre reset activity. Open HTTP responses and WebSockets, foreground `exec`, `logs` and TCP `proxy` commands, queued/running operations and their clone sources, and foreground sharing sessions keep an environment alive. A closed connection starts a fresh idle window. Global `list`, `operations` and hub health checks do not keep environments alive.
 

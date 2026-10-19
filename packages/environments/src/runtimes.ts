@@ -2,6 +2,7 @@ import type { Readable } from "node:stream";
 import { type Context, fail } from "@contremaitre/execution/context";
 import type { RunOptions } from "@contremaitre/execution/process";
 import type { RuntimeKind, Service, ServiceKind } from "@contremaitre/projects/model";
+import { ActivationRuntime } from "./activation.js";
 import { appleRuntime, type Runtime } from "./apple.js";
 import type { BuildRecord, ServiceState } from "./model.js";
 import { PGliteRuntime } from "./pglite-runtime.js";
@@ -15,6 +16,10 @@ export interface Inspection {
   /** Apple: the container IP. Host-process runtimes: a loopback address. Empty when unknown. */
   Host: string;
   Running: boolean;
+  /** The stable listener is running while its backend is suspended. */
+  Suspended?: boolean;
+  /** Restart metadata is invalid; clean owned resources and restore the saved run specification. */
+  RecordInvalid?: boolean;
 }
 export interface RunSpec {
   /** Process or container name, unique per environment and service (`ServiceState.Container`). */
@@ -85,7 +90,7 @@ export interface ServiceRuntime {
   run(ctx: Context, spec: RunSpec): Promise<void>;
   inspect(ctx: Context, name: string): Promise<Inspection | undefined>;
   /** Restart a stopped service created by `run`. */
-  start(ctx: Context, name: string): Promise<void>;
+  start(ctx: Context, name: string, ports?: Record<string, number>): Promise<void>;
   stop(ctx: Context, name: string): Promise<void>;
   /** Remove a service; a missing one is not an error. */
   remove(ctx: Context, name: string): Promise<void>;
@@ -106,6 +111,8 @@ export interface ServiceRuntime {
   ready?(ctx: Context, service: ServiceState, address: Address): Promise<boolean>;
   /** Copy Postgres data between environments, following `capabilities.clone`. */
   clone?(ctx: Context, from: CloneSide, to: CloneSide): Promise<void>;
+  /** Release hub-owned listeners, timers and workers, preserving deployment records. */
+  shutdown?(): Promise<void>;
 }
 export type RuntimeRegistry = {
   readonly [R in RuntimeKind]: Partial<Record<ServiceKind, ServiceRuntime>>;
@@ -120,8 +127,8 @@ export function runtimeRegistry(options: RegistryOptions): RuntimeRegistry {
   return {
     apple: { app: apple, postgres: apple, redis: apple },
     wasm: {
-      app: new WasmtimeRuntime(options),
-      postgres: new PGliteRuntime(options),
+      app: new ActivationRuntime(new WasmtimeRuntime(options), options.home),
+      postgres: new ActivationRuntime(new PGliteRuntime(options), options.home),
     },
   };
 }

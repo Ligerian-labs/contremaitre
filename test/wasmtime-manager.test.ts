@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { existsSync, promises as fs } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { call } from "@contremaitre/cli/client";
@@ -65,6 +66,58 @@ const alive = (pid: number) => {
     return false;
   }
 };
+
+real(
+  "Wasm services suspend after their timeout and wake on the same address without source",
+  async () => {
+    const f = await fixture();
+    const manifest = join(f.root, ".contremaitre.yaml");
+    await fs.writeFile(
+      manifest,
+      (await fs.readFile(manifest, "utf8")).replace(
+        "    runtime: wasm",
+        "    runtime: wasm\n    idle_timeout_seconds: 1",
+      ),
+    );
+    const hub = await startServer({
+      home: f.home,
+      port: await freePort(),
+      runtime: new FakeRuntime(),
+    });
+    try {
+      await call(ctx, f.home, "deploy", { root: f.root, branch: "main" });
+      const env = hub.manager.resolve("wasm-test");
+      const service = env.Services.web;
+      const port = service.Ports?.["8080"];
+      const record = () =>
+        fs.readFile(join(f.home, "wasmtime", `${service.Container}.json`), "utf8").then(JSON.parse);
+      const first = await record();
+      const deadline = Date.now() + 5000;
+      while (alive(first.pid) && Date.now() < deadline) await Bun.sleep(25);
+      expect(alive(first.pid)).toBe(false);
+      const decoy = createServer((_request, response) => response.end("foreign listener"));
+      await new Promise<void>((resolve) => decoy.listen(first.port, "127.0.0.1", resolve));
+      try {
+        await fs.rm(f.root, { recursive: true, force: true });
+        expect(
+          await (
+            await fetch(`http://127.0.0.1:${port}`, { headers: { Connection: "close" } })
+          ).text(),
+        ).toBe("manifest-env");
+        expect((await record()).pid).not.toBe(first.pid);
+        expect((await record()).port).not.toBe(first.port);
+        expect(service.Ports?.["8080"]).toBe(port);
+      } finally {
+        await new Promise<void>((resolve) => decoy.close(() => resolve()));
+      }
+    } finally {
+      for (const env of hub.manager.list()) await hub.manager.down(ctx, env, true);
+      await hub.close();
+      await f.cleanup();
+    }
+  },
+  30000,
+);
 async function fixture(dev = false) {
   const home = await fs.realpath(await fs.mkdtemp(join(tmpdir(), "cm-wasm-manager-")));
   const root = join(home, "project");
@@ -185,6 +238,7 @@ real(
         );
       expect(output).toContain("wasm request");
       const first = await record();
+      await m.closeRuntimes();
       m = f.manager();
       await m.recover(ctx);
       env = m.resolve(f.prepared.identity.ID);
@@ -192,7 +246,8 @@ real(
       expect((await record()).pid).toBe(first.pid);
       expect(await get()).toBe("manifest-env");
       process.kill(first.pid, "SIGKILL");
-      await until(async () => !(await m.backend(service).inspect(ctx, service.Container))?.Running);
+      await until(async () => !alive(first.pid));
+      await m.closeRuntimes();
       m = f.manager();
       await m.recover(ctx);
       env = m.resolve(f.prepared.identity.ID);
@@ -425,6 +480,7 @@ real(
       ]) {
         const previous = JSON.parse(await fs.readFile(path, "utf8"));
         await fs.writeFile(path, corrupt(previous));
+        await m.closeRuntimes();
         m = f.manager();
         await m.recover(ctx);
         await until(async () => {
@@ -489,8 +545,11 @@ real(
       };
       for (const id of [f.prepared.identity.ID, branch.identity.ID]) {
         const service = m.resolve(id).Services.web;
+        const port = JSON.parse(
+          await fs.readFile(join(f.home, "wasmtime", `${service.Container}.json`), "utf8"),
+        ).port;
         const output = await logs(service.Container);
-        expect(output).toContain(`Serving HTTP on http://127.0.0.1:${service.Ports?.["8080"]}/`);
+        expect(output).toContain(`Serving HTTP on http://127.0.0.1:${port}/`);
         expect(output).not.toContain("Cannot read wasmtime record");
         expect((await cli.inspect(ctx, service.Container))?.Running).toBe(true);
       }
@@ -508,7 +567,7 @@ real(
         const output = await logs(service.Container);
         expect(output).toContain(`wasmtime record ${service.Container}`);
         expect(output).toContain("treated as stopped");
-        expect(output).toContain(`Serving HTTP on http://127.0.0.1:${service.Ports?.["8080"]}/`);
+        expect(output).toContain(`Serving HTTP on http://127.0.0.1:${JSON.parse(saved).port}/`);
         expect(output).not.toContain("OUTSIDE-SENTINEL");
       }
       await expect(logs("../outside")).rejects.toThrow("Invalid wasmtime service name");
@@ -540,7 +599,9 @@ real(
       // SIGTERM and SIGINT run hub.close(); like Apple containers, services keep running.
       await hub.close();
       expect(alive(first.pid)).toBe(true);
-      expect(await get()).toBe("manifest-env");
+      // The guest survives; its public activation listener belongs to the stopped hub.
+      expect(await (await fetch(`http://127.0.0.1:${first.port}`)).text()).toBe("manifest-env");
+      await expect(get()).rejects.toThrow();
       restarted = await startServer({
         home: f.home,
         port: 0,
