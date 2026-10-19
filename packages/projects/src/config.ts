@@ -154,6 +154,8 @@ export function parseManifest(text: string): Manifest {
     if (!["app", "postgres", "redis"].includes(kind)) fail(`${name}: unknown kind`);
     const s = serviceDefaults(original);
     const wasm = s.runtime === "wasm";
+    if (s.postgres && (!wasm || kind !== "postgres"))
+      fail(`${name}: postgres settings require kind: postgres and runtime: wasm`);
     if (s.wasm && !wasm) fail(`${name}: wasm requires runtime: wasm`);
     if (wasm) validateWasm(name, kind, s);
     else if (Boolean(s.image) === Boolean(s.build))

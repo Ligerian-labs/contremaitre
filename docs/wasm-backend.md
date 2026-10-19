@@ -72,7 +72,7 @@ For Node applications, Edge.js QuickJS 0.2.5 compiles both the Node compatibilit
 
 The runtime sets `HOST=127.0.0.1` and `PORT` to its reserved port, overriding manifest values for those two keys. The application must honor them when binding its listener. WASIX guests have host network access through `--net`, including raw TCP to a managed PGlite database. No host filesystem directories are mounted; the guest sees its packaged filesystem. Wasmer receives only declared service variables through a private environment file, with values kept out of command-line arguments. The file remains available for restart and is removed with the runtime record.
 
-WASIX and WASI services can coexist. Database cloning still uses the Postgres backend's own lifecycle. PGlite's single-connection limit applies to WASIX clients too. Neither engine enforces the Apple-container `cpus` or `memory` settings.
+WASIX and WASI services can coexist. Database cloning still uses the Postgres backend's own lifecycle. PGlite's default session mode requires an application pool size of one; [transaction pooling](wasm-postgres.md#transaction-pooling) accepts ordinary pools while serializing their transactions. Neither engine enforces the Apple-container `cpus` or `memory` settings.
 
 ## Limits
 

@@ -3,10 +3,12 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { type Context, fail, phase } from "@contremaitre/execution/context";
 import { EnvironmentLocks } from "@contremaitre/execution/locks";
+import type { Service } from "@contremaitre/projects/model";
 import type { BuildRecord, ServiceState } from "./model.js";
 import { checkPgliteAssets } from "./pglite-assets.js";
 import { forkPgliteData } from "./pglite-fork.js";
 import { type LogTail, PgliteLogWriter, tailPgliteLog } from "./pglite-logs.js";
+import { checkPglitePooler } from "./pglite-pooler.js";
 import { waitPgliteReady } from "./pglite-ready.js";
 import { type PgliteHandle, startPglite } from "./pglite-server.js";
 import type {
@@ -53,9 +55,10 @@ export class PGliteRuntime implements ServiceRuntime {
     return join(this.home, `${encodeURIComponent(name)}.pglite-log`);
   }
 
-  async preflight(ctx: Context): Promise<void> {
+  async preflight(ctx: Context, service?: Service): Promise<void> {
     ctx.signal.throwIfAborted();
     await checkPgliteAssets();
+    if (service?.postgres?.pooling === "transaction") checkPglitePooler();
   }
   async build(
     _ctx: Context,
@@ -117,6 +120,7 @@ export class PGliteRuntime implements ServiceRuntime {
         dataDir: instance.data,
         port: instance.port,
         host: "127.0.0.1",
+        pooling: instance.spec.service.postgres?.pooling,
         log: (text) => instance.writer?.append(text),
       });
     } finally {

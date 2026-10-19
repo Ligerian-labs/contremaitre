@@ -25,15 +25,36 @@ Managed databases reject `init`, `migrate`, custom commands, environment overrid
 
 ## Connections and limits
 
-Set the application's database pool size to **1**. One connection occupies the database until it disconnects, including while idle. A connection arriving while the slot is occupied waits up to two seconds for it to become available. After that deadline it receives a PostgreSQL fatal error with SQLSTATE `53300` and the exact message `PGlite allows one connection; use pool size 1`. Configure the client connection timeout above two seconds if it needs to receive that server error. Before admitting the next client, the runtime rolls back any open transaction and runs `DISCARD ALL`, clearing prepared statements, session settings, temporary objects, listeners and advisory locks. Readiness also needs a connection, so an application's retained connection can make a readiness probe fail.
+The default `postgres.pooling: session` mode requires an application pool size of **1**. One connection occupies the database until it disconnects, including while idle. A connection arriving while the slot is occupied waits up to two seconds for it to become available. After that deadline it receives a PostgreSQL fatal error with SQLSTATE `53300` and the exact message `PGlite allows one connection; use pool size 1`. Configure the client connection timeout above two seconds if it needs to receive that server error. Before admitting the next client, the runtime rolls back any open transaction and runs `DISCARD ALL`, clearing prepared statements, session settings, temporary objects, listeners and advisory locks. Readiness also needs a connection, so an application's retained connection can make a readiness probe fail.
 
-The loopback server accepts **any password, user and database name**. Every connection maps to the single `app` role and `app` database regardless of the names in the URL. The URL carries the generated password for compatibility with managed Postgres configuration, but the PGlite wire layer does not authenticate it. Any local process that can reach the port can access the database. Binding is restricted to `127.0.0.1`; TLS is disabled. This runtime is for local environments.
+In session mode the loopback server accepts **any password, user and database name**. Every connection maps to the single `app` role and `app` database regardless of the names in the URL. Transaction mode accepts role `app` and database `app` with any password. The URL carries the generated password for compatibility with managed Postgres configuration, but the PGlite wire layer does not authenticate it. Any local process that can reach the port can access the database. Binding is restricted to `127.0.0.1`; TLS is disabled. This runtime is for local environments.
 
-The runtime bundles PGlite's `pgcrypto` extension. Applications can install it with `CREATE EXTENSION IF NOT EXISTS pgcrypto`, including in startup migrations. Other extensions must already be available in the base PGlite filesystem; the server does not load extension peer packages or arbitrary native Postgres extensions. PGlite is a single-session Postgres build; tools that require multiple connections, backend processes or query cancellation may not work. The socket package ignores PostgreSQL cancellation requests, so a client timeout does not reliably cancel an executing query.
+The runtime bundles PGlite's `pgcrypto` extension. Applications can install it with `CREATE EXTENSION IF NOT EXISTS pgcrypto`, including in startup migrations. Other extensions must already be available in the base PGlite filesystem; the server does not load extension peer packages or arbitrary native Postgres extensions. PGlite is a single-session Postgres build; tools that require overlapping transactions, backend processes or query cancellation may not work. The socket package ignores PostgreSQL cancellation requests, so a client timeout does not reliably cancel an executing query.
 
 `COPY FROM STDIN` accepts a single simple-query COPY statement, including `psql \copy`. Input above 64 MiB receives SQLSTATE `54000`, `PGlite COPY input exceeds 64 MiB`, followed by ReadyForQuery. Postgres raises these errors itself: an explicit transaction becomes failed (`E`), and `COMMIT` rolls it back. Outside a transaction the connection remains usable. Input is buffered up to 64 MiB and passed to Postgres only after `CopyDone`; disconnecting discards unfinished input before rollback and session reset. Extended-protocol COPY input and COPY input mixed with other statements are rejected with SQLSTATE `0A000` and `PGlite COPY input requires a single simple-query COPY statement`. COPY output remains supported. A reset error or a reset exceeding 2.5 seconds marks the server stopped and terminates its worker. Starting it again waits for teardown and reopens the retained data.
 
 Each database has its own worker, keeping synchronous WASM execution off the hub's event loop. Its internal Unix socket lives in a temporary directory created with mode 0700, removed on stop and startup failure. Readiness requires a successful `SELECT 1` through an ordinary SQL client, with a deadline and cancellation. A listening TCP socket alone is insufficient.
+
+## Transaction pooling
+
+To use ordinary application pools, install PgBouncer 1.26 or newer on the hub's PATH, then opt in:
+
+```yaml
+services:
+  db:
+    kind: postgres
+    runtime: wasm
+    postgres:
+      pooling: transaction
+```
+
+On macOS, `brew install pgbouncer` supplies the helper. Only this mode requires it. Contremaitre starts a native host PgBouncer process for each database. PGlite remains the Wasm database engine. The worker exposes its managed connection through a private Unix socket, and PgBouncer owns the reserved loopback TCP port. Applications keep using `{{db.url}}`; their pools can retain multiple idle connections without monopolizing PGlite.
+
+PgBouncer admits up to 128 clients and uses exactly one backend connection, with no reserve connections. It pins that connection until the transaction commits or rolls back. Other work queues for up to 30 seconds; an idle transaction is disconnected after 30 seconds. Protocol-level prepared statements are tracked with a cache of 100 server statements. A standalone `DISCARD ALL` resets the backend after every transaction. PgBouncer restores tracked parameters, including session authorization, before reuse.
+
+This mode serializes transactions. Two transactions cannot make progress at once, so code that holds one transaction while waiting for a second transaction will stall. Session settings, temporary objects, `LISTEN`, session advisory locks and SQL-level `PREPARE` must not span transaction boundaries. Use `SET LOCAL` and transaction-level advisory locks inside explicit transactions. These restrictions follow [PgBouncer's transaction-pooling contract](https://www.pgbouncer.org/features.html).
+
+The private `<service-data>.pgbouncer` sibling contains configuration, the local trust user list and process ownership records. Contremaitre removes these after stopping the pooler. A pooler failure marks the database stopped and terminates its worker. Starting the database reaps a pooler left by an interrupted hub before binding its port, while holding the database ownership lock. Forks stop the pooler and worker, copy only database data, then start independent poolers for source and target.
 
 ## Data and forks
 
@@ -43,7 +64,7 @@ The runtime uses the private service directory supplied by Contremaitre, `<home>
 
 A kernel advisory lock held on an open sibling `.pglite-lock` file prevents two workers from opening the same directory, including two workers in one process. Clean shutdown closes client connections, closes PGlite to flush data, and closes the lock descriptor. The kernel releases ownership if the hub crashes or is killed. The empty lock file stays in place; its existence does not indicate ownership. Do not unlink it while a runtime may be using it.
 
-Before creating a branch environment, close external database clients and GUI tools. If an external client holds or immediately reclaims the single connection while the source database restarts, readiness can time out and the fork can fail.
+In session mode, close external database clients and GUI tools before creating a branch environment. If an external client holds or immediately reclaims the single connection while the source database restarts, readiness can time out and the fork can fail.
 
 Before a fork, Contremaitre pauses application writers and stops both databases. The helper can alternatively call a `quiesce` hook that stops the source and returns an async restart hook. It invokes that restart hook after copying, including when copying fails. Callers must make writer shutdown and restart safe if quiescing itself fails before returning the hook.
 

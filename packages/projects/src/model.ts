@@ -7,6 +7,11 @@ export type ServiceKind = "app" | "postgres" | "redis";
 export const serviceSchema = Schema.Struct({
   kind: Schema.optional(Schema.String),
   runtime: Schema.optional(Schema.Literal(...runtimeKinds)),
+  postgres: Schema.optional(
+    Schema.Struct({
+      pooling: Schema.Literal("session", "transaction"),
+    }),
+  ),
   wasm: Schema.optional(
     Schema.Struct({
       engine: Schema.optional(Schema.Literal("wasmtime", "wasmer")),

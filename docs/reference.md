@@ -165,6 +165,8 @@ A WASM app needs `wasm.component` and `port`. `wasm.build` is an optional comman
 
 `wasm.engine` defaults to `wasmtime` for WASI HTTP components. Use `wasmer` for a self-contained WASIX WEBC package in `wasm.component`; Wasmer 7.5.0 or newer must be on the hub's `PATH`. WASIX applications must listen on the injected `HOST` and `PORT`. The runtime grants host network access, mounts no host directories, and passes declared variables through a private environment file. See the [WASIX guide](wasm-backend.md#wasix-applications).
 
+For a Wasm Postgres service, `postgres.pooling` defaults to `session`, requiring an application pool size of one. Set it to `transaction` to accept ordinary application pools through a managed PgBouncer 1.26+ host process. Transactions still execute one at a time; session state cannot span transaction boundaries. Other service kinds and the Apple backend reject `postgres` settings. See [transaction pooling](wasm-postgres.md#transaction-pooling).
+
 WASM services listen on loopback. Contremaitre reserves a free `127.0.0.1` port for each declared port and keeps it across redeploys while it stays free. `{{db.host}}`, `{{db.port}}` and `{{db.url}}` resolve to that address, the hub routes HTTP to it, and `contremaitre proxy` connects to it, so the declared port still identifies the service.
 
 In a mixed environment, a WASM service can depend on an Apple service: it reaches the container through its IP. An Apple service can't depend on a WASM service, because containers can't reach the host's loopback. Validation rejects that `depends_on`. Give both services the same runtime instead.

@@ -140,7 +140,9 @@ self.onmessage = async (event: MessageEvent) => {
       });
       await new Promise<void>((resolve, reject) => {
         front?.once("error", reject);
-        front?.listen(event.data.port, event.data.host, resolve);
+        if (event.data.pooling === "transaction")
+          front?.listen(join(socketDirectory ?? "", ".s.PGSQL.5432"), resolve);
+        else front?.listen(event.data.port, event.data.host, resolve);
       });
       self.postMessage({ type: "started", socketDirectory });
     } else if (event.data.type === "stop") {
