@@ -29,6 +29,29 @@ function fixture() {
   writeFileSync(join(root, "bun.lock"), "{}");
   return { root, clean: () => rmSync(root, { recursive: true, force: true }) };
 }
+test("compact launch settings retain explicit Wasm jobs and container workers without ports", () => {
+  const f = fixture();
+  try {
+    writeFileSync(
+      join(f.root, ".contremaitre.yaml"),
+      `version: 2
+project: commands
+apps:
+  migrate: {runtime: wasm, workload: job, timeout_seconds: 12, wasm: {component: task.wasm}}
+  worker: {workload: worker, image: alpine, command: [sleep, infinity], depends_on: [migrate]}
+`,
+    );
+    initProject(f.root);
+    const manifest = loadManifest(f.root);
+    expect(manifest.services.migrate.workload).toBe("job");
+    expect(manifest.services.migrate.wasm?.component).toBe("task.wasm");
+    expect(manifest.services.migrate.timeout_seconds).toBe(12);
+    expect(manifest.services.worker.workload).toBe("worker");
+    expect(manifest.services.worker.port).toBe(0);
+  } finally {
+    f.clean();
+  }
+});
 
 test("setup records Bun development conventions in a portable lock and leaves a compact config", () => {
   const f = fixture();

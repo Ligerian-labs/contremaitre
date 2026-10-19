@@ -37,6 +37,9 @@ export class FakeRuntime implements Runtime {
   async network(_ctx: Context, name: string) {
     this.calls.push(`network ${name}`);
   }
+  async hostNetwork() {
+    return { gateway: "127.0.0.1", subnet: "127.0.0.0/8" };
+  }
   async removeNetwork(_ctx: Context, name: string) {
     this.calls.push(`remove network ${name}`);
   }

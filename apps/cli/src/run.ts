@@ -1,4 +1,5 @@
-import { resolve } from "node:path";
+import { readFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import type { Environment, Request } from "@contremaitre/environments/model";
 import { context, decode, fail } from "@contremaitre/execution/context";
 import { attempt } from "@contremaitre/execution/effect";
@@ -365,6 +366,16 @@ export function makeRoot(passthrough: readonly string[] = []) {
                   return;
                 }
                 if (name === "logs") {
+                  if (s.Spec.workload === "job") {
+                    const log = join(home, "data", env.Identity.ID, ".jobs", `${s.Name}.log`);
+                    try {
+                      process.stdout.write(await readFile(log));
+                    } catch (error) {
+                      if (!(error instanceof Error && "code" in error && error.code === "ENOENT"))
+                        throw error;
+                    }
+                    return;
+                  }
                   if (container)
                     await runtime.output(activeCtx, ["logs", s.Container], {
                       stdout: io.stdout,

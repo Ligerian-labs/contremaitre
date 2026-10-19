@@ -335,9 +335,23 @@ try {
     const { SQL } = await import("bun");
     const postgresProject = join(dir, "postgres-project");
     await mkdir(postgresProject);
+    const wasmJob = !!Bun.which("wasmtime");
+    if (wasmJob)
+      await writeFile(
+        join(postgresProject, "job.wat"),
+        `(module
+        (import "wasi_snapshot_preview1" "fd_write" (func $write (param i32 i32 i32 i32) (result i32)))
+        (memory (export "memory") 1)
+        (data (i32.const 16) "job-log\\0a")
+        (func (export "_start")
+          (i32.store (i32.const 0) (i32.const 16))
+          (i32.store (i32.const 4) (i32.const 8))
+          (drop (call $write (i32.const 1) (i32.const 0) (i32.const 1) (i32.const 32)))))`,
+      );
     await writeFile(
       join(postgresProject, ".contremaitre.yaml"),
-      "version: 1\nproject: packaging-postgres\nservices:\n  db: {kind: postgres, runtime: wasm}\n",
+      "version: 1\nproject: packaging-postgres\nservices:\n  db: {kind: postgres, runtime: wasm}\n" +
+        (wasmJob ? "  complete: {workload: job, runtime: wasm, wasm: {component: job.wat}}\n" : ""),
     );
     const deployment = decode(
       operationSchema,
@@ -394,6 +408,27 @@ try {
     upgradedPid = undefined;
     await boot();
     assert.equal((await queryPostgres("SELECT id FROM packaging_items"))[0].id, 42);
+    if (wasmJob) {
+      const environment = (await call(ctx, home, "resolve", { env: deployment.environmentId })) as {
+        Services: { complete: { job: { status: string; exit_code: number } } };
+      };
+      assert.equal(environment.Services.complete.job.status, "succeeded");
+      assert.equal(environment.Services.complete.job.exit_code, 0);
+      const logs = Bun.spawn(
+        [binary, "--home", home, "--env", deployment.environmentId, "logs", "complete"],
+        { stdout: "pipe", stderr: "pipe" },
+      );
+      const [output, errors, exit] = await Promise.all([
+        new Response(logs.stdout).text(),
+        new Response(logs.stderr).text(),
+        logs.exited,
+      ]);
+      assert.equal(exit, 0, errors);
+      assert.ok(output.includes("job-log"), output);
+      console.log(
+        "Compiled WASI job completion, retained SIGKILL recovery and CLI job logs passed",
+      );
+    }
     const dataDirectory = join(home, "data", deployment.environmentId, ".services", "db");
     await stat(dataDirectory);
     await call(ctx, home, "down", { env: deployment.environmentId, delete_data: true });

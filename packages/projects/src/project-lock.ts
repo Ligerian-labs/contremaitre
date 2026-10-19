@@ -25,6 +25,10 @@ const projectSchema = Schema.Struct({
 export type Project = Schema.Schema.Type<typeof projectSchema>;
 export type App = Schema.Schema.Type<typeof appSchema>;
 const launchSchema = Schema.Struct({
+  workload: serviceSchema.fields.workload,
+  timeout_seconds: serviceSchema.fields.timeout_seconds,
+  runtime: serviceSchema.fields.runtime,
+  wasm: serviceSchema.fields.wasm,
   image: serviceSchema.fields.image,
   build: serviceSchema.fields.build,
   dockerfile: serviceSchema.fields.dockerfile,
@@ -93,6 +97,10 @@ export function appConfig(value: Project["apps"][string]): App & { path: string 
 // contents and credentials remain outside the lock.
 export function launchSettings(service: Service): Service {
   const {
+    workload,
+    timeout_seconds,
+    runtime,
+    wasm,
     image,
     build,
     dockerfile,
@@ -107,6 +115,10 @@ export function launchSettings(service: Service): Service {
   } = service;
   return JSON.parse(
     JSON.stringify({
+      workload,
+      timeout_seconds,
+      runtime,
+      wasm,
       image,
       build,
       dockerfile,
@@ -173,7 +185,10 @@ export function resolveProject(
     }),
   );
 }
-function explicitLaunch(app: App): boolean {
+export function explicitLaunch(app: App): boolean {
+  if (app.runtime === "wasm" && app.wasm?.component) return true;
+  if ((app.workload === "worker" || app.workload === "job") && (app.image || app.build))
+    return true;
   return (
     !!(app.image || app.build) &&
     !!app.command?.length &&

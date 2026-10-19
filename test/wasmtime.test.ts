@@ -283,7 +283,9 @@ real(
 real("task and missing port mapping fail clearly", async () => {
   await setup();
   const s = await spec();
-  await expect(runtime.run(ctx, { ...s, task: true })).rejects.toThrow("no tasks");
+  await expect(runtime.run(ctx, { ...s, task: true })).rejects.toThrow(
+    "tasks require command mode",
+  );
   await expect(runtime.run(ctx, { ...s, ports: {} })).rejects.toThrow("Missing reserved");
 });
 real(

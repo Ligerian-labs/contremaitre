@@ -215,7 +215,10 @@ export async function startServer(
       options.httpsPort === undefined ? "http" : "https",
       options.runtimes,
     );
-    stopDevelopment = () => manager.stopDevelopment();
+    stopDevelopment = async () => {
+      await manager.stopDevelopment();
+      await manager.stopNetworking();
+    };
     ops = new Operations(store.home, options.concurrency ?? 2);
     const operations = ops;
     await manager.recover({

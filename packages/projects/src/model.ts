@@ -6,12 +6,16 @@ export type RuntimeKind = (typeof runtimeKinds)[number];
 export type ServiceKind = "app" | "postgres" | "redis";
 export const serviceSchema = Schema.Struct({
   kind: Schema.optional(Schema.String),
+  workload: Schema.optional(Schema.Literal("service", "worker", "job")),
+  timeout_seconds: Schema.optional(Schema.Int),
   runtime: Schema.optional(Schema.Literal(...runtimeKinds)),
   wasm: Schema.optional(
     Schema.Struct({
       build: Schema.optional(Schema.Array(Schema.String)),
       directory: Schema.optional(Schema.String),
       component: Schema.String,
+      mode: Schema.optional(Schema.Literal("http", "command")),
+      network: Schema.optional(Schema.Boolean),
     }),
   ),
   image: Schema.optional(Schema.String),
@@ -44,6 +48,9 @@ export type Service = Schema.Schema.Type<typeof serviceSchema>;
 export const serviceRuntime = (service: Service): RuntimeKind => service.runtime ?? "apple";
 export const serviceKind = (service: Service): ServiceKind =>
   (service.kind || "app") as ServiceKind;
+export const isJob = (service: Service): boolean => service.workload === "job";
+export const wasmCommand = (service: Service): boolean =>
+  service.wasm?.mode === "command" || service.workload === "worker" || isJob(service);
 export function serviceEndpoints(name: string, service: Service): Record<string, number> {
   return {
     ...(service.http && service.port ? { [name]: service.port } : {}),
