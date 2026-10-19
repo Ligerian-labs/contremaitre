@@ -51,6 +51,7 @@ export async function startPglite(options: {
   }
   let running = false;
   let failed = false;
+  let terminating = false;
   let socketDirectory: string | undefined;
   let pooler: Awaited<ReturnType<typeof startPglitePooler>> | undefined;
   let resetTimer: ReturnType<typeof setTimeout> | undefined;
@@ -75,7 +76,7 @@ export async function startPglite(options: {
     if (event.data.socketDirectory) socketDirectory = event.data.socketDirectory;
     if (event.data.type === "log") log(event.data.text);
     if (event.data.type === "error") fatal(event.data.message);
-    if (event.data.type === "resetting") {
+    if (event.data.type === "resetting" && !terminating) {
       clearTimeout(resetTimer);
       resetTimer = setTimeout(() => fatal("PGlite session reset timed out"), 2500);
     }
@@ -110,6 +111,7 @@ export async function startPglite(options: {
   let termination: Promise<void> | undefined;
   function terminate(): Promise<void> {
     termination ??= (async () => {
+      terminating = true;
       clearTimeout(resetTimer);
       try {
         await pooler?.stop();

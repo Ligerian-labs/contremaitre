@@ -28,6 +28,36 @@ beforeAll(() => {
 });
 const real = available ? test : test.skip;
 
+real(
+  "late reset notifications cannot arm a watchdog after termination begins",
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), "cm-pglite-pool-late-reset-"));
+    const server = await startPglite({
+      dataDir: join(root, "db"),
+      port: await freePort(),
+      pooling: "transaction",
+      createWorker: (url) => {
+        const worker = new Worker(url);
+        const terminate = worker.terminate.bind(worker);
+        worker.terminate = () => {
+          // A pooler disconnect can queue resetting after teardown clears its timer.
+          worker.dispatchEvent(new MessageEvent("message", { data: { type: "resetting" } }));
+          return terminate();
+        };
+        return worker;
+      },
+    });
+    try {
+      await server.stop();
+      expect(server.running).toBe(false);
+    } finally {
+      await server.stop();
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+  30_000,
+);
+
 test("pooling is explicit and only valid for Wasm Postgres", () => {
   const text =
     "version: 1\nproject: pooled\nservices:\n  db:\n    kind: postgres\n    runtime: wasm\n    postgres: {pooling: transaction}\n";
