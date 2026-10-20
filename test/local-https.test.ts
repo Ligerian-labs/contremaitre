@@ -7,16 +7,20 @@ import { createConnection, createServer as createTCPServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, type PeerCertificate } from "node:tls";
-import { context } from "@contremaitre/execution/context";
+import { context, HubError } from "@contremaitre/execution/context";
+import { attempt } from "@contremaitre/execution/effect";
 import { run } from "@contremaitre/execution/process";
 import { sleep } from "@contremaitre/execution/sleep";
 import { startServer } from "@contremaitre/hub/server";
 import { parseManifest } from "@contremaitre/projects/config";
 import { newIdentity } from "@contremaitre/projects/model";
 import { localCertificates } from "@contremaitre/routing/certificates";
-import { clientHello as parseHello } from "@contremaitre/routing/https";
+import { clientHello as parseHello, serveHttps } from "@contremaitre/routing/https";
 import { closeServer, listen } from "@contremaitre/routing/proxy";
+import { Cause, Effect, Exit, Option } from "effect";
+import { commandFailure } from "../apps/cli/src/errors.js";
 import { FakeRuntime } from "./fake-runtime.js";
+import { httpsPortConflictFixture } from "./https-startup-fixture.js";
 
 async function clientHello(servername?: string) {
   const capture = createTCPServer();
@@ -82,6 +86,49 @@ test("ClientHello parsing finds the requested host across records and partial in
   expect(parseHello(splitRecord(hello, 40).subarray(0, 60)).complete).toBe(false);
   expect(parseHello(Buffer.from("GET / HTTP/1.1\r\n\r\n"))).toEqual({ complete: true });
 });
+
+test("HTTPS port conflicts remain typed failures with an actionable CLI message", async () => {
+  const occupied = createTCPServer();
+  await new Promise<void>((resolve) => occupied.listen(0, "127.0.0.1", resolve));
+  const address = occupied.address();
+  if (!address || typeof address === "string") throw Error("Expected a TCP port");
+  try {
+    const result = await Effect.runPromiseExit(
+      attempt(() =>
+        serveHttps(
+          address.port,
+          () => {
+            throw Error("A rejected listener cannot accept TLS connections");
+          },
+          { request: () => {}, upgrade: () => {} },
+        ),
+      ),
+    );
+    if (!Exit.isFailure(result)) throw Error("Expected an occupied-port failure");
+    expect(commandFailure(result.cause)).toEqual({
+      code: 1,
+      text: `Local HTTPS port ${address.port} is already in use`,
+    });
+    const failure = Option.getOrThrow(Cause.failureOption(result.cause));
+    expect(failure).toBeInstanceOf(HubError);
+    expect(failure.classification).toBe("conflict");
+    expect(failure.cause).toBeInstanceOf(Error);
+    expect(failure.cause).toHaveProperty("code", "EADDRINUSE");
+    expect(Cause.isDie(result.cause)).toBe(false);
+  } finally {
+    await new Promise<void>((resolve) => occupied.close(() => resolve()));
+  }
+});
+
+test.skipIf(!Bun.which("mkcert"))(
+  "HTTPS startup releases its socket and lock after a conflict and recovers on retry",
+  async () => {
+    const receipt = await httpsPortConflictFixture();
+    expect(receipt.scenario).toBe("hub/https-port-conflict");
+    expect(receipt.verified).toContain("failed startup releases the control socket and home lock");
+  },
+  30000,
+);
 
 test.skipIf(!Bun.which("mkcert"))(
   "The hub serves trusted HTTP/2 and HTTP/1.1 HTTPS, WebSockets and new hosts without restarting",
