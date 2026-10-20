@@ -3,10 +3,12 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { type Context, fail, phase } from "@contremaitre/execution/context";
 import { EnvironmentLocks } from "@contremaitre/execution/locks";
+import type { Service } from "@contremaitre/projects/model";
 import type { BuildRecord, ServiceState } from "./model.js";
 import { checkPgliteAssets } from "./pglite-assets.js";
 import { forkPgliteData } from "./pglite-fork.js";
 import { type LogTail, PgliteLogWriter, tailPgliteLog } from "./pglite-logs.js";
+import { checkPglitePooler } from "./pglite-pooler.js";
 import { waitPgliteReady } from "./pglite-ready.js";
 import { type PgliteHandle, startPglite } from "./pglite-server.js";
 import type {
@@ -53,9 +55,10 @@ export class PGliteRuntime implements ServiceRuntime {
     return join(this.home, `${encodeURIComponent(name)}.pglite-log`);
   }
 
-  async preflight(ctx: Context): Promise<void> {
+  async preflight(ctx: Context, service?: Service): Promise<void> {
     ctx.signal.throwIfAborted();
     await checkPgliteAssets();
+    if (service?.postgres?.pooling === "transaction") checkPglitePooler();
   }
   async build(
     _ctx: Context,
@@ -117,6 +120,7 @@ export class PGliteRuntime implements ServiceRuntime {
         dataDir: instance.data,
         port: instance.port,
         host: "127.0.0.1",
+        pooling: instance.spec.service.postgres?.pooling,
         log: (text) => instance.writer?.append(text),
       });
     } finally {
@@ -138,10 +142,14 @@ export class PGliteRuntime implements ServiceRuntime {
     const instance = this.instances.get(name);
     return instance ? { Host: "127.0.0.1", Running: instance.handle?.running ?? false } : undefined;
   }
-  async start(ctx: Context, name: string): Promise<void> {
+  async start(ctx: Context, name: string, ports?: Record<string, number>): Promise<void> {
     await this.locks.use([name], ctx.signal, async () => {
       const instance = this.instances.get(name);
       if (!instance) fail(`Unknown PGlite service ${name}`);
+      if (!instance.handle?.running && ports) {
+        instance.port = ports[String(instance.spec.service.port ?? 5432)] ?? instance.port;
+        instance.spec.ports = ports;
+      }
       if (!instance.handle?.running) await this.launch(ctx, instance);
     });
   }
@@ -197,5 +205,8 @@ export class PGliteRuntime implements ServiceRuntime {
           : "copied Postgres data (clonefile unavailable)",
       );
     });
+  }
+  async shutdown(): Promise<void> {
+    for (const instance of this.instances.values()) await this.stopInstance(instance);
   }
 }

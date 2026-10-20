@@ -8,7 +8,7 @@
 
 **Every branch gets its own stack.**
 
-Run your app, PostgreSQL, Redis, and uploaded files in isolated local environments for Git branches and Jujutsu workspaces. New environments copy data from your designated main environment and get their own HTTPS `.localhost` URLs. Built on [Apple container](https://github.com/apple/container) for Apple silicon Macs.
+Run your app, PostgreSQL, Redis, and uploaded files in isolated local environments for Git branches and Jujutsu workspaces. New environments copy data from your designated main environment and get their own HTTPS `.localhost` URLs. Choose [Apple container](https://github.com/apple/container) or the [WebAssembly runtime](docs/wasm-runtime.md) for supported services on Apple silicon Macs.
 
 [Get started](#get-started) · [Try a data fork](#try-a-data-fork) · [Coding agents](#use-with-coding-agents) · [Documentation](#documentation) · [Contribute](CONTRIBUTING.md)
 
@@ -152,11 +152,11 @@ contremaitre down                      # Stop this environment, retain its data
 
 Use your manifest's service name in place of `web`. Run `contremaitre --help` for the full command list.
 
-Environments automatically stop after two idle hours and retain their data. Set top-level `idle_timeout_seconds: 3600` for one hour or `idle_timeout_seconds: 0` to keep background workers running, then run deploy or ensure. CLI use and proxied traffic reset activity; active commands and sharing sessions keep environments alive. [Shutdown policy and activity rules](docs/compact-config.md#automatic-shutdown).
+Wasm services suspend after 60 seconds with no open connections and wake when a new connection arrives. Set service-level `idle_timeout_seconds` to change the delay or `0` to keep a service running. Fully Wasm environments remain wakeable. Apple and mixed environments stop after two idle hours and retain their data; a top-level `idle_timeout_seconds` overrides that environment shutdown policy. Apply settings with deploy or ensure. See [Wasm suspension and wake](docs/wasm-runtime.md#idle-suspension-and-wake) and [environment shutdown rules](docs/compact-config.md#automatic-shutdown).
 
 ## What to expect
 
-Contremaitre is in early development. The local runtime supports managed PostgreSQL 17, Redis, application containers, data forks, local HTTPS, and source sync. See the [recorded runtime verification](docs/structure-verification.md) for the tested setup and its limits.
+Contremaitre is in early development. The local runtime supports managed Postgres, Redis, application containers, Wasm servers, data forks, local HTTPS, and source sync. See the [recorded container verification](docs/structure-verification.md) and [Wasm runtime guide](docs/wasm-runtime.md) for the tested setups and their limits.
 
 - macOS and Apple silicon only. No Linux, Windows, or Intel Mac runtime support.
 - Build-based services need redeployment after edits. Source sync and hot reload require a [development-service configuration](docs/assisted-init.md#development-services).
@@ -169,6 +169,7 @@ Contremaitre is in early development. The local runtime supports managed Postgre
 | Guide | Read it for |
 | --- | --- |
 | [Full reference](docs/reference.md) | Manifest fields, environment identity, data lifecycle, commands, and tunnels |
+| [WebAssembly runtime](docs/wasm-runtime.md) | WASI/WASIX engines, JavaScript packages, PGlite pooling, setup, recovery and limits |
 | [Local HTTPS](docs/local-https.md) | Certificates, port forwarding, and the hub status page |
 | [Compact configuration](docs/compact-config.md) | Minimal app config, setup detection, shared containers, endpoints and automatic lock refresh |
 | [Initialization and hot reload](docs/assisted-init.md) | Agent-assisted setup, Dockerfiles, and development containers |

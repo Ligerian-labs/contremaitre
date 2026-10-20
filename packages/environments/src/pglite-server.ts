@@ -2,6 +2,7 @@ import { mkdir, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { Context } from "@contremaitre/execution/context";
 import { lockPgliteData, recoverPglitePublication } from "./pglite-data.js";
+import { checkPglitePooler, recoverPglitePooler, startPglitePooler } from "./pglite-pooler.js";
 import { terminatePgliteWorker } from "./pglite-worker-lifecycle.js";
 
 export interface PgliteHandle {
@@ -19,6 +20,7 @@ export async function startPglite(options: {
   ctx?: Context;
   log?: (text: string) => void;
   createWorker?: (url: URL) => Worker;
+  pooling?: "session" | "transaction";
 }): Promise<PgliteHandle> {
   const host = options.host ?? "127.0.0.1";
   const dataDir = resolve(options.dataDir);
@@ -27,9 +29,11 @@ export async function startPglite(options: {
     throw new Error("Invalid PGlite port");
   const signal = options.signal ?? options.ctx?.signal;
   signal?.throwIfAborted();
+  if (options.pooling === "transaction") checkPglitePooler();
   const unlock = await lockPgliteData(dataDir);
   let worker: Worker;
   try {
+    await recoverPglitePooler(dataDir);
     await recoverPglitePublication(dataDir);
     await mkdir(dataDir, { recursive: true, mode: 0o700 });
     // Bun flattens the main entry but preserves the extra worker entry's path.
@@ -47,7 +51,9 @@ export async function startPglite(options: {
   }
   let running = false;
   let failed = false;
+  let terminating = false;
   let socketDirectory: string | undefined;
+  let pooler: Awaited<ReturnType<typeof startPglitePooler>> | undefined;
   let resetTimer: ReturnType<typeof setTimeout> | undefined;
   const exited = new Promise<void>((resolve) => {
     worker.addEventListener(
@@ -70,7 +76,7 @@ export async function startPglite(options: {
     if (event.data.socketDirectory) socketDirectory = event.data.socketDirectory;
     if (event.data.type === "log") log(event.data.text);
     if (event.data.type === "error") fatal(event.data.message);
-    if (event.data.type === "resetting") {
+    if (event.data.type === "resetting" && !terminating) {
       clearTimeout(resetTimer);
       resetTimer = setTimeout(() => fatal("PGlite session reset timed out"), 2500);
     }
@@ -99,20 +105,25 @@ export async function startPglite(options: {
       worker.addEventListener("error", onError);
       worker.addEventListener("close", onClose);
       worker.addEventListener("message", onMessage);
-      worker.postMessage({ type, dataDir, port: options.port, host });
+      worker.postMessage({ type, dataDir, port: options.port, host, pooling: options.pooling });
     });
   }
   let termination: Promise<void> | undefined;
   function terminate(): Promise<void> {
     termination ??= (async () => {
+      terminating = true;
       clearTimeout(resetTimer);
-      await terminatePgliteWorker(worker, exited, async () => {
-        try {
-          if (socketDirectory) await rm(socketDirectory, { recursive: true, force: true });
-        } finally {
-          await unlock();
-        }
-      });
+      try {
+        await pooler?.stop();
+      } finally {
+        await terminatePgliteWorker(worker, exited, async () => {
+          try {
+            if (socketDirectory) await rm(socketDirectory, { recursive: true, force: true });
+          } finally {
+            await unlock();
+          }
+        });
+      }
     })();
     return termination;
   }
@@ -137,6 +148,17 @@ export async function startPglite(options: {
   };
   try {
     await request("start");
+    if (options.pooling === "transaction") {
+      if (!socketDirectory) throw Error("PGlite did not publish its private socket directory");
+      pooler = await startPglitePooler({
+        dataDir,
+        socketDirectory,
+        port: options.port,
+        signal,
+        log,
+        failed: fatal,
+      });
+    }
     running = true;
     log(`PGlite listening on ${host}:${options.port}`);
     signal?.addEventListener("abort", onAbort, { once: true });

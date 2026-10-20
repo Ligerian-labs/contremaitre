@@ -108,6 +108,58 @@ test("WASM managed postgres rejects init and migrate through manifest validation
   }
 });
 
+test("PGlite idles after its last client disconnects and retains data through wake and hub restart", async () => {
+  const home = mkdtempSync(join(tmpdir(), "cm-pglite-idle-"));
+  const store = new Store(home);
+  let manager = new Manager(store, new FakeRuntime());
+  const ctx = context();
+  const prepared: PreparedDeploy = {
+    root: home,
+    identity: newIdentity("pglite-manager", home, "main"),
+    manifest: prepareManifest(
+      home,
+      parseManifest(manifest.replace("runtime: wasm", "runtime: wasm, idle_timeout_seconds: 1")),
+    ),
+    request: {},
+  };
+  let sql: SQL | undefined;
+  const waitSuspended = async () => {
+    const deadline = Date.now() + 5000;
+    while (true) {
+      const service = manager.resolve(prepared.identity.ID).Services.db;
+      if ((await manager.backend(service).inspect(ctx, service.Container))?.Suspended) return;
+      if (Date.now() > deadline) throw Error("Database did not suspend");
+      await Bun.sleep(25);
+    }
+  };
+  try {
+    await manager.deploy(ctx, prepared);
+    const service = manager.resolve(prepared.identity.ID).Services.db;
+    const port = service.Ports?.["5432"];
+    const connect = () =>
+      new SQL(`postgresql://app@127.0.0.1:${port}/app?sslmode=disable`, { max: 1, prepare: false });
+    sql = connect();
+    await sql.unsafe("CREATE TABLE sentinel(id int); INSERT INTO sentinel VALUES (42)");
+    await Bun.sleep(1200);
+    expect((await manager.backend(service).inspect(ctx, service.Container))?.Suspended).toBe(false);
+    await sql.close({ timeout: 0 });
+    sql = undefined;
+    await waitSuspended();
+    await manager.closeRuntimes();
+    manager = new Manager(store, new FakeRuntime());
+    await manager.recover(ctx);
+    await waitSuspended();
+    sql = connect();
+    expect(await sql.unsafe<{ id: number }[]>("SELECT id FROM sentinel")).toEqual([{ id: 42 }]);
+    expect(manager.resolve(prepared.identity.ID).Services.db.Ports?.["5432"]).toBe(port);
+  } finally {
+    await sql?.close({ timeout: 0 });
+    for (const env of manager.list()) await manager.down(ctx, env, true);
+    await manager.closeRuntimes();
+    rmSync(home, { recursive: true, force: true });
+  }
+}, 30000);
+
 if (!Bun.which("hdiutil")) console.log("Skipping Manager HFS+ test: hdiutil is unavailable");
 test.skipIf(!Bun.which("hdiutil"))(
   "V3-F1/F5: Manager fork on HFS+ reports copy and isolates both ways",

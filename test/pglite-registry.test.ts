@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { cp, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { ActivationRuntime } from "@contremaitre/environments/activation";
 import { Manager } from "@contremaitre/environments/manager";
 import { PGliteRuntime } from "@contremaitre/environments/pglite-runtime";
 import { runtimeRegistry } from "@contremaitre/environments/runtimes";
@@ -22,8 +23,10 @@ test("real registry retains Wasmtime app and PGlite postgres; WASM app consumes 
   await mkdir(root);
   const apple = new FakeRuntime(),
     registry = runtimeRegistry({ home, apple });
-  expect(registry.wasm.app).toBeInstanceOf(WasmtimeRuntime);
-  expect(registry.wasm.postgres).toBeInstanceOf(PGliteRuntime);
+  expect(registry.wasm.app).toBeInstanceOf(ActivationRuntime);
+  expect(registry.wasm.postgres).toBeInstanceOf(ActivationRuntime);
+  expect((registry.wasm.app as ActivationRuntime).backend).toBeInstanceOf(WasmtimeRuntime);
+  expect((registry.wasm.postgres as ActivationRuntime).backend).toBeInstanceOf(PGliteRuntime);
   const manager = new Manager(new Store(home), apple, 48570, "http", registry);
   const ctx = context();
   const available = !!(

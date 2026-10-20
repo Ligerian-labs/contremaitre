@@ -169,6 +169,7 @@ export async function startServer(
   let closeApp: (() => Promise<void>) | undefined;
   let stopHttps: (() => Promise<void>) | undefined;
   let stopDevelopment: (() => Promise<void>) | undefined;
+  let closeRuntimes: (() => Promise<void>) | undefined;
   let shutdownPromise: Promise<void> | undefined;
   let ready = false;
   const requests = new Set<AbortController>();
@@ -182,6 +183,7 @@ export async function startServer(
         () => ops?.shutdown(),
         () => tunnels?.shutdown(),
         () => stopDevelopment?.(),
+        () => closeRuntimes?.(),
         () => stopHttps?.(),
         () => control && closeServer(control),
         () => publicServer && closeServer(publicServer),
@@ -216,6 +218,7 @@ export async function startServer(
       options.runtimes,
     );
     stopDevelopment = () => manager.stopDevelopment();
+    closeRuntimes = () => manager.closeRuntimes();
     ops = new Operations(store.home, options.concurrency ?? 2);
     const operations = ops;
     await manager.recover({
