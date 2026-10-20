@@ -4,7 +4,7 @@ import { createServer as createHTTP2Server, type ServerHttp2Session } from "node
 import { createServer as createTCPServer, type Socket } from "node:net";
 import type { Duplex } from "node:stream";
 import { createSecureContext, type SecureContext, TLSSocket } from "node:tls";
-import { type Context, fail, isCode, message } from "@contremaitre/execution/context";
+import { type Context, fail, HubError, isCode, message } from "@contremaitre/execution/context";
 import { localCertificates } from "./certificates.js";
 import { type ProxyRequest, type ProxyResponse, trackedServer } from "./proxy.js";
 
@@ -146,7 +146,13 @@ export async function serveHttps(
   await new Promise<void>((resolve, reject) => {
     listener.once("error", (error) =>
       reject(
-        isCode(error, "EADDRINUSE") ? Error(`Local HTTPS port ${port} is already in use`) : error,
+        isCode(error, "EADDRINUSE")
+          ? new HubError({
+              message: `Local HTTPS port ${port} is already in use`,
+              classification: "conflict",
+              cause: error,
+            })
+          : error,
       ),
     );
     listener.listen(port, "127.0.0.1", () => resolve());
