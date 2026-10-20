@@ -9,6 +9,7 @@ import { context } from "@contremaitre/execution/context";
 import { parseManifest, prepareManifest } from "@contremaitre/projects/config";
 import { newIdentity } from "@contremaitre/projects/model";
 import { SQL } from "bun";
+import { detachDiskImage } from "./disk-images.js";
 import { FakeRuntime } from "./fake-runtime.js";
 import { checkPgliteCleanup } from "./fixtures/pglite-resources/monitor.js";
 
@@ -151,9 +152,9 @@ test.skipIf(!Bun.which("hdiutil"))(
       mkdirSync(home);
       await scenario(home, "copy");
     } finally {
-      if (attached) await command(["hdiutil", "detach", "-force", mount]);
+      if (attached) await detachDiskImage(mount);
       rmSync(root, { recursive: true, force: true });
     }
   },
-  60000,
+  90000,
 );

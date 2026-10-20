@@ -43,7 +43,7 @@ function isPgliteFileAsset(
   if (
     !fileAsset ||
     !("@electric-sql/pglite" in workspace.dependencies) ||
-    !/^\.\.\/node_modules\/@electric-sql\/pglite\/dist\/(?:pglite\.wasm|initdb\.wasm|pglite\.data)$/.test(
+    !/^\.\.\/node_modules\/@electric-sql\/pglite\/dist\/(?:pglite\.wasm|initdb\.wasm|pglite\.data|pgcrypto\.tar\.gz)$/.test(
       specifier,
     )
   )
@@ -101,6 +101,9 @@ function checkPgliteAssetException(): void {
   };
   const asset = "../node_modules/@electric-sql/pglite/dist/pglite.wasm";
   check(`import asset from "${asset}" with { type: "file" };`);
+  check(
+    'import asset from "../node_modules/@electric-sql/pglite/dist/pgcrypto.tar.gz" with { type: "file" };',
+  );
   assert.throws(() => check(`import asset from "${asset}";`), /crosses a package boundary/);
   assert.throws(
     () => check(`import asset from "${asset}" assert { type: "file" };`),

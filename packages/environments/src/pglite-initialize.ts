@@ -1,5 +1,7 @@
-import { mkdir, open, readdir, readFile, rename, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, open, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { PGlite } from "@electric-sql/pglite";
 import { pgliteAssets } from "./pglite-assets.js";
 
@@ -9,12 +11,30 @@ export const pgliteInitializationDir = (dataDir: string): string =>
 
 /** Called only on the worker while the owner holds the published directory's lock. */
 export async function openPglite(dataDir: string, log: (text: string) => boolean): Promise<PGlite> {
+  // PGlite reads extension archives with fs streams, which cannot read Bun's
+  // embedded filesystem. Keep a private real file only while opening the database.
+  const directory = await mkdtemp(join(tmpdir(), "cm-pglite-extension-"));
+  try {
+    const archive = join(directory, "pgcrypto.tar.gz");
+    await writeFile(archive, await Bun.file(pgliteAssets.pgcrypto).bytes(), { mode: 0o600 });
+    return await initializePglite(dataDir, log, archive);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
+async function initializePglite(
+  dataDir: string,
+  log: (text: string) => boolean,
+  pgcrypto: string,
+): Promise<PGlite> {
   const options = {
     onStdout: log,
     onStderr: log,
     pgliteWasmModule: await WebAssembly.compile(await Bun.file(pgliteAssets.wasm).arrayBuffer()),
     initdbWasmModule: await WebAssembly.compile(await Bun.file(pgliteAssets.initdb).arrayBuffer()),
     fsBundle: Bun.file(pgliteAssets.bundle),
+    extensions: { pgcrypto: pathToFileURL(pgcrypto) },
   };
   // Manager pre-creates an empty directory. A nonempty published tree is always
   // treated as user data, including legacy databases without our marker.
