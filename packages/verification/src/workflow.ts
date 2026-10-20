@@ -14,7 +14,7 @@ import { type Context, fail, HubError, message } from "@contremaitre/execution/c
 import { run } from "@contremaitre/execution/process";
 import type { Operations } from "@contremaitre/operations/operations";
 import { inside, loadManifest, validName } from "@contremaitre/projects/config";
-import type { VerificationConfig } from "@contremaitre/projects/model";
+import { isJob, type VerificationConfig } from "@contremaitre/projects/model";
 import { clean, Evidence, type VerificationRun } from "./records.js";
 import { sourceIdentity } from "./source.js";
 
@@ -53,6 +53,10 @@ export class AgentWorkflow {
     }
     for (const s of Object.values(env.Services)) {
       if (s.development_error || s.dependencies_changed || s.ready === false) return false;
+      if (isJob(s.Spec)) {
+        if (s.job?.status !== "succeeded") return false;
+        continue;
+      }
       try {
         const current = await this.manager.backend(s).inspect(ctx, s.Container);
         if (!current?.Running || current.Host !== s.Host) return false;

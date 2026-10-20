@@ -217,9 +217,14 @@ export async function tcpProxy(
   /** Upstream host on `remote`, or a full address when the service maps its ports. */
   target: () => Promise<string | { host: string; port: number }>,
   ready: (port: number) => void,
+  options: { host?: string; allow?: (address: string) => boolean } = {},
 ) {
   const connections = new Set<Socket>();
   const server = createTCPServer({ allowHalfOpen: true }, (socket) => {
+    if (options.allow && !options.allow(socket.remoteAddress ?? "")) {
+      socket.destroy();
+      return;
+    }
     if (connections.size >= 256) {
       socket.destroy();
       return;
@@ -255,7 +260,7 @@ export async function tcpProxy(
   });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
-    server.listen(local, "127.0.0.1", () => {
+    server.listen(local, options.host ?? "127.0.0.1", () => {
       server.off("error", reject);
       resolve();
     });

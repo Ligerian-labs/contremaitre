@@ -34,6 +34,7 @@ export interface Runtime {
   ): Promise<BuildRecord>;
   network(ctx: Context, name: string): Promise<void>;
   removeNetwork(ctx: Context, name: string): Promise<void>;
+  hostNetwork?(ctx: Context, name: string): Promise<{ gateway: string; subnet: string }>;
   volume(ctx: Context, name: string): Promise<void>;
   removeVolume(ctx: Context, name: string): Promise<void>;
   removeImage(ctx: Context, name: string): Promise<void>;
@@ -92,6 +93,18 @@ interface SystemStart {
   done: Promise<void>;
 }
 export class Apple implements Runtime {
+  async hostNetwork(ctx: Context, name: string) {
+    const schema = Schema.Array(
+      Schema.Struct({
+        status: Schema.Struct({ ipv4Gateway: Schema.String, ipv4Subnet: Schema.String }),
+      }),
+    );
+    const [network] = Schema.decodeUnknownSync(schema)(
+      JSON.parse((await this.output(ctx, ["network", "inspect", name])).toString()),
+    );
+    if (!network) fail(`Cannot inspect host gateway for ${name}`);
+    return { gateway: network.status.ipv4Gateway, subnet: network.status.ipv4Subnet };
+  }
   private readonly builder = new Semaphore(4);
   // Service contexts in one deployment share a cancellation signal. Keep other
   // deployments out of the builder until every build in this session has settled.

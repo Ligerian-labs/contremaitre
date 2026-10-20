@@ -16,7 +16,7 @@ import {
 import { atomicWrite } from "@contremaitre/execution/files";
 import { EnvironmentLocks } from "@contremaitre/execution/locks";
 import { run } from "@contremaitre/execution/process";
-import { type Service, serviceSchema } from "@contremaitre/projects/model";
+import { type Service, serviceSchema, wasmCommand } from "@contremaitre/projects/model";
 import { Schema } from "effect";
 import type { BuildRecord } from "./model.js";
 
@@ -45,6 +45,7 @@ const recordSchema = Schema.Struct({
   root: Schema.optional(Schema.String),
   source: Schema.optional(Schema.String),
   service: Schema.optional(serviceSchema),
+  volumes: Schema.optional(strings),
 });
 type RecordState = Schema.Schema.Type<typeof recordSchema>;
 function identity(pid: number) {
@@ -99,7 +100,7 @@ export class WasmtimeRuntime implements ServiceRuntime {
       );
       if (
         r.pid < 2 ||
-        r.port < 1 ||
+        r.port < (r.service && wasmCommand(r.service) ? 0 : 1) ||
         r.port > 65535 ||
         r.log !== join(this.directory, `${name}.log`)
       )
@@ -203,9 +204,9 @@ export class WasmtimeRuntime implements ServiceRuntime {
     return r ? { Running: running, Host: this.bind } : undefined;
   }
   async run(ctx: Context, spec: RunSpec): Promise<void> {
-    if (spec.task) fail("WASM apps have no tasks");
-    const port = spec.ports?.[String(spec.service.port)];
-    if (!port) fail(`Missing reserved WASM port mapping for ${spec.service.port}`);
+    const command = wasmCommand(spec.service);
+    const port = spec.ports?.[String(spec.service.port)] ?? 0;
+    if (!command && !port) fail(`Missing reserved WASM port mapping for ${spec.service.port}`);
     if (!spec.data || !spec.root) fail("WASM run requires root and data directories");
     const env: Record<string, string> = {};
     for (const line of (await fs.readFile(spec.envFile, "utf8")).split("\n")) {
@@ -215,6 +216,18 @@ export class WasmtimeRuntime implements ServiceRuntime {
         fail("Invalid environment entry");
       env[line.slice(0, split)] = line.slice(split + 1);
     }
+    if (spec.task) {
+      if (!command) fail("WASM tasks require command mode");
+      await this.preflight(ctx);
+      await run(ctx, this.arguments(spec.image, spec.service, port, env, spec.volumes), {
+        cwd: spec.data,
+        env: { ...process.env, ...env },
+        stdout: ctx.log,
+        stderr: ctx.log,
+        timeout: spec.timeout,
+      });
+      return;
+    }
     await this.stop(ctx, spec.name);
     await this.spawn(ctx, spec.name, {
       component: spec.image,
@@ -223,13 +236,13 @@ export class WasmtimeRuntime implements ServiceRuntime {
       port,
       root: spec.root,
       source: spec.source,
+      volumes: spec.volumes,
       service: {
+        workload: spec.service.workload,
+        command: spec.service.command,
+        memory: spec.service.memory,
         port: spec.service.port,
-        wasm: spec.service.wasm && {
-          build: spec.service.wasm.build,
-          directory: spec.service.wasm.directory,
-          component: spec.service.wasm.component,
-        },
+        wasm: spec.service.wasm,
         dev: spec.service.dev && {
           source: spec.service.dev.source,
           exclude: spec.service.dev.exclude,
@@ -237,6 +250,35 @@ export class WasmtimeRuntime implements ServiceRuntime {
       },
     });
     await this.watchService(ctx, spec.name);
+  }
+  private arguments(
+    component: string,
+    service: Service,
+    port: number,
+    env: Record<string, string>,
+    volumes: Record<string, string> = {},
+  ) {
+    const command = wasmCommand(service);
+    const memory = service.memory?.match(/^([1-9][0-9]*)([MG])$/);
+    return [
+      Bun.which("wasmtime", { PATH: process.env.PATH ?? "" }) ??
+        fail("wasmtime is missing; brew install wasmtime"),
+      command ? "run" : "serve",
+      "-S",
+      "cli=y",
+      ...(service.wasm?.network ? ["-S", "inherit-network=y", "-S", "http=y"] : []),
+      ...(memory
+        ? [
+            "-W",
+            `max-memory-size=${Number(memory[1]) * (memory[2] === "G" ? 1024 ** 3 : 1024 ** 2)}`,
+          ]
+        : []),
+      ...(!command ? ["--addr", `${this.bind}:${port}`] : []),
+      ...Object.entries(volumes).flatMap(([host, guest]) => ["--dir", `${host}::${guest}`]),
+      ...Object.keys(env).flatMap((key) => ["--env", key]),
+      component,
+      ...(command ? (service.command ?? []) : []),
+    ];
   }
   async start(ctx: Context, name: string): Promise<void> {
     const r = (await this.read(name)) ?? fail(`Unknown wasmtime service ${name}`);
@@ -247,7 +289,10 @@ export class WasmtimeRuntime implements ServiceRuntime {
   private async spawn(
     ctx: Context,
     name: string,
-    s: Pick<RecordState, "component" | "env" | "cwd" | "port" | "root" | "source" | "service">,
+    s: Pick<
+      RecordState,
+      "component" | "env" | "cwd" | "port" | "root" | "source" | "service" | "volumes"
+    >,
   ): Promise<void> {
     ctx.signal.throwIfAborted();
     await this.preflight(ctx);
@@ -265,23 +310,13 @@ export class WasmtimeRuntime implements ServiceRuntime {
     }
     if (!cached || hash(cached) !== digest) atomicWrite(snapshot, bytes);
     const port = s.port;
-    if (await answering(port, this.bind))
+    if (port && (await answering(port, this.bind)))
       fail(`Wasmtime port ${port} is already in use`, "conflict");
     await fs.mkdir(this.directory, { recursive: true, mode: 0o700 });
     const log = join(this.directory, `${name}.log`);
     if (existsSync(log) && (await fs.stat(log)).size > 5 * 1024 ** 2)
       await fs.rename(log, `${log}.1`);
-    const argv = [
-      Bun.which("wasmtime", { PATH: process.env.PATH ?? "" }) ??
-        fail("wasmtime is missing; brew install wasmtime"),
-      "serve",
-      "-S",
-      "cli=y", // WASI CLI imports provide guest environment and stderr.
-      "--addr",
-      `${this.bind}:${port}`,
-      ...Object.keys(s.env).flatMap((k) => ["--env", k]),
-      snapshot,
-    ];
+    const argv = this.arguments(snapshot, s.service ?? {}, port, s.env, s.volumes);
     const fd = openSync(log, "a", 0o600);
     const child = spawn(argv[0], argv.slice(1), {
       detached: true,
@@ -318,6 +353,7 @@ export class WasmtimeRuntime implements ServiceRuntime {
         root: s.root,
         source: s.source,
         service: s.service,
+        volumes: s.volumes,
         desired: "running",
         log,
       };
@@ -329,7 +365,7 @@ export class WasmtimeRuntime implements ServiceRuntime {
           fail(
             `Wasmtime exited: ${error?.message ?? ""}\n${(await fs.readFile(log, "utf8")).slice(-8192)}`,
           );
-        if (await answering(port, this.bind)) {
+        if (port ? await answering(port, this.bind) : Date.now() > deadline - 29_850) {
           for (const file of await fs.readdir(this.directory)) {
             if (
               file.startsWith(`${name}.`) &&

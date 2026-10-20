@@ -8,7 +8,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { createServer, type Server } from "node:net";
+import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Manager, type PreparedDeploy } from "@contremaitre/environments/manager";
@@ -68,7 +68,7 @@ class FakeHostRuntime implements ServiceRuntime {
     for (const port of Object.values(spec.ports ?? {}))
       servers.push(
         await new Promise<Server>((resolve) => {
-          const server = createServer((socket) => socket.end());
+          const server = createServer((socket) => socket.end("host-service"));
           server.listen(port, "127.0.0.1", () => resolve(server));
         }),
       );
@@ -150,12 +150,99 @@ function fixture(text = mixed) {
       manifest = next;
     },
     clean: async () => {
+      await manager.stopNetworking();
       await host.closeAll();
       rmSync(home, { recursive: true, force: true });
     },
   };
 }
 const invalid = (text: string) => () => parseManifest(`version: 1\nproject: example\n${text}`);
+test("container clients receive working host relay addresses and unchanged deploys keep connections", async () => {
+  const f = fixture(`version: 1
+project: example
+services:
+  db: {kind: postgres, runtime: wasm}
+  web:
+    image: alpine
+    command: [sleep, infinity]
+    depends_on: [db]
+    environment: {DATABASE_URL: '{{db.url}}'}
+`);
+  let connected: Socket | undefined;
+  try {
+    const p = f.prepare();
+    await f.manager.deploy(context(), p);
+    const env = f.manager.resolve(p.identity.ID);
+    const url = new URL(f.manager.serviceEnv(env, env.Services.web).DATABASE_URL);
+    expect(Number(url.port)).not.toBe(env.Services.db.Ports?.["5432"] ?? 0);
+    expect(Number(url.port)).toBe(env.Services.db.BridgePorts?.["5432"] ?? 0);
+    const receive = () =>
+      new Promise<string>((resolve, reject) => {
+        let data = "";
+        const socket = createConnection({ host: url.hostname, port: Number(url.port) });
+        socket.on("data", (chunk) => {
+          data += chunk;
+        });
+        socket.once("end", () => resolve(data));
+        socket.once("error", reject);
+      });
+    expect(await receive()).toBe("host-service");
+    const upstream = f.host.servers.get(env.Services.db.Container)?.[0];
+    expect(upstream).toBeDefined();
+    upstream?.removeAllListeners("connection");
+    upstream?.on("connection", (socket) => socket.pipe(socket));
+    const client = createConnection({ host: url.hostname, port: Number(url.port) });
+    connected = client;
+    const echo = (value: string) =>
+      new Promise<string>((done) => {
+        client.once("data", (data) => done(data.toString()));
+        client.write(value);
+      });
+    expect(await echo("before")).toBe("before");
+    const ports = { ...env.Services.db.BridgePorts };
+    f.apple.calls = [];
+    await f.manager.deploy(context(), p);
+    expect(env.Services.db.BridgePorts).toEqual(ports);
+    expect(f.apple.calls.filter((call) => call.startsWith("run "))).toEqual([]);
+    expect(await echo("after")).toBe("after");
+  } finally {
+    connected?.destroy();
+    await f.clean();
+  }
+});
+test("recovery refreshes container clients when a previous relay port is occupied", async () => {
+  const f = fixture(`version: 1
+project: example
+services:
+  db: {kind: postgres, runtime: wasm}
+  web: {image: alpine, depends_on: [db], environment: {DATABASE_URL: '{{db.url}}'}}
+`);
+  let blocked: Server | undefined;
+  let recovered: Manager | undefined;
+  try {
+    const p = f.prepare();
+    await f.manager.deploy(context(), p);
+    const env = f.manager.resolve(p.identity.ID);
+    const port = env.Services.db.BridgePorts?.["5432"] ?? 0;
+    await f.manager.stopNetworking();
+    blocked = createServer((socket) => socket.destroy());
+    const listener = blocked;
+    await new Promise<void>((done) => listener.listen(port, "0.0.0.0", done));
+    recovered = new Manager(new Store(f.home), f.apple, 8080, "http", f.manager.runtimes);
+    f.apple.calls = [];
+    await recovered.recover(context());
+    const next = recovered.resolve(p.identity.ID);
+    expect(next.Status).toBe("running");
+    expect(next.Services.db.BridgePorts?.["5432"]).not.toBe(port);
+    const url = new URL(recovered.serviceEnv(next, next.Services.web).DATABASE_URL);
+    expect(Number(url.port)).toBe(next.Services.db.BridgePorts?.["5432"] ?? 0);
+    expect(f.apple.calls).toContain(`run ${next.Services.web.Container}`);
+  } finally {
+    await recovered?.stopNetworking();
+    if (blocked) await new Promise<void>((done) => blocked?.close(() => done()));
+    await f.clean();
+  }
+});
 test("manifests default to Apple and validate WASM services", () => {
   const apple = parseManifest(
     "version: 1\nproject: example\nservices:\n  db: {kind: postgres}\n  web: {image: nginx, port: 80}\n",
@@ -193,7 +280,7 @@ test("manifests default to Apple and validate WASM services", () => {
     invalid(
       "services:\n  db: {kind: postgres, runtime: wasm}\n  web: {image: nginx, depends_on: [db]}",
     ),
-  ).toThrow("web: Apple container services cannot reach WASM service db");
+  ).not.toThrow();
   expect(
     invalid(
       "services:\n  web: {runtime: wasm, wasm: {component: a.wasm}, port: 80}\nverification:\n  profiles:\n    smoke: [{name: t, command: [x], service: web}]",

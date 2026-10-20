@@ -1,6 +1,8 @@
 # WASM app backend
 
-Contremaitre runs WASI HTTP components as detached host processes with `wasmtime serve`. They export the `wasi:http/proxy` world. The hub forwards HTTP requests to a reserved loopback port.
+Contremaitre runs WASI HTTP components with `wasmtime serve`, and WASI command workloads with `wasmtime run`. Long-running services and workers run as detached host processes. Jobs run to completion before their dependents start. See [workloads](workloads.md) for the lifecycle contract.
+
+HTTP components export the `wasi:http/proxy` world. The hub forwards HTTP requests to a reserved loopback port. Command components export `wasi:cli/run`; WASI Preview 1 command modules also work with `wasmtime run`.
 
 Install Wasmtime and a component toolchain. For Rust:
 
@@ -49,10 +51,11 @@ A component that builds but fails to start restores the previous snapshot on the
 - Logs rotate only when spawning a process, above 5 MiB. A long-running process can exceed this size.
 - A corrupt record is treated as stopped. `contremaitre logs` prints a notice and then the service's log. Shutdown uses a separate private ownership record or salvaged PID and identity, and only terminates a matching process. If both records are unreadable, it cannot safely identify the old process. Shutdown succeeds with a warning in the operation and service logs. Find the operation with `contremaitre operations` and read its log with `contremaitre attach <id>`. `contremaitre down` prints only `down complete`; inspect and stop the old process manually.
 
-- The server entry point is `wasi:http/proxy`. Wasmtime owns the HTTP listener; guests cannot create a raw TCP server through this backend. Host socket network access is not granted. Outbound HTTP uses `wasi:http/outgoing-handler`.
+- HTTP mode uses `wasi:http/proxy`; Wasmtime owns the HTTP listener. Command mode uses `wasm.mode: command`, or is selected automatically for `workload: worker` and `workload: job`. In command mode, `command` supplies guest arguments. Set `wasm.network: true` to grant host network access and HTTP imports. A command service can use `{{its-name.port}}` to receive its reserved listening port. Workers and jobs have no listening ports.
 - There is no `exec`, and no `init` or `migrate` task support.
-- No host filesystem directories are preopened. The process working directory is private service data, but that does not grant guest filesystem access.
+- Declared named `volumes` are preopened at their guest paths. They remain private to the environment and participate in branch data forks. Other host directories are not preopened. The process working directory is private service data, but that does not grant guest filesystem access.
+- `memory` caps each Wasm linear memory. It does not cap the entire Wasmtime host process. `cpus` does not impose a host CPU quota. Job wall-clock time is bounded by `timeout_seconds`, default 300 seconds.
 - Manifest environment variables are passed by name with `--env NAME`. Values come from the host process environment, rather than command-line arguments.
-- Apple containers cannot reach a WASM service on host loopback. Validation rejects Apple services that depend on WASM services. WASM services can depend on Apple services.
+- In mixed environments, container clients receive an environment gateway and relay port for each host service reference. Relays forward TCP to the service's loopback listener and accept clients only from that environment's container subnet. Host clients continue to receive loopback addresses. Relays require the hub; a hub restart recreates them and refreshes clients if an address changes. WASM services reach Apple services through their container IPs.
 
 See [Wasmtime's serve documentation](https://docs.wasmtime.dev/cli-options.html#serve) for the component contract and [CLI help](https://docs.wasmtime.dev/cli-options.html#help) for runtime options.

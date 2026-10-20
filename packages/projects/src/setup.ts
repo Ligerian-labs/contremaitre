@@ -9,6 +9,7 @@ import {
   type App,
   appConfig,
   createProjectLock,
+  explicitLaunch,
   isCompact,
   type ProjectLock,
   parseProject,
@@ -91,14 +92,7 @@ function endpoints(root: string, path: string, name: string, pkg: Package): Reco
 
 export function detectApplication(root: string, name: string, app: App): Service {
   const path = app.path ?? ".";
-  if (
-    (app.image || app.build) &&
-    app.command &&
-    app.dev &&
-    app.working_dir &&
-    (app.endpoints !== undefined || app.port !== undefined)
-  )
-    return {};
+  if (explicitLaunch(app)) return {};
   const pkg = packageFile(root, path),
     repository = path === "." ? pkg : packageFile(root, ".");
   if (/\b(docker|podman|container)\b/.test(pkg.scripts?.dev ?? ""))

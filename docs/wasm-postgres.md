@@ -19,7 +19,7 @@ services:
 
 Contremaitre reserves the port. Applications use `{{db.url}}` through the normal environment reference and declare `depends_on: [db]`. The URL is `postgresql://app:<generated-password>@127.0.0.1:<reserved-port>/app?sslmode=disable`. The runtime creates the `app` role and `app` database on first initialization.
 
-Apple container services cannot depend on WASM services because container loopback cannot reach the host listener. Give the application a compatible host runtime. Manifest validation rejects this dependency.
+Apple container services can depend on this database. Their `{{db.host}}`, `{{db.port}}` and `{{db.url}}` references resolve through an environment-scoped TCP relay. Host applications continue to receive the loopback address. See [mixed runtime networking](workloads.md#mixed-runtime-networking).
 
 Managed databases reject `init`, `migrate`, custom commands, environment overrides and volumes with the existing message `managed databases cannot override storage, credentials, command or initialization`. Run migrations from the application using its ordinary database client. Runtime task commands and builds are also rejected explicitly.
 

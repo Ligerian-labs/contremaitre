@@ -8,12 +8,14 @@ import {
   driverSchema,
   type Identity,
   idleTimeoutSchema,
+  isJob,
   type Manifest,
   newIdentity,
   type Service,
   serviceEndpoints,
   serviceSchema,
   verificationSchema,
+  wasmCommand,
 } from "./model.js";
 import { type LoadOptions, loadProject } from "./project-lock.js";
 
@@ -109,6 +111,10 @@ export function parseManifest(text: string): Manifest {
         if (check.service && !parsed.driver && !Object.hasOwn(parsed.services ?? {}, check.service))
           fail(`${check.name}: unknown verification service`);
         if (check.service && !validName.test(check.service)) fail(`${check.name}: invalid service`);
+        if (check.service && isJob(parsed.services?.[check.service] ?? {}))
+          fail(
+            `${check.name}: service checks require a long-running service; ${check.service} is a job`,
+          );
         if (check.service && parsed.services?.[check.service]?.runtime === "wasm")
           fail(
             `${check.name}: service checks run inside a container; WASM service ${check.service} cannot run them`,
@@ -153,6 +159,22 @@ export function parseManifest(text: string): Manifest {
     const kind = original.kind || "app";
     if (!["app", "postgres", "redis"].includes(kind)) fail(`${name}: unknown kind`);
     const s = serviceDefaults(original);
+    if (s.workload && kind !== "app") fail(`${name}: workload is only supported for apps`);
+    if (s.workload === "worker" || isJob(s)) {
+      if (s.port || s.http || keys(s.endpoints).length || s.ready?.length)
+        fail(
+          `${name}: ${s.workload} workloads cannot declare ports, HTTP endpoints or readiness commands`,
+        );
+      if (s.wasm?.mode === "http") fail(`${name}: ${s.workload} requires wasm command mode`);
+    }
+    if (
+      s.timeout_seconds !== undefined &&
+      (!isJob(s) || s.timeout_seconds < 1 || s.timeout_seconds > 7200)
+    )
+      fail(`${name}: timeout_seconds requires a job and must be 1..7200`);
+    if (isJob(s) && s.dev) fail(`${name}: jobs do not support dev watchers`);
+    if (s.command && (!s.command.length || s.command.some((arg) => !arg || arg.includes("\0"))))
+      fail(`${name}: command requires nonempty arguments`);
     const wasm = s.runtime === "wasm";
     if (s.wasm && !wasm) fail(`${name}: wasm requires runtime: wasm`);
     if (wasm) validateWasm(name, kind, s);
@@ -228,13 +250,6 @@ export function parseManifest(text: string): Manifest {
   }
   if (!keys(services).length) fail("At least one service is required");
   order(services);
-  for (const [name, s] of Object.entries(services))
-    if (s.runtime !== "wasm")
-      for (const dep of s.depends_on ?? [])
-        if (services[dep].runtime === "wasm")
-          fail(
-            `${name}: Apple container services cannot reach WASM service ${dep}; give both the same runtime`,
-          );
   return {
     version: 1,
     project: parsed.project,
@@ -251,7 +266,7 @@ function validateWasm(name: string, kind: string, s: Service) {
     [
       ["build", s.build],
       ["dockerfile", s.dockerfile],
-      ["command", s.command?.length],
+      ["command", !wasmCommand(s) && s.command?.length],
       ["working_dir", s.working_dir],
       ["init", s.init?.length],
       ["migrate", s.migrate?.length],
@@ -262,7 +277,9 @@ function validateWasm(name: string, kind: string, s: Service) {
   ).find(([, value]) => value);
   if (unsupported) fail(`${name}: ${unsupported[0]} is not supported with runtime: wasm`);
   if (!s.wasm?.component) fail(`${name}: runtime: wasm requires wasm.component`);
-  if (!s.port) fail(`${name}: runtime: wasm requires a port`);
+  if (!wasmCommand(s) && !s.port) fail(`${name}: runtime: wasm requires a port`);
+  if (wasmCommand(s) && (s.http || keys(s.endpoints).length))
+    fail(`${name}: wasm command mode does not support HTTP endpoints`);
   if (
     s.wasm.build &&
     (!s.wasm.build.length || s.wasm.build.some((arg) => !arg || arg.includes("\0")))
@@ -336,6 +353,8 @@ export function prepareManifest(root: string, manifest: Manifest): Manifest {
           continue;
         }
         const owner = endpoints[dep] ?? dep;
+        if (services[owner].workload === "job" || services[owner].workload === "worker")
+          fail(`${name}: ${owner} has no network address`);
         const seen = new Set<string>();
         const depends = (n: string): boolean => {
           if (seen.has(n)) return false;

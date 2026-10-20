@@ -29,6 +29,14 @@ export interface ServiceState {
   Runtime?: RuntimeKind;
   /** Declared port -> reserved loopback port, for host-process runtimes. */
   Ports?: Record<string, number>;
+  /** Gateway relay ports used by container clients of a host service. */
+  BridgePorts?: Record<string, number>;
+  job?: {
+    status: "running" | "succeeded" | "failed" | "interrupted";
+    exit_code?: number;
+    finished_at?: string;
+    error?: string;
+  };
   Volume: string;
   Port: number;
   HTTP: boolean;
@@ -44,6 +52,7 @@ export interface ServiceState {
   dependencies_changed?: boolean;
 }
 export interface Environment {
+  host_network?: { gateway: string; subnet: string };
   source?: { fingerprint: string; revision?: string };
   generation?: string;
   Identity: Identity;

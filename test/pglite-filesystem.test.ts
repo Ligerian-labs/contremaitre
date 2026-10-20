@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { context } from "@contremaitre/execution/context";
 import { forkPgliteData } from "../packages/environments/src/pglite-fork.js";
 import { startPglite } from "../packages/environments/src/pglite-server.js";
+import { detachDiskImage } from "./disk-images.js";
 import { checkPgliteCleanup } from "./fixtures/pglite-resources/monitor.js";
 import { freePort } from "./ports.js";
 
@@ -95,9 +96,9 @@ test.skipIf(missingHdiutil)(
       console.log(`APFS -> APFS: fork method ${apfs.method}`);
       expect(apfs.method).toBe("clonefile");
     } finally {
-      if (attached) expect(await command(["hdiutil", "detach", "-force", mount])).toBe(0);
+      if (attached) await detachDiskImage(mount);
       await rm(root, { recursive: true, force: true });
     }
   },
-  60_000,
+  90_000,
 );

@@ -1,11 +1,12 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { join, resolve } from "node:path";
 import {
   type Context,
   context,
   fail,
+  HubError,
   hash,
   keys,
   message,
@@ -30,6 +31,7 @@ import {
 } from "@contremaitre/projects/config";
 import {
   type Identity,
+  isJob,
   type Manifest,
   newIdentity,
   type Service,
@@ -45,6 +47,7 @@ import {
   packageInstaller,
 } from "./development.js";
 import { applyDriverReply, invokeDriver, snapshotDriver } from "./driver.js";
+import { HostBridges } from "./host-bridges.js";
 import {
   type Environment,
   httpEndpoints,
@@ -77,6 +80,20 @@ export interface TunnelHooks {
   sharing?(id: string): boolean;
 }
 export class Manager {
+  private readonly bridges = new HostBridges();
+  async stopNetworking() {
+    await this.bridges.close();
+  }
+  private async prepareBridges(env: Environment) {
+    for (const service of Object.values(env.Services))
+      if (this.backend(service).capabilities.network === "host" && service.Port)
+        await this.bridges.ensure(
+          env,
+          service,
+          () => this.state.Environments[env.Identity.ID]?.Services[service.Name],
+        );
+    this.save();
+  }
   private readonly pendingIdentities = new Map<string, Identity>();
   private readonly dependencyLocks = new EnvironmentLocks();
   private readonly unavailableCaches = new Set<string>();
@@ -471,6 +488,9 @@ export class Manager {
               Host: old?.Host ?? "",
               Runtime: serviceRuntime(s),
               Ports: old?.Ports,
+              BridgePorts: old?.BridgePorts,
+              job: isJob(s) ? old?.job : undefined,
+              deployment: old?.deployment,
               Volume: old?.Volume ?? "",
               Port: s.port || s.endpoints?.[keys(s.endpoints)[0]] || 0,
               HTTP: !!s.http || Object.keys(s.endpoints ?? {}).length > 0,
@@ -494,11 +514,12 @@ export class Manager {
             s.Spec.dev ||
             request.rebuild ||
             !e.CloneComplete ||
-            !old.Host ||
+            (!old.Host && !isJob(s.Spec)) ||
             this.missingDependencyHost(candidate, s) ||
             old.deployment !== this.deploymentFingerprint(candidate, s)
           )
             return false;
+          if (isJob(s.Spec)) return old.job?.status === "succeeded";
           return inspections.use(ctx.signal, async () => {
             const inspected = await this.backend(s).inspect(scopes[name], old.Container);
             return !!inspected?.Running && !!inspected.Host && inspected.Host === old.Host;
@@ -568,6 +589,19 @@ export class Manager {
       for (const name of changing) services[name].Host = "";
       e.Services = services;
       e.Root = root;
+      const mixed =
+        containers &&
+        names.some(
+          (name) =>
+            this.backend(services[name]).capabilities.network === "host" && services[name].Port,
+        );
+      if (mixed) {
+        if (!this.runtime.hostNetwork)
+          fail("Container runtime does not support host-service networking");
+        e.host_network = await this.runtime.hostNetwork(ctx, e.Network);
+      } else delete e.host_network;
+      await this.bridges.reconcile(e);
+      await this.prepareBridges(e);
       this.save();
       // Host source scans do not need live dependency addresses. Start them while
       // infrastructure and prerequisite applications are becoming ready.
@@ -615,7 +649,7 @@ export class Manager {
               }
               await attemptService(name, async () => {
                 if (retained.has(name)) {
-                  await this.waitReady(scope, s);
+                  if (!isJob(s.Spec)) await this.waitReady(scope, s);
                   progress(
                     scope,
                     "ready",
@@ -629,7 +663,12 @@ export class Manager {
                   });
                   s.deployment = this.deploymentFingerprint(e, s);
                   this.save();
-                  progress(scope, "ready", "ready", s.HTTP ? this.localURL(e, name) : undefined);
+                  progress(
+                    scope,
+                    "ready",
+                    isJob(s.Spec) ? "completed" : "ready",
+                    s.HTTP ? this.localURL(e, name) : undefined,
+                  );
                 }
               });
             })(),
@@ -671,7 +710,9 @@ export class Manager {
     const dependencies = new Set(s.Spec.depends_on);
     for (const name of dependencies)
       for (const dep of env.Services[name]?.Spec.depends_on ?? []) dependencies.add(dep);
-    return [...dependencies].some((name) => !env.Services[name]?.Host);
+    return [...dependencies].some(
+      (name) => !isJob(env.Services[name]?.Spec ?? {}) && !env.Services[name]?.Host,
+    );
   }
   private deploymentFingerprint(env: Environment, s: ServiceState): string {
     // Apple image tags change with every build, so the image identifies its artifact.
@@ -685,7 +726,9 @@ export class Manager {
         this.serviceEnv(env, s),
         (s.Spec.depends_on ?? []).map((name) => {
           const dep = env.Services[name];
-          return [name, dep?.Host, (dep && serviceAddress(dep, dep.Port)?.port) ?? dep?.Port];
+          return isJob(dep?.Spec ?? {})
+            ? [name, dep?.deployment]
+            : [name, dep?.Host, (dep && serviceAddress(dep, dep.Port)?.port) ?? dep?.Port];
         }),
         ...artifact,
       ]),
@@ -757,6 +800,7 @@ export class Manager {
       const service = env.Services[name];
       if (
         service.Spec.kind === "app" &&
+        !isJob(service.Spec) &&
         before.get(name) !== this.deploymentFingerprint(env, service)
       )
         pending.add(name);
@@ -777,7 +821,7 @@ export class Manager {
         name,
         (async () => {
           await Promise.all((service.Spec.depends_on ?? []).map((dep) => tasks.get(dep)));
-          if (service.Spec.kind !== "app") return;
+          if (service.Spec.kind !== "app" || isJob(service.Spec)) return;
           await slots.use(scope.signal, async () => {
             if (!pending.has(name) && before.get(name) === this.deploymentFingerprint(env, service))
               return;
@@ -857,7 +901,13 @@ export class Manager {
             const address =
               dep === s
                 ? { host: "127.0.0.1", port: s.Ports?.[String(declared)] ?? declared }
-                : dep && serviceAddress(dep, declared);
+                : dep &&
+                    this.backend(s).capabilities.network === "container" &&
+                    this.backend(dep).capabilities.network === "host"
+                  ? env.host_network && dep.BridgePorts?.[String(declared)]
+                    ? { host: env.host_network.gateway, port: dep.BridgePorts[String(declared)] }
+                    : undefined
+                  : dep && serviceAddress(dep, declared);
             if (!dep || !address) fail(`${s.Name}: ${name} is not ready; declare depends_on`);
             if (property === "host") return address.host;
             if (property === "port") return String(address.port);
@@ -967,6 +1017,7 @@ export class Manager {
       host = runtime.capabilities.network === "host";
     if (host) {
       await this.reservePorts(s);
+      await this.prepareBridges(env);
       phase(ctx, `loopback ports: ${JSON.stringify(s.Ports)}`);
     } else phase(ctx, `resources: ${s.Spec.cpus ?? 1} CPU, ${s.Spec.memory ?? "512M"} memory`);
     const envFile = privateEnv(join(this.store.home, "tmp"), this.serviceEnv(env, s));
@@ -1062,6 +1113,51 @@ export class Manager {
         }
       }
       phase(ctx, "starting");
+      if (isJob(s.Spec)) {
+        const directory = join(this.store.home, "data", env.Identity.ID, ".jobs");
+        mkdirSync(directory, { recursive: true, mode: 0o700 });
+        const log = join(directory, `${s.Name}.log`);
+        let tail = Buffer.alloc(0);
+        writeFileSync(log, tail, { mode: 0o600 });
+        const jobContext = {
+          ...ctx,
+          log: (data: string | Uint8Array) => {
+            ctx.log(data);
+            tail = Buffer.concat([tail, Buffer.from(data)]).subarray(-65536);
+            writeFileSync(log, tail);
+          },
+        };
+        s.job = { status: "running" };
+        s.ready = false;
+        s.Host = "";
+        this.save();
+        try {
+          await runtime.run(jobContext, {
+            ...spec,
+            task: true,
+            timeout: (s.Spec.timeout_seconds ?? 300) * 1000,
+          });
+          ctx.signal.throwIfAborted();
+          s.job = { status: "succeeded", exit_code: 0, finished_at: now() };
+          s.ready = true;
+          s.Initialized = true;
+          this.save();
+        } catch (error) {
+          s.job = {
+            status: ctx.signal.aborted ? "interrupted" : "failed",
+            exit_code: error instanceof HubError ? error.exitCode : undefined,
+            finished_at: now(),
+            error: message(error),
+          };
+          jobContext.log(`${message(error)}\n`);
+          this.save();
+          throw error;
+        } finally {
+          // A timed-out container CLI may leave its guest alive.
+          await runtime.remove(context(AbortSignal.timeout(15_000), ctx.log), s.Container);
+        }
+        return;
+      }
       await runtime.run(ctx, spec);
       await this.waitReady(ctx, s);
       phase(ctx, "ready");
@@ -1310,6 +1406,7 @@ export class Manager {
       this.save();
     }
     if (errors.length) fail(`Could not complete environment shutdown: ${env.Error}`);
+    await this.bridges.close(env.Identity.ID);
     if (deleteData) {
       if (env.driver) {
         if (env.driver_directory) rmSync(env.driver_directory, { recursive: true, force: true });
@@ -1390,6 +1487,16 @@ export class Manager {
     // failed deployments. A killed host CLI can leave a native guest running.
     for (const env of Object.values(this.state.Environments)) {
       for (const service of Object.values(env.Services)) {
+        if (service.job?.status === "running") {
+          try {
+            await this.backend(service).remove(ctx, service.Container);
+            service.job = { status: "interrupted", error: "Hub stopped during job execution" };
+            service.ready = false;
+          } catch (error) {
+            env.Status = "failed";
+            env.Error = `${service.Name}: interrupted job cleanup failed: ${message(error)}`;
+          }
+        }
         const cache = service.dependency_cache;
         if (!cache) continue;
         try {
@@ -1436,11 +1543,23 @@ export class Manager {
             env.Error = message(e);
           }
       } else if (env.Status === "running") {
+        const bridgeState = () =>
+          JSON.stringify([env.host_network, Object.values(env.Services).map((s) => s.BridgePorts)]);
+        const previousBridges = bridgeState();
         const restart = new Set<string>();
         const inspections = new Map<string, Inspection | undefined>();
         try {
+          if (env.host_network) {
+            if (!this.runtime.hostNetwork)
+              fail("Container runtime does not support host-service networking");
+            await this.runtime.network(ctx, env.Network);
+            env.host_network = await this.runtime.hostNetwork(ctx, env.Network);
+            await this.bridges.reconcile(env);
+            await this.prepareBridges(env);
+          }
           for (const s of Object.values(env.Services))
-            inspections.set(s.Name, await this.backend(s).inspect(ctx, s.Container));
+            if (!isJob(s.Spec))
+              inspections.set(s.Name, await this.backend(s).inspect(ctx, s.Container));
         } catch (error) {
           // An unavailable container system fails this environment, not the hub.
           for (const s of Object.values(env.Services)) s.Host = "";
@@ -1448,9 +1567,27 @@ export class Manager {
           env.Error = `Recovery could not inspect services: ${message(error)}`;
           continue;
         }
+        const bridgesMoved = previousBridges !== bridgeState();
         for (const s of Object.values(env.Services)) {
+          if (isJob(s.Spec)) {
+            if (s.job?.status !== "succeeded") {
+              env.Status = "failed";
+              env.Error = `${s.Name}: job has not completed successfully; deploy again`;
+            }
+            continue;
+          }
           const runtime = this.backend(s);
           const v = inspections.get(s.Name);
+          if (
+            bridgesMoved &&
+            runtime.capabilities.network === "container" &&
+            this.references(s).some(
+              (dep) =>
+                env.Services[dep] &&
+                this.backend(env.Services[dep]).capabilities.network === "host",
+            )
+          )
+            restart.add(s.Name);
           s.Host = v?.Running ? v.Host : "";
           if (!v?.Running && runtime.capabilities.network === "host") restart.add(s.Name);
           else if (!v?.Running) {
@@ -1480,14 +1617,14 @@ export class Manager {
         }
         // Host processes do not outlive their hub reliably; restart them in dependency order.
         // A restart can move a reserved port, so running services that reference a moved
-        // service restart with its new address. Validation keeps Apple services from
-        // referencing host services.
+        // service restart with its new address.
         const names = order(
           Object.fromEntries(Object.entries(env.Services).map(([name, s]) => [name, s.Spec])),
         );
         const moved = new Set<string>();
         for (const name of names) {
           const s = env.Services[name];
+          if (isJob(s.Spec)) continue;
           try {
             if (!restart.has(name) && !this.references(s).some((dep) => moved.has(dep))) continue;
             phase(ctx, `${env.Identity.Name}: restarting ${name}`);
@@ -1506,6 +1643,9 @@ export class Manager {
           }
         }
       } else if (["deploying", "stopping"].includes(env.Status)) {
+        for (const s of Object.values(env.Services))
+          if (s.job?.status === "running")
+            s.job = { status: "interrupted", error: "Hub stopped during job execution" };
         env.Status = "failed";
         env.Error = "Interrupted operation; inspect logs before redeploying";
       }

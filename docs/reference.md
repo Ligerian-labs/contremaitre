@@ -161,15 +161,19 @@ services:
       source: services/web
 ```
 
-A WASM app needs `wasm.component` and `port`. `wasm.build` is an optional command run on the host in `wasm.directory` (default: the project root) before each deployment; it must produce `wasm.component`. Both paths are relative to the project root. With `dev`, the runtime uses `dev.source` in place: there is no copy into a container and no `dev.install`; `dev.target` is optional. WASM apps don't accept `image`, `build`, `dockerfile`, `command`, `working_dir`, `init`, `migrate`, `ready`, `endpoints`, or `dev.install`. A WASM Postgres takes no `image`. Redis runs only on `apple`. Verification checks with `service:` run inside a container, so they can't select a WASM service.
+A WASM app needs `wasm.component`; HTTP apps also require `port`. Workers and jobs use command mode without a listening port. Set `wasm.mode: command` explicitly for other command services. `command` supplies guest arguments in command mode. `wasm.build` is an optional command run on the host in `wasm.directory` (default: the project root) before each deployment; it must produce `wasm.component`. Both paths are relative to the project root. With `dev`, the runtime uses `dev.source` in place: there is no copy into a container and no `dev.install`; `dev.target` is optional. Jobs do not support `dev`. WASM apps don't accept `image`, `build`, `dockerfile`, `working_dir`, `init`, `migrate`, `ready`, `endpoints`, or `dev.install`. A WASM Postgres takes no `image`. Redis runs only on `apple`. Verification checks with `service:` run inside a container, so they can't select a WASM service.
 
-WASM services listen on loopback. Contremaitre reserves a free `127.0.0.1` port for each declared port and keeps it across redeploys while it stays free. `{{db.host}}`, `{{db.port}}` and `{{db.url}}` resolve to that address, the hub routes HTTP to it, and `contremaitre proxy` connects to it, so the declared port still identifies the service.
+WASM services listen on loopback. Contremaitre reserves a free `127.0.0.1` port for each declared port and keeps it across redeploys while it stays free. Host clients' `{{db.host}}`, `{{db.port}}` and `{{db.url}}` resolve to that address. Container clients receive the relay address described below. The hub routes HTTP to loopback, and `contremaitre proxy` connects to it, so the declared port still identifies the service.
 
-In a mixed environment, a WASM service can depend on an Apple service: it reaches the container through its IP. An Apple service can't depend on a WASM service, because containers can't reach the host's loopback. Validation rejects that `depends_on`. Give both services the same runtime instead.
+In a mixed environment, a WASM service reaches Apple services through their container IPs. Apple services reach WASM dependencies through TCP relays on their environment's gateway. The relays accept connections from that environment's container subnet and forward to loopback. Address references resolve for the caller's runtime. The hub owns the relays and recreates them during recovery; existing connections must reconnect after a hub restart.
 
 The first deployment records each service's runtime. Contremaitre never converts a service between runtimes. A deployment that changes a recorded runtime fails before it stops anything. To move a service, remove it from the manifest and deploy, or delete the environment with `contremaitre down --delete-data`; then deploy with the new runtime. Forking Postgres from main requires the same runtime for that service in both environments.
 
 The [WASM app runtime](wasm-backend.md) is available. WASM Postgres runs on [PGlite](wasm-postgres.md).
+
+### Workload lifecycle
+
+Application services can set `workload: service`, `worker` or `job`, independently of `runtime`. Existing services default to `service`. Workers run in the background without a listening port. Jobs run to successful completion before dependent services start, with `timeout_seconds` defaulting to 300. Successful unchanged jobs are retained; failures block dependents. Both Apple containers and Wasmtime support jobs and workers. Wasm jobs and workers select command mode automatically and accept guest arguments in `command`. See [workload configuration and recovery](workloads.md).
 
 Contremaitre gives the shared Apple builder up to 4 CPUs and 8 GB RAM, capped at
 the host CPU count and half its total RAM. Larger existing allocations are
