@@ -1,18 +1,36 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type OnboardingDependencies, onboard } from "@contremaitre/cli/saas";
 import { installProvider } from "@contremaitre/cli/saas-install";
-import { providerConfig, saasEndpoint } from "@contremaitre/environments/tunnel-provider";
+import {
+  managedEndpoint,
+  managedProvider,
+  providerConfig,
+  saasEndpoint,
+} from "@contremaitre/environments/tunnel-provider";
+import { withTrust } from "../apps/cli/src/saas-client.js";
+import { isCredentialAccount } from "../apps/cli/src/saas-credentials.js";
 
 const directories: string[] = [];
 afterEach(() => {
   for (const directory of directories.splice(0))
     rmSync(directory, { recursive: true, force: true });
 });
-function fixture() {
+function fixture(endpoint = saasEndpoint) {
+  let origin = endpoint;
+  const trusted: (string | undefined)[] = [];
+  const installs: string[] = [];
   const home = mkdtempSync(join(tmpdir(), "cm-saas-"));
   directories.push(home);
   const events: string[] = [];
@@ -53,7 +71,8 @@ function fixture() {
       },
     },
     fetcher: async (url, init) => {
-      expect(url.startsWith(saasEndpoint)).toBe(true);
+      expect(new URL(url).origin).toBe(origin);
+      trusted.push(init.tls?.ca as string | undefined);
       expect(init.redirect).toBe("error");
       const path = new URL(url).pathname;
       events.push(path);
@@ -63,7 +82,7 @@ function fixture() {
           return Response.json({
             device_code: "device-secret",
             user_code: "ABCD-EFGH",
-            verification_uri: `${saasEndpoint}/device`,
+            verification_uri: `${origin}/device`,
             expires_in: 600,
             interval: 5,
           });
@@ -90,7 +109,7 @@ function fixture() {
             workspace_id: workspace,
             can_share: canShare,
             reason: canShare ? null : "subscription_required",
-            subscription_url: `${saasEndpoint}/billing?workspace=${workspace}`,
+            subscription_url: `${origin}/billing?workspace=${workspace}`,
           });
         case "/v1/cli/session":
           return Response.json(
@@ -101,8 +120,9 @@ function fixture() {
           throw Error(`Unexpected path ${path}`);
       }
     },
-    install: async () => {
+    install: async (_home, _signal, _fetcher, endpoint = saasEndpoint) => {
       events.push("install");
+      installs.push(endpoint);
       return {
         executable: "/managed/provider",
         transport: "/managed/transport",
@@ -128,6 +148,11 @@ function fixture() {
     workspace: (value: string) => {
       workspace = value;
     },
+    endpoint: (value: string) => {
+      origin = value;
+    },
+    trusted,
+    installs,
   };
 }
 const signal = () => new AbortController().signal;
@@ -452,3 +477,356 @@ test("complete verification links stay on the authorization origin and path", as
     }
   }
 });
+
+const custom = "https://localhost:8443";
+const customDirectory = (home: string) => join(home, "saas", "endpoints", "localhost_8443");
+
+test("the default endpoint keeps its provider ID, files, Keychain account and saved state", async () => {
+  const f = fixture();
+  expect(await onboard(f.home, signal(), {}, f.deps)).toBe("saas:team-b");
+  expect(JSON.parse(readFileSync(join(f.home, "saas-login.json"), "utf8"))).toEqual({
+    workspace_id: "team-b",
+  });
+  expect([...f.credentials.keys()]).toEqual([`${saasEndpoint}#team-b`]);
+  const descriptor = JSON.parse(
+    readFileSync(join(f.home, "saas", "providers", "team-b.json"), "utf8"),
+  );
+  expect(descriptor.providers["saas:team-b"].config.state_directory).toBe(
+    join(f.home, "saas", "state", "team-b"),
+  );
+  expect(existsSync(join(f.home, "saas", "endpoints"))).toBe(false);
+  expect(f.installs).toEqual([saasEndpoint]);
+  expect(f.trusted.every((ca) => ca === undefined)).toBe(true);
+
+  // State written by the previous CLI, which had no endpoint field anywhere, still works.
+  const legacy = fixture();
+  const config = {
+    endpoint: saasEndpoint,
+    tenant_id: "team-a",
+    credential_account: `${saasEndpoint}#team-a`,
+    foreground_sessions: true,
+    state_directory: join(legacy.home, "saas", "state", "team-a"),
+  };
+  const settings = JSON.stringify({
+    default: "saas:team-a",
+    providers: { "saas:team-a": { executable: "/managed/provider", config } },
+  });
+  mkdirSync(join(legacy.home, "saas", "providers"), { recursive: true });
+  writeFileSync(join(legacy.home, "saas", "providers", "team-a.json"), settings);
+  writeFileSync(join(legacy.home, "saas-provider.json"), settings);
+  writeFileSync(join(legacy.home, "saas-login.json"), JSON.stringify({ workspace_id: "team-a" }));
+  legacy.credentials.set(`${saasEndpoint}#team-a`, { device_id: "d", credential: "secret-team-a" });
+  legacy.workspace("team-a");
+  legacy.deps.ui.interactive = false;
+  expect(await onboard(legacy.home, signal(), { providers: ["saas:team-a"] }, legacy.deps)).toBe(
+    "saas:team-a",
+  );
+  expect(await onboard(legacy.home, signal(), {}, legacy.deps)).toBe("saas:team-a");
+  expect(legacy.events).not.toContain("/oauth/device/code");
+});
+
+test("a custom endpoint carries through login, Keychain, install, descriptor and later commands", async () => {
+  const f = fixture(custom);
+  const name = String(await onboard(f.home, signal(), { endpoint: `${custom}/` }, f.deps));
+  expect(name).toBe("saas:team-b@localhost:8443");
+  expect(f.events).toContain(`note:Sign in to ${custom} and authorize this computer.`);
+  expect(f.events).toContain(`open:${custom}/device?user_code=ABCD-EFGH`);
+  expect([...f.credentials.keys()]).toEqual([`${custom}#team-b`]);
+  expect(f.installs).toEqual([custom]);
+  expect(JSON.parse(readFileSync(join(f.home, "saas-login.json"), "utf8"))).toEqual({
+    workspace_id: "team-b",
+    endpoint: custom,
+  });
+  expect(existsSync(join(customDirectory(f.home), "providers", "team-b.json"))).toBe(true);
+  expect(existsSync(join(f.home, "saas", "providers"))).toBe(false);
+  expect(providerConfig(f.home, name)?.config).toMatchObject({
+    endpoint: custom,
+    tenant_id: "team-b",
+    credential_account: `${custom}#team-b`,
+    state_directory: join(customDirectory(f.home), "state", "team-b"),
+  });
+  expect(providerConfig(f.home)?.name).toBe(name);
+
+  // The saved endpoint is reused without the flag, and reservations stay pinned to it.
+  f.events.length = 0;
+  f.deps.ui.interactive = false;
+  expect(await onboard(f.home, signal(), {}, f.deps)).toBe(name);
+  expect(await onboard(f.home, signal(), { providers: [name] }, f.deps)).toBe(name);
+  expect(f.events).toEqual([
+    "/v1/cli/session",
+    "/v1/cli/access",
+    "install",
+    "/v1/cli/session",
+    "/v1/cli/access",
+    "install",
+  ]);
+  await expect(
+    onboard(f.home, signal(), { providers: [name], endpoint: saasEndpoint }, f.deps),
+  ).rejects.toThrow("another SaaS endpoint");
+});
+
+test("two endpoints never share credentials, workspaces or descriptors", async () => {
+  const f = fixture();
+  expect(await onboard(f.home, signal(), {}, f.deps)).toBe("saas:team-b");
+  f.endpoint(custom);
+  f.tokens([{ access_token: "enrollment-secret" }]);
+  f.events.length = 0;
+  expect(await onboard(f.home, signal(), { endpoint: custom }, f.deps)).toBe(
+    "saas:team-b@localhost:8443",
+  );
+  // The default endpoint's saved workspace and credential are not offered to another service.
+  expect(f.events).toContain("/oauth/device/code");
+  expect(f.events).toContain("choose");
+  expect([...f.credentials.keys()].sort()).toEqual([`${saasEndpoint}#team-b`, `${custom}#team-b`]);
+  expect(providerConfig(f.home, "saas:team-b")?.config).toMatchObject({ endpoint: saasEndpoint });
+  expect(providerConfig(f.home, "saas:team-b@localhost:8443")?.config).toMatchObject({
+    endpoint: custom,
+  });
+  await expect(
+    onboard(f.home, signal(), { providers: ["saas:team-b"], endpoint: custom }, f.deps),
+  ).rejects.toThrow("another SaaS endpoint");
+  f.endpoint(saasEndpoint);
+  f.events.length = 0;
+  f.deps.ui.interactive = false;
+  // The saved selection now names the custom endpoint, so going back names the workspace too;
+  // the default endpoint's Keychain credential is then reused without browser approval.
+  expect(
+    await onboard(f.home, signal(), { endpoint: saasEndpoint, workspace: "team-b" }, f.deps),
+  ).toBe("saas:team-b");
+  expect(f.events).not.toContain("/oauth/device/code");
+  expect(JSON.parse(readFileSync(join(f.home, "saas-login.json"), "utf8"))).toEqual({
+    workspace_id: "team-b",
+  });
+});
+
+test("endpoints are strict HTTPS origins; an explicit port is allowed", () => {
+  expect(managedEndpoint("https://localhost:8443")).toBe(custom);
+  expect(managedEndpoint("HTTPS://Tunnels.Antasphere.com/")).toBe("https://tunnels.antasphere.com");
+  expect(managedEndpoint("https://tunnels.antasphere.com:443")).toBe(
+    "https://tunnels.antasphere.com",
+  );
+  for (const value of [
+    "http://tunnels.antasphere.com",
+    "https://user:pass@tunnels.antasphere.com",
+    "https://user@tunnels.antasphere.com",
+    "https://tunnels.antasphere.com/api",
+    "https://tunnels.antasphere.com?x=1",
+    "https://tunnels.antasphere.com?",
+    "https://tunnels.antasphere.com#",
+    "https://tunnels.antasphere.com#frag",
+    "https://tunnels.antasphere.com\\evil",
+    "https://localhost:0",
+    "https://localhost:99999",
+    "https://[::1]:8443",
+    "tunnels.antasphere.com",
+    "",
+  ])
+    expect(() => managedEndpoint(value)).toThrow("Invalid SaaS endpoint");
+  expect(managedProvider("saas:team-b@localhost:8443")).toEqual({
+    workspace: "team-b",
+    endpoint: custom,
+  });
+  expect(managedProvider("saas:team-b")).toEqual({ workspace: "team-b", endpoint: saasEndpoint });
+  for (const id of [
+    "saas:team-b@contremaitre.ligerianlabs.fr",
+    "saas:team-b@tunnels.antasphere.com:443",
+    "saas:team-b@Tunnels.antasphere.com",
+    "saas:team-b@localhost:0",
+    "saas:team/b",
+    "saas:../team-b",
+  ])
+    expect(() => managedProvider(id)).toThrow("Invalid SaaS provider ID");
+  expect(isCredentialAccount(`${custom}#team-b`)).toBe(true);
+  expect(isCredentialAccount(`${saasEndpoint}#team-b`)).toBe(true);
+  for (const account of [
+    `${custom}/#team-b`,
+    "http://localhost:8443#team-b",
+    "https://user@localhost#team-b",
+    `${custom}#team b`,
+    `${custom}`,
+  ])
+    expect(isCredentialAccount(account)).toBe(false);
+});
+
+test("a descriptor that disagrees with its provider ID is refused", async () => {
+  const f = fixture(custom);
+  const name = String(await onboard(f.home, signal(), { endpoint: custom }, f.deps));
+  const path = join(customDirectory(f.home), "providers", "team-b.json");
+  const original = readFileSync(path, "utf8");
+  for (const change of [
+    { endpoint: saasEndpoint },
+    { credential_account: `${saasEndpoint}#team-b` },
+    { tenant_id: "team-a" },
+  ]) {
+    const settings = JSON.parse(original);
+    Object.assign(settings.providers[name].config, change);
+    writeFileSync(path, JSON.stringify(settings));
+    expect(() => providerConfig(f.home, name)).toThrow("does not match its SaaS endpoint");
+    await expect(onboard(f.home, signal(), { providers: [name] }, f.deps)).rejects.toThrow(
+      "does not match",
+    );
+  }
+  // The selected default is held to the same rule.
+  const settings = JSON.parse(original);
+  settings.providers[name].config.endpoint = saasEndpoint;
+  writeFileSync(join(f.home, "saas-provider.json"), JSON.stringify(settings));
+  expect(() => providerConfig(f.home)).toThrow("does not match its SaaS endpoint");
+});
+
+test("custom endpoint installs stay on that origin and keep a separate manifest cache", async () => {
+  const f = fixture();
+  const digest = (value: string) => createHash("sha256").update(value).digest("hex");
+  const artifacts = Object.fromEntries(
+    ["provider", "transport", "frpc", "ca"].map((name) => [
+      name,
+      { url: `/downloads/${name}`, sha256: digest(name) },
+    ]),
+  );
+  const manifest = {
+    version: 1,
+    protocol: 2,
+    credential_accounts: true,
+    platform: "darwin-arm64",
+    artifacts,
+  };
+  const downloads: string[] = [];
+  const fetcher: OnboardingDependencies["fetcher"] = async (url, init) => {
+    expect(init.redirect).toBe("error");
+    downloads.push(url);
+    return url.includes(".well-known")
+      ? Response.json(manifest)
+      : new Response(url.split("/").at(-1));
+  };
+  await installProvider(f.home, signal(), fetcher, custom);
+  expect(downloads.every((url) => url.startsWith(`${custom}/`))).toBe(true);
+  expect(downloads).toHaveLength(5);
+  expect(existsSync(join(customDirectory(f.home), "manifest.json"))).toBe(true);
+  expect(existsSync(join(f.home, "saas", "manifest.json"))).toBe(false);
+  rmSync(join(customDirectory(f.home), "manifest.json"));
+  for (const foreign of [`${saasEndpoint}/downloads/provider`, "https://localhost:9443/provider"]) {
+    artifacts.provider.url = foreign;
+    downloads.length = 0;
+    await expect(installProvider(f.home, signal(), fetcher, custom)).rejects.toThrow(
+      "configured HTTPS origin",
+    );
+    expect(downloads).toEqual([`${custom}/.well-known/contremaitre-provider/darwin-arm64.json`]);
+    expect(existsSync(join(customDirectory(f.home), "manifest.json"))).toBe(false);
+  }
+});
+
+test("a private CA is explicit, scoped to its custom endpoint and saved beside it", async () => {
+  const f = fixture(custom);
+  const pem = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n";
+  const file = join(f.home, "private-ca.pem");
+  writeFileSync(file, pem);
+  await expect(onboard(f.home, signal(), { caFile: file }, f.deps)).rejects.toThrow(
+    "only to a custom --endpoint",
+  );
+  writeFileSync(join(f.home, "not-a-ca.pem"), "hello");
+  await expect(
+    onboard(f.home, signal(), { endpoint: custom, caFile: join(f.home, "not-a-ca.pem") }, f.deps),
+  ).rejects.toThrow("PEM-encoded");
+  await expect(
+    onboard(f.home, signal(), { endpoint: custom, caFile: join(f.home, "missing.pem") }, f.deps),
+  ).rejects.toThrow("Cannot read --ca-file");
+  expect(f.events).toEqual([]);
+  await onboard(f.home, signal(), { endpoint: custom, caFile: file }, f.deps);
+  expect(f.trusted.length).toBeGreaterThan(0);
+  expect(f.trusted.every((ca) => ca === pem)).toBe(true);
+  const saved = join(customDirectory(f.home), "ca.pem");
+  expect(readFileSync(saved, "utf8")).toBe(pem);
+  expect(statSync(saved).mode & 0o777).toBe(0o600);
+  // Later commands trust the saved roots without repeating the flag.
+  rmSync(file);
+  f.trusted.length = 0;
+  await onboard(f.home, signal(), {}, f.deps);
+  expect(f.trusted.length).toBeGreaterThan(0);
+  expect(f.trusted.every((ca) => ca === pem)).toBe(true);
+});
+
+const openssl = Bun.which("openssl");
+test.skipIf(!openssl)(
+  "withTrust verifies a private CA instead of disabling verification",
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cm-saas-ca-"));
+    directories.push(dir);
+    const sh = (args: string[]) => {
+      const result = Bun.spawnSync([openssl as string, ...args], { cwd: dir, stderr: "pipe" });
+      if (result.exitCode !== 0) throw Error(result.stderr.toString());
+    };
+    sh([
+      "req",
+      "-x509",
+      "-newkey",
+      "rsa:2048",
+      "-nodes",
+      "-keyout",
+      "ca.key",
+      "-out",
+      "ca.pem",
+      "-days",
+      "1",
+      "-subj",
+      "/CN=Contremaitre test CA",
+      "-addext",
+      "basicConstraints=critical,CA:TRUE",
+      "-addext",
+      "keyUsage=critical,keyCertSign",
+    ]);
+    sh([
+      "req",
+      "-newkey",
+      "rsa:2048",
+      "-nodes",
+      "-keyout",
+      "server.key",
+      "-out",
+      "server.csr",
+      "-subj",
+      "/CN=localhost",
+    ]);
+    writeFileSync(
+      join(dir, "server.ext"),
+      "subjectAltName=DNS:localhost\nbasicConstraints=CA:FALSE\nextendedKeyUsage=serverAuth\n",
+    );
+    sh([
+      "x509",
+      "-req",
+      "-in",
+      "server.csr",
+      "-CA",
+      "ca.pem",
+      "-CAkey",
+      "ca.key",
+      "-CAcreateserial",
+      "-out",
+      "server.pem",
+      "-days",
+      "1",
+      "-extfile",
+      "server.ext",
+    ]);
+    const server = Bun.serve({
+      port: 0,
+      hostname: "localhost",
+      tls: {
+        cert: readFileSync(join(dir, "server.pem"), "utf8"),
+        key: readFileSync(join(dir, "server.key"), "utf8"),
+      },
+      fetch: () => Response.json({ ok: true }),
+    });
+    try {
+      const url = `https://localhost:${server.port}/v1/cli/session`;
+      await expect(fetch(url)).rejects.toThrow();
+      await expect(
+        withTrust(fetch, readFileSync(join(dir, "server.pem"), "utf8"))(url, {}),
+      ).rejects.toThrow();
+      const response = await withTrust(fetch, readFileSync(join(dir, "ca.pem"), "utf8"))(url, {
+        redirect: "error",
+      });
+      expect(await response.json()).toEqual({ ok: true });
+    } finally {
+      server.stop(true);
+    }
+  },
+);

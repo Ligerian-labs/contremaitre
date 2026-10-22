@@ -1,4 +1,4 @@
-Parser keys: status project listBranch workspace noAI agent home env branch port http httpsPort publicPort json deleteData main rebuild detach failure follow compose offset global profile run check updateCheck timeout
+Parser keys: status project listBranch workspace endpoint caFile noAI agent home env branch port http httpsPort publicPort json deleteData main rebuild detach failure follow compose offset global profile run check updateCheck timeout
 
 Defaults | framework help (names, aliases, types, choices and descriptions)
 agent: "" | --agent text A user-defined piece of text. Coding agent: codex, claude, pi or opencode. Overrides saved selection. This setting is optional.
@@ -26,6 +26,8 @@ project: "" | --project text A user-defined piece of text. Filter by exact proje
 listBranch: "" | --branch text A user-defined piece of text. Filter by exact branch or bookmark name across projects. This setting is optional.
 deleteData: false | --delete-data A true or false value. Also delete retained environment data. Default: false. This setting is optional. This setting is optional.
 workspace: "" | --workspace text A user-defined piece of text. SaaS workspace ID. Overrides the saved selection. This setting is optional.
+endpoint: "" | --endpoint text A user-defined piece of text. Managed tunnel service HTTPS origin; a port is allowed. Saved with the login. Default: https://contremaitre.ligerianlabs.fr. This setting is optional.
+caFile: "" | --ca-file text A user-defined piece of text. PEM CA certificates to trust for a custom --endpoint instead of the system roots. Saved for that endpoint. This setting is optional.
 updateCheck: false | --check A true or false value. Check the latest release without downloading or restarting the hub. This setting is optional. This setting is optional.
 failure: false | --failure A true or false value. Print logs from failed services in the latest deployment; empty after success. This setting is optional. This setting is optional.
 follow: false | ( -f, --follow ) A true or false value. Follow deployment output until completion. Default: print and exit. This setting is optional. This setting is optional.
@@ -48,7 +50,7 @@ prune: home json deleteData
 logs: home env branch
 exec: home env branch
 proxy: home env branch json
-tunnel: workspace home env branch json
+tunnel: workspace endpoint caFile home env branch json
 operations: home json
 attach: home json offset
 cancel: home json

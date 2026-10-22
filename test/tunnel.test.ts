@@ -1,10 +1,11 @@
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { call } from "@contremaitre/cli/client";
+import { onboard } from "@contremaitre/cli/saas";
 import { Manager } from "@contremaitre/environments/manager";
 import { Store } from "@contremaitre/environments/store";
 import { Tunnels } from "@contremaitre/environments/tunnel";
@@ -547,5 +548,95 @@ test("hub stop reports provider failures after stopping every local service", as
     );
   } finally {
     await f.close();
+  }
+});
+
+test("the hub drives the adapter with the endpoint the CLI saved for a custom managed provider", async () => {
+  const f = await fixture();
+  try {
+    const endpoint = "https://localhost:8443";
+    const fake = JSON.parse(readFileSync(join(f.home, "tunnels.json"), "utf8")).providers.fake;
+    unlinkSync(join(f.home, "tunnels.json"));
+    const urls: string[] = [];
+    const provider = String(
+      await onboard(
+        f.home,
+        AbortSignal.timeout(10_000),
+        { workspace: "team-b", endpoint },
+        {
+          ui: { interactive: false, note() {}, open: async () => {}, choose: async () => "" },
+          credentials: {
+            get: async (account) =>
+              account === `${endpoint}#team-b` ? { device_id: "d", credential: "c" } : undefined,
+            set: async () => {},
+          },
+          fetcher: async (url) => {
+            urls.push(url);
+            return url.endsWith("/v1/cli/session")
+              ? Response.json({
+                  account_id: "user-a",
+                  workspace_id: "team-b",
+                  workspaces: [{ id: "team-b", name: "Team" }],
+                })
+              : Response.json({
+                  workspace_id: "team-b",
+                  can_share: true,
+                  reason: null,
+                  subscription_url: `${endpoint}/billing?workspace=team-b`,
+                });
+          },
+          // The fake adapter's own settings ride along with the managed transport fields.
+          install: async () => ({
+            executable: fake.executable,
+            transport: "/managed/transport",
+            frpc: "/managed/frpc",
+            ca_file: "/managed/ca",
+            ...fake.config,
+          }),
+        },
+      ),
+    );
+    expect(provider).toBe("saas:team-b@localhost:8443");
+    expect(urls).toEqual([`${endpoint}/v1/cli/session`, `${endpoint}/v1/cli/access`]);
+    const id = randomUUID();
+    await call(context(), f.home, "tunnel", { env: f.env.Identity.ID, session_id: id, provider });
+    expect(f.env.tunnels?.web.Provider).toBe(provider);
+    const reserve = f.events().find((event) => event.op === "reserve");
+    expect(reserve.config).toMatchObject({
+      endpoint,
+      tenant_id: "team-b",
+      credential_account: `${endpoint}#team-b`,
+      state_directory: join(f.home, "saas", "endpoints", "localhost_8443", "state", "team-b"),
+    });
+    await f.sessions.end(f.env, id);
+    // A descriptor rewritten to another endpoint no longer resolves for the reserved ID.
+    const path = join(f.home, "saas", "endpoints", "localhost_8443", "providers", "team-b.json");
+    const settings = JSON.parse(readFileSync(path, "utf8"));
+    settings.providers[provider].config.endpoint = "https://contremaitre.ligerianlabs.fr";
+    writeFileSync(path, JSON.stringify(settings));
+    const calls = f.events().length;
+    await expect(f.sessions.open(context(), f.env, randomUUID(), provider)).rejects.toThrow(
+      "does not match its SaaS endpoint",
+    );
+    expect(f.events()).toHaveLength(calls);
+  } finally {
+    await f.close();
+  }
+});
+
+test("tunnel login validates --endpoint and --ca-file before any network access", async () => {
+  const home = mkdtempSync(join(tmpdir(), "cm-endpoint-"));
+  try {
+    const plain = await tunnelCLI(home, ["login", "--endpoint", "http://tunnels.example.com"]);
+    expect(plain.code).not.toBe(0);
+    expect(plain.stderr).toContain("Invalid SaaS endpoint");
+    const path = await tunnelCLI(home, ["login", "--endpoint", "https://tunnels.example.com/x"]);
+    expect(path.stderr).toContain("Invalid SaaS endpoint");
+    const ca = await tunnelCLI(home, ["login", "--ca-file", join(home, "ca.pem")]);
+    expect(ca.code).not.toBe(0);
+    expect(ca.stderr).toContain("--ca-file applies only to a custom --endpoint");
+    expect(existsSync(join(home, "saas-login.json"))).toBe(false);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
   }
 });

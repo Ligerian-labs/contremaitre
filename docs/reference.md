@@ -320,6 +320,8 @@ Redeploy preserves data and does not recopy main. Upload directory names are sco
 contremaitre tunnel
 contremaitre tunnel login
 contremaitre tunnel --workspace TEAM_ID
+contremaitre tunnel login --endpoint https://tunnels.example.com
+contremaitre tunnel login --endpoint https://localhost:8443 --ca-file ./private-ca.pem
 contremaitre tunnel status
 contremaitre tunnel logs
 contremaitre tunnel logs web --json
@@ -327,7 +329,7 @@ contremaitre tunnel stop
 contremaitre tunnel release web
 ```
 
-Without a custom provider, `tunnel` uses `https://contremaitre.ligerianlabs.fr`. It opens browser authorization when needed, asks for a workspace when none is selected, saves the device credential in macOS Keychain and prepares the provider automatically. Later commands reuse that login. `tunnel login` signs in without starting a preview. `--workspace ID` selects a workspace for new reservations. Device links fill in the authorization code. Before creating tunnels, the CLI checks subscription access and opens the selected workspace's billing page if a subscription is required. No provider is installed or tunnel reserved in that case. See [SaaS onboarding](saas-onboarding.md) for the integration contract.
+Without a custom provider, `tunnel` uses `https://contremaitre.ligerianlabs.fr`. It opens browser authorization when needed, asks for a workspace when none is selected, saves the device credential in macOS Keychain and prepares the provider automatically. Later commands reuse that login. `tunnel login` signs in without starting a preview. `--workspace ID` selects a workspace for new reservations. `--endpoint URL` selects another service implementing the same contract; it must be a bare HTTPS origin, optionally with a port. The CLI saves it with the login, so later `tunnel` commands use it until another `--endpoint` is given; pass `--endpoint https://contremaitre.ligerianlabs.fr` to return to the default. Existing reservations stay on the endpoint that created them. For an endpoint signed by a private CA, `--ca-file PATH` trusts those PEM certificates instead of the system roots for that endpoint only, and is saved beside it. Device links fill in the authorization code. Before creating tunnels, the CLI checks subscription access and opens the selected workspace's billing page if a subscription is required. No provider is installed or tunnel reserved in that case. See [SaaS onboarding](saas-onboarding.md) for the integration contract.
 
 Use `contremaitre tunnel logs [SERVICE]` after a connector failure or while sharing to read the latest connector's stderr. Without a service, it prints logs for all HTTP services. It does not authenticate, restart services, or start sharing. `--env`, `--branch`, and `--home` select the environment and hub data directory as usual. The command prints the last 64 KiB per service and the full file path. `--json` returns a service map with `path`, `exists`, `output`, and `truncated`. Missing logs and empty logs are reported separately. Files remain after session cleanup; the next connector attempt for that service replaces its file. Connector stderr capture is capped at 10 MiB per attempt. These logs contain provider diagnostics, not application request logs. Providers must omit credentials from stderr.
 

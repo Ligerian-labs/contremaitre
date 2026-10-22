@@ -12,6 +12,9 @@ export interface Credentials {
   get(account: string, signal: AbortSignal): Promise<Credential | undefined>;
   set(account: string, value: Credential, signal: AbortSignal): Promise<void>;
 }
+/** `<endpoint origin>#<workspace>`; the origin may carry an explicit port. */
+export const isCredentialAccount = (account: string) =>
+  /^https:\/\/[a-z0-9.-]+(?::\d{1,5})?#[A-Za-z0-9_-]{1,128}$/.test(account);
 export function keychain(): Credentials {
   const command = async (args: string[], signal: AbortSignal, stdin?: Buffer) => {
     if (process.platform !== "darwin") fail("SaaS login currently requires macOS Keychain");
@@ -48,8 +51,7 @@ export function keychain(): Credentials {
       }
     },
     async set(account, value, signal) {
-      if (!/^https:\/\/[a-z0-9.-]+#[A-Za-z0-9_-]+$/.test(account))
-        fail("Invalid credential account");
+      if (!isCredentialAccount(account)) fail("Invalid credential account");
       const encoded = Buffer.from(JSON.stringify(value)).toString("base64");
       try {
         // Use stdin so neither process arguments nor process journals contain the secret.

@@ -65,7 +65,7 @@ export function makeRoot(passthrough: readonly string[] = []) {
             const provider = await onboard(
               home,
               signal,
-              { workspace: o.workspace, login: true },
+              { workspace: o.workspace, endpoint: o.endpoint, caFile: o.caFile, login: true },
               { ui: terminalOnboarding(o.json) },
             );
             output(o.json, { provider, authenticated: true });
@@ -73,12 +73,11 @@ export function makeRoot(passthrough: readonly string[] = []) {
         if (action === "tunnel" && !o.args.length && !passthrough.length)
           return Effect.promise(() => import("./tunnel.js")).pipe(
             Effect.flatMap(({ tunnel }) =>
-              tunnel(
-                home,
-                { root: projectRoot(), branch: o.branch, env: o.env },
-                o.json,
-                o.workspace,
-              ),
+              tunnel(home, { root: projectRoot(), branch: o.branch, env: o.env }, o.json, {
+                workspace: o.workspace,
+                endpoint: o.endpoint,
+                caFile: o.caFile,
+              }),
             ),
           );
         if (name === "serve")

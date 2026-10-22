@@ -34,6 +34,8 @@ export function optionsFor(command: Pick<CommandHelp, "flags">) {
     project: option("project", flags.project),
     listBranch: option("listBranch", flags.listBranch),
     workspace: option("workspace", flags.workspace),
+    endpoint: option("endpoint", flags.endpoint),
+    caFile: option("caFile", flags.caFile),
     noAI: option("noAI", flags.noAI),
     agent: option("agent", flags.agent),
     home: option("home", flags.home),

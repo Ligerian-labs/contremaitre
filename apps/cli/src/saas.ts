@@ -1,8 +1,14 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { hostname } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import {
+  credentialAccount,
+  endpointDirectory,
+  managedDescriptor,
+  managedEndpoint,
+  managedProvider,
+  managedProviderId,
   providerConfig,
   providerSettings,
   saasEndpoint,
@@ -12,7 +18,14 @@ import { atomicWrite } from "@contremaitre/execution/files";
 import { run } from "@contremaitre/execution/process";
 import { sleep } from "@contremaitre/execution/sleep";
 import { Schema } from "effect";
-import { AuthenticationRequired, api, type Fetch, read, sameOrigin } from "./saas-client.js";
+import {
+  AuthenticationRequired,
+  api,
+  type Fetch,
+  read,
+  sameOrigin,
+  withTrust,
+} from "./saas-client.js";
 import { type Credentials, credentialSchema, keychain } from "./saas-credentials.js";
 import { installProvider } from "./saas-install.js";
 
@@ -39,11 +52,8 @@ const tokenSchema = Schema.Struct({
   access_token: Schema.optional(Schema.NonEmptyString),
   error: Schema.optional(Schema.String),
 });
-const managedConfigSchema = Schema.Struct({
-  endpoint: Schema.Literal(saasEndpoint),
-  tenant_id: id,
-});
-function savedWorkspace(home: string) {
+const loginSchema = Schema.Struct({ workspace_id: id, endpoint: Schema.optional(Schema.String) });
+function savedLogin(home: string) {
   let body: string;
   try {
     body = readFileSync(join(home, "saas-login.json"), "utf8");
@@ -52,11 +62,28 @@ function savedWorkspace(home: string) {
     return fail("Cannot read saas-login.json");
   }
   try {
-    return read(Schema.Struct({ workspace_id: id }), JSON.parse(body)).workspace_id;
+    const login = read(loginSchema, JSON.parse(body));
+    return {
+      workspace: login.workspace_id,
+      endpoint: login.endpoint === undefined ? saasEndpoint : managedEndpoint(login.endpoint),
+    };
   } catch {
     return fail("Invalid saas-login.json; remove it and run contremaitre tunnel login");
   }
 }
+function readTrust(path: string) {
+  let pem: string;
+  try {
+    if (statSync(path).size > 1 << 20) throw Error();
+    pem = readFileSync(path, "utf8");
+  } catch {
+    return fail(`Cannot read --ca-file ${path}`);
+  }
+  if (!pem.includes("-----BEGIN CERTIFICATE-----"))
+    fail("--ca-file must contain PEM-encoded CA certificates");
+  return pem;
+}
+const optionalTrust = (path: string) => (existsSync(path) ? readTrust(path) : undefined);
 export interface OnboardingUI {
   interactive: boolean;
   note(message: string): void;
@@ -67,6 +94,10 @@ export interface OnboardingOptions {
   workspace?: string;
   login?: boolean;
   providers?: readonly string[];
+  /** Managed service origin; saved with the workspace selection for later commands. */
+  endpoint?: string;
+  /** PEM roots for a custom endpoint signed by a private CA; saved beside that endpoint. */
+  caFile?: string;
 }
 export interface OnboardingDependencies {
   ui: OnboardingUI;
@@ -154,7 +185,7 @@ export async function onboard(
     (custom && !pinned[0]?.startsWith("saas:")) ||
     (selected && !selected.name.startsWith("saas:"))
   ) {
-    if (options.workspace || options.login)
+    if (options.workspace || options.login || options.endpoint || options.caFile)
       fail(
         "This environment uses a custom tunnel provider; use that provider's login and workspace settings",
       );
@@ -162,15 +193,31 @@ export async function onboard(
   }
   if (pinned[0] && !selected)
     fail("Reserved tunnel provider is missing; restore its configuration");
-  const saved =
-    selected && pinned[0]
-      ? read(managedConfigSchema, selected.config).tenant_id
-      : (savedWorkspace(home) ??
-        (selected ? read(managedConfigSchema, selected.config).tenant_id : undefined));
+  // providerConfig has already checked that the descriptor agrees with its provider ID.
+  const current = selected ? managedProvider(selected.name) : undefined;
+  const requested = options.endpoint ? managedEndpoint(options.endpoint) : undefined;
+  if (pinned[0] && current && requested && requested !== current.endpoint)
+    fail(
+      "Existing URLs belong to another SaaS endpoint; release those reservations before switching",
+    );
+  const login = pinned[0] ? undefined : savedLogin(home);
+  // Reservations pin their endpoint; otherwise --endpoint, then the saved selection.
+  const endpoint =
+    (pinned[0] ? current?.endpoint : (requested ?? (login ?? current)?.endpoint)) ?? saasEndpoint;
+  // A saved workspace only means something on the endpoint it was chosen for.
+  const saved = [login, current].find((source) => source?.endpoint === endpoint)?.workspace;
   if (pinned[0] && options.workspace && options.workspace !== saved)
     fail(
       "Existing URLs belong to another SaaS workspace; release those reservations before switching",
     );
+  const trustPath = join(endpointDirectory(home, endpoint), "ca.pem");
+  if (options.caFile && endpoint === saasEndpoint)
+    fail("--ca-file applies only to a custom --endpoint");
+  const trust = options.caFile
+    ? readTrust(resolve(options.caFile))
+    : endpoint === saasEndpoint
+      ? undefined
+      : optionalTrust(trustPath);
   const deps: OnboardingDependencies = {
     ui: terminalOnboarding(),
     credentials: keychain(),
@@ -180,10 +227,11 @@ export async function onboard(
     now: Date.now,
     ...overrides,
   };
-  const call = api(signal, deps.fetcher);
+  const fetcher = withTrust(deps.fetcher, trust);
+  const call = api(signal, fetcher, endpoint);
   let workspace = options.workspace || saved;
   if (workspace) workspace = read(id, workspace);
-  const account = (tenant: string) => `${saasEndpoint}#${tenant}`;
+  const account = (tenant: string) => credentialAccount(endpoint, tenant);
   let credential =
     workspace && !options.login
       ? await deps.credentials.get(account(workspace), signal)
@@ -201,7 +249,7 @@ export async function onboard(
   }
   if (!credential) {
     requireTerminal(deps.ui);
-    deps.ui.note(`Sign in to ${saasEndpoint} and authorize this computer.`);
+    deps.ui.note(`Sign in to ${endpoint} and authorize this computer.`);
     const flow = read(
       flowSchema,
       await call(
@@ -214,9 +262,9 @@ export async function onboard(
         }),
       ),
     );
-    const verification = sameOrigin(flow.verification_uri);
+    const verification = sameOrigin(flow.verification_uri, endpoint);
     deps.ui.note(`Open ${verification} and enter ${flow.user_code}`);
-    const complete = new URL(sameOrigin(flow.verification_uri_complete ?? verification));
+    const complete = new URL(sameOrigin(flow.verification_uri_complete ?? verification, endpoint));
     if (complete.pathname !== new URL(verification).pathname)
       fail("Invalid SaaS device authorization URL");
     complete.searchParams.set("user_code", flow.user_code);
@@ -270,14 +318,22 @@ export async function onboard(
   }
   if (!workspace) return fail("Missing SaaS workspace");
   signal.throwIfAborted();
-  atomicWrite(join(home, "saas-login.json"), JSON.stringify({ workspace_id: workspace }));
-  const name = `saas:${workspace}`;
+  if (options.caFile && trust) atomicWrite(trustPath, trust);
+  atomicWrite(
+    join(home, "saas-login.json"),
+    JSON.stringify(
+      endpoint === saasEndpoint
+        ? { workspace_id: workspace }
+        : { workspace_id: workspace, endpoint },
+    ),
+  );
+  const name = managedProviderId(workspace, endpoint);
   if (options.login) return name;
   const access = read(accessSchema, await call("/v1/cli/access", credential.credential));
   if (access.workspace_id !== workspace || access.can_share !== (access.reason === null))
     fail("Invalid SaaS workspace access response");
   if (!access.can_share) {
-    const billing = new URL(sameOrigin(access.subscription_url));
+    const billing = new URL(sameOrigin(access.subscription_url, endpoint));
     if (billing.pathname !== "/billing" || billing.searchParams.get("workspace") !== workspace)
       fail("Invalid SaaS subscription URL");
     const message = `This workspace needs an active subscription before creating tunnels. Subscribe at ${billing.href}, then run contremaitre tunnel again.`;
@@ -291,7 +347,7 @@ export async function onboard(
     }
     fail(message);
   }
-  const installed = await deps.install(home, signal, deps.fetcher);
+  const installed = await deps.install(home, signal, fetcher, endpoint);
   signal.throwIfAborted();
   const { executable, ...transport } = installed;
   const settings = JSON.stringify({
@@ -300,11 +356,11 @@ export async function onboard(
       [name]: {
         executable,
         config: {
-          endpoint: saasEndpoint,
+          endpoint,
           tenant_id: workspace,
           credential_account: account(workspace),
           foreground_sessions: true,
-          state_directory: join(home, "saas", "state", workspace),
+          state_directory: join(endpointDirectory(home, endpoint), "state", workspace),
           ...transport,
         },
       },
@@ -312,7 +368,7 @@ export async function onboard(
   });
   // Per-workspace files keep existing reservations and concurrent sessions independent
   // of whichever workspace was most recently selected as the default.
-  atomicWrite(join(home, "saas", "providers", `${workspace}.json`), settings);
+  atomicWrite(managedDescriptor(home, name), settings);
   atomicWrite(join(home, "saas-provider.json"), settings);
   return name;
 }

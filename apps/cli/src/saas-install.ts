@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { saasEndpoint } from "@contremaitre/environments/tunnel-provider";
+import { endpointDirectory, saasEndpoint } from "@contremaitre/environments/tunnel-provider";
 import { fail } from "@contremaitre/execution/context";
 import { atomicWrite } from "@contremaitre/execution/files";
 import { Schema } from "effect";
@@ -24,10 +24,16 @@ const manifestSchema = Schema.Struct({
   }),
 });
 const sha = (value: Uint8Array) => createHash("sha256").update(value).digest("hex");
-export async function installProvider(home: string, signal: AbortSignal, fetcher: Fetch = fetch) {
+export async function installProvider(
+  home: string,
+  signal: AbortSignal,
+  fetcher: Fetch = fetch,
+  endpoint = saasEndpoint,
+) {
   if (process.platform !== "darwin" || process.arch !== "arm64")
     fail("The SaaS tunnel provider currently supports macOS on Apple Silicon");
-  const cache = join(home, "saas", "manifest.json");
+  // Each endpoint pins its own manifest; artifacts are shared because they are content-addressed.
+  const cache = join(endpointDirectory(home, endpoint), "manifest.json");
   let manifest: typeof manifestSchema.Type | undefined;
   try {
     manifest = read(manifestSchema, JSON.parse(readFileSync(cache, "utf8")));
@@ -37,12 +43,12 @@ export async function installProvider(home: string, signal: AbortSignal, fetcher
   if (!manifest) {
     manifest = read(
       manifestSchema,
-      await api(signal, fetcher)("/.well-known/contremaitre-provider/darwin-arm64.json"),
+      await api(signal, fetcher, endpoint)("/.well-known/contremaitre-provider/darwin-arm64.json"),
     );
   }
   const paths = {} as Record<keyof typeof manifest.artifacts, string>;
   for (const [name, spec] of Object.entries(manifest.artifacts)) {
-    const url = sameOrigin(spec.url);
+    const url = sameOrigin(spec.url, endpoint);
     const path = join(home, "saas", spec.sha256, name);
     const mode = name === "ca" ? 0o600 : 0o700;
     let valid = false;
@@ -68,7 +74,7 @@ export async function installProvider(home: string, signal: AbortSignal, fetcher
         data = await bytes(response, 128 * 1048576);
       } catch {
         signal.throwIfAborted();
-        return fail(`Cannot install the SaaS tunnel provider from ${saasEndpoint}; retry later`);
+        return fail(`Cannot install the SaaS tunnel provider from ${endpoint}; retry later`);
       }
       if (sha(data) !== spec.sha256) fail("SaaS provider download checksum mismatch");
       atomicWrite(path, data, mode);
