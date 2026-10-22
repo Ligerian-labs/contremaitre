@@ -1,8 +1,11 @@
-import { saasEndpoint } from "@contremaitre/environments/tunnel-provider";
 import { fail, HubError } from "@contremaitre/execution/context";
 import { Schema } from "effect";
 
-export type Fetch = (url: string, init: RequestInit) => Promise<Response>;
+export type Fetch = (url: string, init: BunFetchRequestInit) => Promise<Response>;
+/** Trust only the given PEM roots for a custom endpoint; verification itself stays on. */
+export function withTrust(fetcher: Fetch, ca?: string): Fetch {
+  return ca ? (url, init) => fetcher(url, { ...init, tls: { ca } }) : fetcher;
+}
 export class AuthenticationRequired extends Error {}
 export function read<A, I>(schema: Schema.Schema<A, I>, value: unknown): A {
   try {
@@ -32,22 +35,22 @@ export async function bytes(response: Response, limit: number) {
     reader.releaseLock();
   }
 }
-export function sameOrigin(value: string) {
+export function sameOrigin(value: string, endpoint: string) {
   let url: URL;
   try {
-    url = new URL(value, saasEndpoint);
+    url = new URL(value, endpoint);
   } catch {
     return fail("Invalid SaaS URL");
   }
-  if (url.origin !== saasEndpoint || url.username || url.password || url.hash)
+  if (url.origin !== endpoint || url.username || url.password || url.hash)
     fail("SaaS URL must use the configured HTTPS origin");
   return url.href;
 }
-export function api(signal: AbortSignal, fetcher: Fetch = fetch) {
+export function api(signal: AbortSignal, fetcher: Fetch, endpoint: string) {
   return async (path: string, token?: string, body?: URLSearchParams | object) => {
     signal.throwIfAborted();
     try {
-      const response = await fetcher(sameOrigin(path), {
+      const response = await fetcher(sameOrigin(path, endpoint), {
         method: body === undefined ? "GET" : "POST",
         headers: {
           ...(token ? { authorization: `Bearer ${token}` } : {}),

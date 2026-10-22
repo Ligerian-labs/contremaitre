@@ -2,6 +2,8 @@
 
 `contremaitre tunnel` uses `https://contremaitre.ligerianlabs.fr` when the user has not configured a provider in `<home>/tunnels.json`. A present but invalid custom configuration is an error. Custom providers keep their own login flow. Names starting with `saas:` are reserved for managed providers.
 
+Any other service implementing this contract can be selected with `contremaitre tunnel login --endpoint https://tunnels.example.com` (also accepted by bare `tunnel`). Examples below use the default origin; a custom endpoint substitutes its own. See [Custom endpoints](#custom-endpoints).
+
 The CLI validates the local environment, completes authentication, selects a workspace and installs the provider before it asks the hub to start sharing. Login cannot restart services or reserve public URLs. `contremaitre tunnel login` authenticates without requiring a project, a running hub or installed transport. The next `tunnel` command continues with the saved credentials.
 
 The subscription preflight requires the matching SaaS API change. Deploy that change before releasing this CLI. Local fixture tests verify the contract; they do not establish compatibility with a deployed SaaS service.
@@ -9,13 +11,14 @@ The subscription preflight requires the matching SaaS API change. Deploy that ch
 ## User flow
 
 1. Honor a custom provider or the provider pinned to existing reservations.
-2. Resolve the SaaS workspace from `--workspace ID`, the reservation's workspace or the saved selection. Reject an explicit workspace that conflicts with existing URLs. To move those URLs, release the reservations first.
-3. If a credential exists, validate it with `GET /v1/cli/session`. Valid credentials need no browser approval or repeated workspace question. A 401 or 403 starts a new login in an interactive terminal. Network errors, server errors and invalid responses fail without starting another login.
-4. If credentials are missing, open device authorization in the browser. Print the verification URL and code even if the browser cannot open. Existing website login still requires an explicit authorization of this computer. The page shows the account and computer name. Signup and verification can complete while the original command waits.
-5. After approval, request the available workspaces. Ask the user if there is no explicit or saved selection, including when only one workspace exists. Validate explicit and saved choices against current membership.
-6. Enroll a device scoped to the chosen workspace and save its credential in macOS Keychain. Save the workspace choice before installing binaries, so a failed download does not require another login.
-7. Query `GET /v1/cli/access` with the device credential before downloading a provider, reserving URLs or changing services. If a subscription is required, print an actionable message and open the returned subscription page in interactive terminals. Noninteractive commands print the URL without opening a browser. Keep the saved login so subscribing and retrying does not require another authorization.
-8. Prepare the managed provider and create the foreground preview. Pass the selected provider ID to the hub so a concurrent change of default workspace cannot redirect the new session.
+2. Resolve the endpoint from the reservation's provider ID, `--endpoint` or the saved selection, in that order, defaulting to `https://contremaitre.ligerianlabs.fr`. Reject an explicit endpoint that conflicts with existing URLs.
+3. Resolve the SaaS workspace from `--workspace ID`, the reservation's workspace or the saved selection. Reject an explicit workspace that conflicts with existing URLs. To move those URLs, release the reservations first.
+4. If a credential exists, validate it with `GET /v1/cli/session`. Valid credentials need no browser approval or repeated workspace question. A 401 or 403 starts a new login in an interactive terminal. Network errors, server errors and invalid responses fail without starting another login.
+5. If credentials are missing, open device authorization in the browser. Print the verification URL and code even if the browser cannot open. Existing website login still requires an explicit authorization of this computer. The page shows the account and computer name. Signup and verification can complete while the original command waits.
+6. After approval, request the available workspaces. Ask the user if there is no explicit or saved selection, including when only one workspace exists. Validate explicit and saved choices against current membership.
+7. Enroll a device scoped to the chosen workspace and save its credential in macOS Keychain. Save the workspace choice before installing binaries, so a failed download does not require another login.
+8. Query `GET /v1/cli/access` with the device credential before downloading a provider, reserving URLs or changing services. If a subscription is required, print an actionable message and open the returned subscription page in interactive terminals. Noninteractive commands print the URL without opening a browser. Keep the saved login so subscribing and retrying does not require another authorization.
+9. Prepare the managed provider and create the foreground preview. Pass the selected provider ID to the hub so a concurrent change of default workspace cannot redirect the new session.
 
 Noninteractive commands, including `--json`, reuse valid authentication and a saved or explicit workspace. They fail with an instruction to run `contremaitre tunnel login` in a terminal when approval is required. All interactive output goes to stderr. Cancellation stops polling and cannot create a preview. Device polling observes `interval`, adds five seconds for `slow_down` and stops at the server's expiry, capped at 15 minutes. Requests have ten-second deadlines and bounded response bodies; redirects are refused.
 
@@ -89,7 +92,7 @@ The SaaS checks entitlement again before writing reservations or preview metadat
 
 ## Credential and adapter contract
 
-The Keychain service is `contremaitre-tunnel`. The Keychain account is the exact string `https://contremaitre.ligerianlabs.fr#WORKSPACE_ID`. The value is base64-encoded JSON with `device_id` and `credential`. Base64 is an encoding; Keychain provides secret storage. The CLI writes through `security -i` stdin and verifies the write, so credentials never enter process arguments. A locked or unavailable Keychain fails explicitly.
+The Keychain service is `contremaitre-tunnel`. The Keychain account is the exact string `ENDPOINT#WORKSPACE_ID`, where `ENDPOINT` is the endpoint origin, for example `https://contremaitre.ligerianlabs.fr#WORKSPACE_ID` or `https://localhost:8443#WORKSPACE_ID`. Two endpoints therefore never share a credential. The value is base64-encoded JSON with `device_id` and `credential`. Base64 is an encoding; Keychain provides secret storage. The CLI writes through `security -i` stdin and verifies the write, so credentials never enter process arguments. A locked or unavailable Keychain fails explicitly.
 
 The managed adapter receives these additional configuration fields through stdin:
 
@@ -108,7 +111,17 @@ The managed adapter receives these additional configuration fields through stdin
 
 The adapter must read the specified `credential_account`. An adapter that only reads the endpoint's origin will not work with this CLI. It must validate the account's endpoint/workspace association and use the server-authenticated workspace for every operation. It must never replace scoped credentials with a global account or launch login during a session. Existing explicitly configured adapters can keep their original credential convention.
 
-Only the CLI reads `<home>/saas-login.json`, which stores `workspace_id`. Managed provider descriptors live in `<home>/saas/providers/WORKSPACE_ID.json`; `<home>/saas-provider.json` contains the last selected default. Descriptors contain paths and credential references, never secrets. Independent per-workspace descriptors prevent concurrent selection from deleting another workspace's configuration. The hub stores provider IDs as `saas:WORKSPACE_ID` alongside reservations. An explicit `tunnels.json` takes precedence for new reservations.
+Only the CLI reads `<home>/saas-login.json`, which stores `workspace_id` and, for a custom endpoint only, `endpoint`. Managed provider descriptors live in `<home>/saas/providers/WORKSPACE_ID.json`; `<home>/saas-provider.json` contains the last selected default. Descriptors contain paths and credential references, never secrets. Independent per-workspace descriptors prevent concurrent selection from deleting another workspace's configuration. The hub stores provider IDs as `saas:WORKSPACE_ID` alongside reservations. An explicit `tunnels.json` takes precedence for new reservations.
+
+## Custom endpoints
+
+`--endpoint` accepts an HTTPS origin only: no userinfo, path, query or fragment. An explicit port is allowed for local testing, for example `https://localhost:8443`; `:443` is normalised away. The same strict rules apply as for the default service: every API call, verification link, billing link, manifest and artifact must stay on that exact origin, and redirects are refused.
+
+The endpoint becomes part of the provider identity. The default service keeps `saas:WORKSPACE_ID` and the `<home>/saas` layout above. Another endpoint uses `saas:WORKSPACE_ID@HOST[:PORT]`, with its descriptors in `<home>/saas/endpoints/HOST[_PORT]/providers/WORKSPACE_ID.json`, adapter state in `.../state/WORKSPACE_ID` and its manifest cache in `.../manifest.json`. Artifacts remain shared under `<home>/saas/HASH/` because they are content-addressed. When the hub resolves a managed provider ID, it refuses a descriptor whose `endpoint`, `tenant_id` or `credential_account` disagrees with that ID, so the adapter always talks to the endpoint the CLI enrolled with.
+
+A saved workspace applies only to the endpoint it was chosen on. Switching endpoints asks for a workspace again unless `--workspace` is given, and an endpoint without a Keychain credential requires browser approval.
+
+The provider manifest's `ca` artifact is fetched over the endpoint's own TLS connection and only configures the adapter, so it cannot establish trust for the CLI. An endpoint behind a private CA needs `--ca-file PATH` with PEM certificates. The CLI copies them to `<home>/saas/endpoints/HOST[_PORT]/ca.pem` (mode 0600) after a successful login and uses them, instead of the system roots, for every request to that endpoint. Verification is never disabled. `--ca-file` is refused for the default endpoint. Replace the roots by passing `--ca-file` again; remove the file to return to the system roots.
 
 ## Automatic provider installation
 
@@ -129,11 +142,11 @@ Publish `GET /.well-known/contremaitre-provider/darwin-arm64.json` on the same H
 }
 ```
 
-Publish raw Apple Silicon executables, not archives. The provider must be standalone and understand protocol v2, scoped Keychain accounts and the transport configuration above. `ca` supplies the trust roots required by the adapter's control and relay connections. Publish a complete compatible set, with immutable versioned URLs, before publishing the manifest.
+Publish raw Apple Silicon executables, not archives. The provider must be standalone and understand protocol v2, scoped Keychain accounts and the transport configuration above. `ca` supplies the trust roots required by the adapter's control and relay connections; it does not affect the CLI's own requests (see [Custom endpoints](#custom-endpoints)). Publish a complete compatible set, with immutable versioned URLs, before publishing the manifest.
 
 Downloads must remain on the same origin; redirects and URL credentials are refused. The CLI verifies SHA-256 before atomic installation. Executables use mode 0700 and the CA file uses 0600. Each artifact is capped at 128 MiB with a two-minute deadline. Installation publishes the cached manifest only after every artifact is verified. No download or install operation invokes a shell, extracts an archive or asks for administrator privileges.
 
-The cache pins a working set across commands. Each command checks its hashes and repairs missing or corrupted files. A failed or cancelled install does not publish a managed provider. To fetch a newer manifest, remove `<home>/saas/manifest.json` before the next command. Old artifact directories remain available for active sessions and rollback; automatic updates and cache garbage collection are outside this change.
+The cache pins a working set across commands. Each command checks its hashes and repairs missing or corrupted files. A failed or cancelled install does not publish a managed provider. To fetch a newer manifest, remove `<home>/saas/manifest.json` (or the custom endpoint's `manifest.json`) before the next command. Old artifact directories remain available for active sessions and rollback; automatic updates and cache garbage collection are outside this change.
 
 ## Acceptance and rollout
 

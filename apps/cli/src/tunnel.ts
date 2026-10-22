@@ -5,9 +5,14 @@ import { attempt, withCleanup } from "@contremaitre/execution/effect";
 import { sleep } from "@contremaitre/execution/sleep";
 import { Effect } from "effect";
 import { call } from "./client.js";
-import { onboard, terminalOnboarding } from "./saas.js";
+import { type OnboardingOptions, onboard, terminalOnboarding } from "./saas.js";
 
-export function tunnel(home: string, req: Request, json: boolean, workspace?: string) {
+export function tunnel(
+  home: string,
+  req: Request,
+  json: boolean,
+  options: Pick<OnboardingOptions, "workspace" | "endpoint" | "caFile"> = {},
+) {
   // Browser approval is interruptible and never owns a hub session or restarts a service.
   return attempt(async (signal) => {
     const ctx = context(signal);
@@ -26,7 +31,7 @@ export function tunnel(home: string, req: Request, json: boolean, workspace?: st
     const provider = await onboard(
       home,
       signal,
-      { workspace, providers },
+      { ...options, providers },
       { ui: terminalOnboarding(json) },
     );
     const current = (await call(ctx, home, "resolve", req, 15_000)) as Environment;

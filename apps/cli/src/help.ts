@@ -75,6 +75,20 @@ export const flags = {
     "SaaS workspace ID. Overrides the saved selection.",
     "ID",
   ),
+  endpoint: flag(
+    "endpoint",
+    { kind: "text" },
+    "",
+    "Managed tunnel service HTTPS origin; a port is allowed. Saved with the login. Default: https://contremaitre.ligerianlabs.fr.",
+    "URL",
+  ),
+  caFile: flag(
+    "ca-file",
+    { kind: "text" },
+    "",
+    "PEM CA certificates to trust for a custom --endpoint instead of the system roots. Saved for that endpoint.",
+    "PATH",
+  ),
   noAI: flag(
     "no-ai",
     { kind: "boolean" },
@@ -405,11 +419,12 @@ export const commands: readonly CommandHelp[] = [
     description: "Share a live preview until this command exits",
     usage: "[login | status | logs [SERVICE] | stop | release SERVICE]",
     details:
-      "Share all HTTP services in the current environment. Keep this command open; Ctrl-C ends sharing and restores local URL configuration. Branch changes also stop sharing. Services may restart. With no custom provider, use contremaitre.ligerianlabs.fr and sign in through your browser. login authenticates without starting a preview. status lists reservations; logs prints the latest connector diagnostics, up to 64 KiB per service, without starting sharing; stop ends the session; release retires a service URL.",
-    flags: ["workspace", "env", "branch", "home", "json"],
+      "Share all HTTP services in the current environment. Keep this command open; Ctrl-C ends sharing and restores local URL configuration. Branch changes also stop sharing. Services may restart. With no custom provider, use contremaitre.ligerianlabs.fr, or the compatible service saved by --endpoint, and sign in through your browser. login authenticates without starting a preview. status lists reservations; logs prints the latest connector diagnostics, up to 64 KiB per service, without starting sharing; stop ends the session; release retires a service URL.",
+    flags: ["workspace", "endpoint", "caFile", "env", "branch", "home", "json"],
     examples: [
       "contremaitre tunnel",
       "contremaitre tunnel login",
+      "contremaitre tunnel login --endpoint https://tunnels.example.com",
       "contremaitre tunnel --workspace my-team",
       "contremaitre tunnel status",
       "contremaitre tunnel logs",
