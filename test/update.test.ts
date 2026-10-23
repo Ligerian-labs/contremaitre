@@ -29,11 +29,14 @@ function fixture(
   options: {
     current?: string;
     latest?: string;
+    latestPointer?: string;
     check?: boolean;
     corrupt?: boolean;
     checksum?: string;
     failure?: "latest" | "checksum" | "binary";
-    latestUrl?: string;
+    channel?: "stable" | "beta" | "nightly";
+    releases?: Record<string, unknown>[][];
+    response?: string;
     abort?: AbortController;
   } = {},
 ) {
@@ -53,7 +56,11 @@ function fixture(
     expect(argv).toContain("--fail");
     expect(argv).toContain("--proto-redir");
     expect(argv.filter((arg) => arg === "=https")).toHaveLength(2);
-    const stage = url.endsWith("/latest")
+    if (url.endsWith("/latest"))
+      return Buffer.from(
+        `https://github.com/Ligerian-labs/contremaitre/releases/tag/v${options.latestPointer ?? latest}`,
+      );
+    const stage = url.includes("api.github.com")
       ? "latest"
       : url.endsWith(".sha256")
         ? "checksum"
@@ -61,8 +68,16 @@ function fixture(
     if (stage === options.failure) fail(`Fixture ${stage} download failed`);
     if (stage === "latest")
       return Buffer.from(
-        options.latestUrl ??
-          `https://github.com/Ligerian-labs/contremaitre/releases/tag/v${latest}`,
+        options.response ??
+          JSON.stringify(
+            options.releases?.[Number(new URL(url).searchParams.get("page")) - 1] ?? [
+              {
+                tag_name: `v${latest}`,
+                draft: false,
+                prerelease: options.channel !== undefined && options.channel !== "stable",
+              },
+            ],
+          ),
       );
     const destination = argv[argv.indexOf("-o") + 1];
     temporary.push(destination);
@@ -82,6 +97,7 @@ function fixture(
     executable,
     home,
     check: options.check ?? false,
+    channel: options.channel ?? "stable",
   };
   return { input, runner, requests, temporary, binary, directory };
 }
@@ -141,19 +157,104 @@ test("newer stable and development versions refuse downgrades; --check reports a
   );
 });
 
-test("missing releases, prereleases and foreign redirect URLs fail before asset downloads", async () => {
-  for (const latestUrl of [
-    "https://github.com/Ligerian-labs/contremaitre/releases/latest",
-    "https://github.com/Ligerian-labs/contremaitre/releases/tag/v1.10.0-rc.1",
-    "https://github.com/other/repository/releases/tag/v1.10.0",
-    "http://github.com/Ligerian-labs/contremaitre/releases/tag/v1.10.0",
-    "https://github.com/Ligerian-labs/contremaitre/releases/tag/v1.10.0/extra",
+test("missing releases and malformed responses fail before asset downloads", async () => {
+  for (const response of [
+    "not JSON",
+    "{}",
+    "[]",
+    '[{"tag_name":"v1.10.0-rc.1","draft":false,"prerelease":true}]',
+    '[{"tag_name":"v1.10.0/extra","draft":false,"prerelease":false}]',
   ]) {
-    const f = fixture({ latestUrl });
+    const f = fixture({ response });
     await expect(updateBinary(context(), f.input, f.runner)).rejects.toThrow();
     expect(f.requests).toHaveLength(1);
     expect(readFileSync(f.input.executable, "utf8")).toBe("old binary");
   }
+});
+
+const release = (tag: string, prerelease = false, draft = false) => ({
+  tag_name: tag,
+  prerelease,
+  draft,
+});
+
+test("stable selects the highest patch across pages regardless of GitHub latest or release order", async () => {
+  const first = Array.from({ length: 100 }, () => release("v1.10.0"));
+  first[0] = release("v9.0.0", false, true);
+  first[1] = release("v2.0.0-beta.0", true);
+  const f = fixture({
+    current: "1.10.0",
+    latest: "1.10.2",
+    latestPointer: "1.10.0",
+    releases: [first, [release("v1.10.2"), release("v1.10.1")]],
+  });
+  expect((await updateBinary(context(), f.input, f.runner)).status).toBe("updated");
+  expect(f.requests.slice(0, 2).map((url) => new URL(url).searchParams.get("page"))).toEqual([
+    "1",
+    "2",
+  ]);
+  expect(f.requests[2]).toContain("/download/v1.10.2/");
+});
+
+test("beta selects numeric beta versions and keeps the dotted GitHub tag for downloads", async () => {
+  const f = fixture({
+    channel: "beta",
+    current: "1.10.0-beta.9",
+    latest: "1.10.0.beta.10",
+    releases: [
+      [
+        release("v1.10.0-beta.9", true),
+        release("v1.10.0.beta.10", true),
+        release("v3.0.0"),
+        release("v4.0.0-rc.1", true),
+        release("v5.0.0-beta.0", true, true),
+      ],
+    ],
+  });
+  const result = await updateBinary(context(), f.input, f.runner);
+  expect(result.latest_version).toBe("1.10.0-beta.10");
+  expect(result.status).toBe("updated");
+  expect(f.requests[1]).toContain("/download/v1.10.0.beta.10/");
+});
+
+test("explicit beta and nightly switches install even when their version sorts below stable", async () => {
+  for (const [channel, latest] of [
+    ["beta", "1.0.0-beta.0"],
+    ["nightly", "0.0.0-nightly.12.gabcdef123456"],
+  ] as const) {
+    const f = fixture({ channel, latest, current: "2.0.0" });
+    expect((await updateBinary(context(), { ...f.input, check: true }, f.runner)).status).toBe(
+      "update-available",
+    );
+    expect(readFileSync(f.input.executable, "utf8")).toBe("old binary");
+    expect((await updateBinary(context(), f.input, f.runner)).status).toBe("updated");
+    expect(
+      formatUpdate({
+        current_version: "2.0.0",
+        latest_version: latest,
+        status: "update-available",
+        channel,
+      }),
+    ).toContain(`update --${channel}`);
+  }
+});
+
+test("nightly selects the newest main build and skips the installed build", async () => {
+  const latest = "0.0.0-nightly.12.gabcdef123456";
+  const f = fixture({
+    channel: "nightly",
+    latest,
+    current: latest,
+    releases: [
+      [
+        release("v0.0.0-nightly.9.gabcdef123456", true),
+        release(`v${latest}`, true),
+        release("v1.0.0-beta.0", true),
+      ],
+    ],
+  });
+  expect((await updateBinary(context(), f.input, f.runner)).status).toBe("up-to-date");
+  expect(f.requests).toHaveLength(1);
 });
 
 test("failed downloads and invalid checksums preserve the installed binary and remove staged downloads", async () => {
@@ -206,64 +307,76 @@ test("human output distinguishes current, available, ahead and updated versions"
   );
 });
 
-test("Structure cli/stable-update scenario checks, updates and then skips the installed version", async () => {
-  const installed = defineFixture({
-    key: "cli/installed-binary",
-    create: () => Effect.sync(() => fixture()),
-  });
-  const updated = defineFixture({
-    key: "cli/updated-binary",
-    dependencies: { installed },
-    create: ({ dependencies }) =>
-      Effect.tryPromise(async () => {
-        const f = dependencies.installed;
-        expect((await updateBinary(context(), { ...f.input, check: true }, f.runner)).status).toBe(
-          "update-available",
-        );
-        expect(readFileSync(f.input.executable, "utf8")).toBe("old binary");
-        expect((await updateBinary(context(), f.input, f.runner)).status).toBe("updated");
-        const inode = statSync(f.input.executable).ino;
-        expect(
-          (await updateBinary(context(), { ...f.input, currentVersion: "1.10.0" }, f.runner))
-            .status,
-        ).toBe("up-to-date");
-        expect(statSync(f.input.executable).ino).toBe(inode);
-        return f;
-      }),
-  });
-  const catalog = makeCatalog({
-    base: { installed },
-    scenarios: [
-      defineScenario({
-        name: "cli/stable-update",
-        description:
-          "Check a stable release, install its verified binary and skip a repeated update",
-        input: Schema.Struct({}),
-        fixtures: () => ({ updated }),
-      }),
-    ],
-  });
-  const fixtures = await Effect.runPromise(catalog.prepare("cli/stable-update", {}));
-  const report = await Effect.runPromise(
-    run({
-      fixtures,
-      enabled: true,
-      ready: () =>
-        Effect.sync(() => {
-          // This local CLI command has no CQRS dispatch or asynchronous hub work.
-          for (const directory of directories)
-            expect(readFileSync(join(directory, "custom binary"), "utf8")).toBe(
-              "verified release binary",
-            );
+for (const [channel, latest, installedVersion] of [
+  ["stable", "1.10.1", "1.10.1"],
+  ["beta", "1.10.0.beta.0", "1.10.0-beta.0"],
+  ["nightly", "0.0.0-nightly.12.gabcdef123456", "0.0.0-nightly.12.gabcdef123456"],
+] as const) {
+  const scenario = `cli/${channel}-update`;
+  test(`Structure ${scenario} checks, updates and then skips the installed version`, async () => {
+    const installed = defineFixture({
+      key: "cli/installed-binary",
+      create: () => Effect.sync(() => fixture({ channel, latest })),
+    });
+    const updated = defineFixture({
+      key: "cli/updated-binary",
+      dependencies: { installed },
+      create: ({ dependencies }) =>
+        Effect.tryPromise(async () => {
+          const f = dependencies.installed;
+          expect(
+            (await updateBinary(context(), { ...f.input, check: true }, f.runner)).status,
+          ).toBe("update-available");
+          expect(readFileSync(f.input.executable, "utf8")).toBe("old binary");
+          expect((await updateBinary(context(), f.input, f.runner)).status).toBe("updated");
+          const inode = statSync(f.input.executable).ino;
+          expect(
+            (
+              await updateBinary(
+                context(),
+                { ...f.input, currentVersion: installedVersion },
+                f.runner,
+              )
+            ).status,
+          ).toBe("up-to-date");
+          expect(statSync(f.input.executable).ino).toBe(inode);
+          return f;
         }),
-    }).pipe(
-      Effect.provideService(CommandBus, {
-        dispatch: () => Effect.die("The local update fixture must not dispatch hub commands"),
-      }),
-    ),
-  );
-  expect(report.completed).toEqual(["cli/installed-binary", "cli/updated-binary"]);
-  console.log(
-    `cli/stable-update run ${report.runId}, target: isolated temporary executable, inputs: {}`,
-  );
-});
+    });
+    const catalog = makeCatalog({
+      base: { installed },
+      scenarios: [
+        defineScenario({
+          name: scenario,
+          description:
+            "Check a stable release, install its verified binary and skip a repeated update",
+          input: Schema.Struct({}),
+          fixtures: () => ({ updated }),
+        }),
+      ],
+    });
+    const fixtures = await Effect.runPromise(catalog.prepare(scenario, {}));
+    const report = await Effect.runPromise(
+      run({
+        fixtures,
+        enabled: true,
+        ready: () =>
+          Effect.sync(() => {
+            // This local CLI command has no CQRS dispatch or asynchronous hub work.
+            for (const directory of directories)
+              expect(readFileSync(join(directory, "custom binary"), "utf8")).toBe(
+                "verified release binary",
+              );
+          }),
+      }).pipe(
+        Effect.provideService(CommandBus, {
+          dispatch: () => Effect.die("The local update fixture must not dispatch hub commands"),
+        }),
+      ),
+    );
+    expect(report.completed).toEqual(["cli/installed-binary", "cli/updated-binary"]);
+    console.log(
+      `${scenario} run ${report.runId}, target: isolated temporary executable, inputs: {}`,
+    );
+  });
+}
