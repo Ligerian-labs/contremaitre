@@ -46,8 +46,8 @@ while [ "$#" -gt 0 ]; do
 done
 case "$url" in
   */releases/latest) printf '%s' 'https://github.com/Ligerian-labs/contremaitre/releases/tag/v0.2.0' ;;
-  */v0.2.0/contremaitre-darwin-arm64.sha256) cp "$FIXTURE/checksum" "$out" ;;
-  */v0.2.0/contremaitre-darwin-arm64) ${options.failure ? "exit 22" : 'cp "$FIXTURE/artifact" "$out"'} ;;
+  */${options.release ?? "v0.2.0"}/contremaitre-darwin-arm64.sha256) cp "$FIXTURE/checksum" "$out" ;;
+  */${options.release ?? "v0.2.0"}/contremaitre-darwin-arm64) ${options.failure ? "exit 22" : 'cp "$FIXTURE/artifact" "$out"'} ;;
   *) exit 43 ;;
 esac
 `,
@@ -134,3 +134,13 @@ test("a truncated installer never executes its partial function body", async () 
   expect(result.requests).toBe("");
   expect(result.binary).toBe("old binary");
 });
+
+for (const release of ["v1.0.0.beta.0", "v1.0.0-beta.1", "v0.0.0-nightly.12.gabcdef123456"]) {
+  test(`piped installer accepts an explicit prerelease ${release}`, async () => {
+    const result = await bootstrap({ release });
+    expect(result.code).toBe(0);
+    expect(result.requests).not.toContain("/releases/latest");
+    expect(result.requests).toContain(`/releases/download/${release}/`);
+    expect(result.binary).toStartWith("#!/bin/sh");
+  });
+}

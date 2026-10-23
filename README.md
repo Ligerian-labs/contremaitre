@@ -49,7 +49,9 @@ contremaitre start
 
 You need [Homebrew](https://brew.sh) for these prerequisites. `mkcert -install` trusts a local development certificate authority. The HTTPS service requests administrator approval to forward port 443 in the background. Run the installer, hub and applications as your normal user. See [HTTPS setup and troubleshooting](docs/local-https.md).
 
-Update an installed CLI with `contremaitre update`. It checks the latest stable GitHub release, including major versions, verifies the download checksum and replaces the executable you invoked. Custom installation paths and symlinks are supported. If already current, it reports that without downloading or restarting; newer development versions are never downgraded. The download installer also remains available for updates.
+Update an installed CLI with `contremaitre update`. It selects the highest stable GitHub release by semantic version, including patch and major versions, verifies the download checksum and replaces the executable you invoked. Custom installation paths and symlinks are supported. If already current, it reports that without downloading or restarting; stable updates refuse downgrades. The download installer also remains available for updates.
+
+Use `contremaitre update --beta` for the highest beta prerelease or `contremaitre update --nightly` for the latest checked build of `main`. Each successful `main` build publishes a versioned GitHub prerelease. Both flags work with `--check` and `--json`, are mutually exclusive, and explicitly allow switching from a higher version. They apply to that invocation only. Beta tags such as `v1.0.0.beta.0` appear as `1.0.0-beta.0` in the CLI. See [release publishing](docs/releases.md) to create a beta.
 
 An update automatically restarts a running hub with the new binary, preserving its HTTP or HTTPS ports and running environments. Active operations and tunnel sessions end, and local routing pauses during the restart. A stopped hub stays stopped. Set `CONTREMAITRE_HOME` or pass `--home PATH` when updating a hub that uses a custom data directory. Run as your normal user, without sudo.
 

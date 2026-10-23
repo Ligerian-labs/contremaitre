@@ -34,7 +34,8 @@ while [ "$#" -gt 0 ]; do
 done
 printf '%s\\n' "$url" >> "$UPDATE_REQUESTS"
 case "$url" in
-  */releases/latest) printf '%s' "https://github.com/Ligerian-labs/contremaitre/releases/tag/v$UPDATE_RELEASE" ;;
+  *api.github.com/repos/Ligerian-labs/contremaitre/releases?*)
+    printf '[{"tag_name":"v%s","draft":false,"prerelease":%s}]' "$UPDATE_RELEASE" "$UPDATE_PRERELEASE" ;;
   */releases/download/v"$UPDATE_RELEASE"/contremaitre-darwin-arm64.sha256)
     shasum -a 256 "$UPDATE_BINARY" | awk '{print $1 "  contremaitre-darwin-arm64"}' > "$out" ;;
   */releases/download/v"$UPDATE_RELEASE"/contremaitre-darwin-arm64) cp "$UPDATE_BINARY" "$out" ;;
@@ -111,13 +112,14 @@ async function boot() {
   }
   throw Error("Hub startup timeout");
 }
-async function update(release: string, check = false) {
+async function update(release: string, check = false, channel?: "beta" | "nightly") {
   const command = Bun.spawn(
     [
       join(installHome, ".local/bin/contremaitre"),
       "update",
       "--json",
       ...(check ? ["--check"] : []),
+      ...(channel ? [`--${channel}`] : []),
     ],
     {
       env: {
@@ -125,6 +127,7 @@ async function update(release: string, check = false) {
         CONTREMAITRE_HOME: home,
         PATH: `${fakebin}:${process.env.PATH}`,
         UPDATE_RELEASE: release,
+        UPDATE_PRERELEASE: String(!!channel),
         UPDATE_BINARY: binary,
         UPDATE_REQUESTS: join(dir, "update-requests"),
       },
@@ -308,12 +311,17 @@ try {
     stableVersion === version ? "up-to-date" : "update-available",
   );
   assert.equal(await update("999.0.0", true), "update-available");
+  assert.equal(await update("999.0.0-beta.10", true, "beta"), "update-available");
+  assert.equal(
+    await update("0.0.0-nightly.999.gabcdef123456", true, "nightly"),
+    "update-available",
+  );
   assert.equal(
     (await stat(installed)).ino,
     inode,
     "current-version and check must leave the binary intact",
   );
-  assert.equal((await readFile(join(dir, "update-requests"), "utf8")).trim().split("\n").length, 2);
+  assert.equal((await readFile(join(dir, "update-requests"), "utf8")).trim().split("\n").length, 4);
   const unchangedOwner = Bun.spawn(["lsof", "-t", join(home, "daemon.lock")], { stdout: "pipe" });
   assert.equal(Number((await new Response(unchangedOwner.stdout).text()).trim()), upgradedPid);
   assert.equal(await unchangedOwner.exited, 0);

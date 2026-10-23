@@ -116,6 +116,8 @@ test("update documents a read-only check and rejects source execution before rep
   expect(help.stdout).toContain("--check");
   expect(help.stdout).toContain("--json");
   expect(help.stdout).toContain("--home");
+  expect(help.stdout).toContain("--beta");
+  expect(help.stdout).toContain("--nightly");
   expect(help.stdout).not.toContain("--check NAME");
   const result = await cli(["update", "--json"]);
   expect(result.code).not.toBe(0);
@@ -135,7 +137,7 @@ test("source execution supports read-only release checks with one JSON result", 
   const latest = version.split("-")[0];
   writeFileSync(
     curl,
-    `#!/bin/sh\nprintf '%s' 'https://github.com/Ligerian-labs/contremaitre/releases/tag/v${latest}'\n`,
+    `#!/bin/sh\nprintf '%s' '[{"tag_name":"v${latest}","draft":false,"prerelease":false}]'\n`,
     { mode: 0o700 },
   );
   try {
@@ -156,6 +158,41 @@ test("source execution supports read-only release checks with one JSON result", 
     rmSync(curl, { force: true });
   }
 });
+
+test("update rejects conflicting channels before contacting GitHub", async () => {
+  const result = await cli(["update", "--check", "--beta", "--nightly", "--json"]);
+  expect(result.code).not.toBe(0);
+  expect(JSON.parse(result.stdout).error).toContain("Choose either --beta or --nightly");
+});
+
+for (const [channel, latest] of [
+  ["beta", "1.0.0.beta.10"],
+  ["nightly", "0.0.0-nightly.12.gabcdef123456"],
+] as const) {
+  test(`source --check --${channel} selects the requested release in JSON`, async () => {
+    const curl = join(cliDirectory, "curl");
+    writeFileSync(
+      curl,
+      `#!/bin/sh\nprintf '%s' '[{"tag_name":"v${latest}","draft":false,"prerelease":true}]'\n`,
+      { mode: 0o700 },
+    );
+    try {
+      const result = await cli(["--check", "update", `--${channel}`, "--json"], 80, {
+        PATH: `${cliDirectory}:${process.env.PATH}`,
+      });
+      expect(result.code).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(JSON.parse(result.stdout).data).toEqual({
+        current_version: version,
+        latest_version: latest.replace(".beta.", "-beta."),
+        status: latest.replace(".beta.", "-beta.") === version ? "up-to-date" : "update-available",
+        channel,
+      });
+    } finally {
+      rmSync(curl, { force: true });
+    }
+  });
+}
 
 test("tunnel documents SaaS login and explicit workspace selection", async () => {
   const result = await cli(["tunnel", "--help"]);
