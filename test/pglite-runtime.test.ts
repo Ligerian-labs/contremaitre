@@ -128,6 +128,38 @@ test("PGliteRuntime lifecycle, redeploy replacement, logs and remove preserve da
   }
 }, 30_000);
 
+test("PGliteRuntime applies the manifest's connection_wait_seconds to waiting clients", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cm-pglite-wait-runtime-"));
+  const runtime = new PGliteRuntime({ home: root });
+  const ctx = context();
+  const port = await freePort();
+  const waiting = parseManifest(
+    "version: 1\nproject: pglite\nservices:\n  db: {kind: postgres, runtime: wasm, connection_wait_seconds: 1}\n",
+  ).services.db;
+  const holder = client(port);
+  const waiter = new SQL(`postgresql://app:x@127.0.0.1:${port}/app?sslmode=disable`, {
+    max: 1,
+    connectionTimeout: 30,
+  });
+  try {
+    await runtime.run(ctx, { ...(await spec(root, "db", port)), service: waiting });
+    await holder`SELECT 1`;
+    const start = performance.now();
+    const refusal = await waiter`SELECT 1`.then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(refusal).toMatchObject({ errno: "53300" });
+    // One second, not the two-second default.
+    expect(performance.now() - start).toBeLessThan(1900);
+  } finally {
+    await waiter.close({ timeout: 0 });
+    await holder.close({ timeout: 0 });
+    await runtime.remove(ctx, "db");
+    await rm(root, { recursive: true, force: true });
+  }
+}, 30_000);
+
 test("PGliteRuntime clone replaces stopped target, quiesces a writer and isolates both sides", async () => {
   const root = await mkdtemp(join(tmpdir(), "cm-pglite-runtime-clone-"));
   const runtime = new PGliteRuntime({ home: root });

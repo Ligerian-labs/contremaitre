@@ -173,6 +173,16 @@ export function parseManifest(text: string): Manifest {
     )
       fail(`${name}: timeout_seconds requires a job and must be 1..7200`);
     if (isJob(s) && s.dev) fail(`${name}: jobs do not support dev watchers`);
+    if (
+      s.connection_wait_seconds !== undefined &&
+      (kind !== "postgres" ||
+        s.runtime !== "wasm" ||
+        s.connection_wait_seconds < 1 ||
+        s.connection_wait_seconds > 300)
+    )
+      fail(
+        `${name}: connection_wait_seconds requires kind postgres with runtime: wasm and must be 1..300`,
+      );
     if (s.command && (!s.command.length || s.command.some((arg) => !arg || arg.includes("\0"))))
       fail(`${name}: command requires nonempty arguments`);
     const wasm = s.runtime === "wasm";
