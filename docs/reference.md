@@ -117,6 +117,19 @@ services:
     memory: 512M
 ```
 
+### Platform manifests
+
+A project can ship a manifest per host platform beside the shared one. Contremaitre reads `.contremaitre.<platform>.yaml` (or `.yml`) when it exists, where `<platform>` is Node's `process.platform` on the host: `darwin` on macOS, `linux` on Linux. Otherwise it reads `.contremaitre.yaml` (or `.yml`). A project can keep its Apple-container manifest as `.contremaitre.yaml` for macOS and add `.contremaitre.linux.yaml` with [`runtime: wasm`](#service-runtime) services for Linux:
+
+```text
+.contremaitre.yaml          # macOS (and any platform without its own manifest)
+.contremaitre.linux.yaml    # Linux
+```
+
+The CLI, the hub, verification and init all use the manifest in effect on their host, so they always agree. Another platform's manifest is never a fallback: on Linux, `.contremaitre.darwin.yaml` is ignored. Each manifest may use one extension only; having both `.yaml` and `.yml` for the same manifest is an error. Manifests other than the one in effect are ordinary files in the source fingerprint, so editing them makes verification evidence stale like any other source change.
+
+Platform manifests use version 1. Compact config saves launch settings in the one `.contremaitre.lock`, which would differ per platform, so a compact platform manifest is refused.
+
 Use exactly one of `image` and `build`. Build contexts, Dockerfiles, and env files must remain within the manifest directory, including after resolving symlinks. Dockerfile paths are relative to that directory. Docker's build context ignore rules apply; exclude secrets from your build context. Images must support ARM64. Native builds stage only files allowed by `.dockerignore` (or the selected Dockerfile’s `.dockerignore` file) before contacting the Apple builder. This avoids repeatedly scanning ignored dependency trees. Temporary contexts use the user cache directory and are removed after each build. Symlinks that point outside the build context are rejected.
 
 Commands are argument arrays; no host shell interpolation occurs. For an intentional shell command, use `[sh, -c, 'your command']`. The app must listen on `0.0.0.0` inside its container.

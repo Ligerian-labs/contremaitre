@@ -14,7 +14,13 @@ import { atomicWrite, lockHome } from "@contremaitre/execution/files";
 import { Either, Schema } from "effect";
 import { safePath } from "./config.js";
 import { serviceSchema } from "./model.js";
-import { lockFilename, type ProjectLock, saveSetupLock } from "./project-lock.js";
+import {
+  lockFilename,
+  manifestNames,
+  type ProjectLock,
+  requireVersion1Platform,
+  saveSetupLock,
+} from "./project-lock.js";
 import { prepareSetup } from "./setup.js";
 
 const short = Schema.String.pipe(Schema.minLength(1), Schema.maxLength(600));
@@ -112,7 +118,7 @@ export function readInitFile(root: string, path: string): string {
   }
 }
 function existingManifest(root: string) {
-  const found = [".contremaitre.yaml", ".contremaitre.yml"].filter((p) => {
+  const exists = (p: string) => {
     try {
       lstatSync(join(root, p));
       return true;
@@ -120,12 +126,22 @@ function existingManifest(root: string) {
       if (isCode(e, "ENOENT")) return false;
       throw e;
     }
-  });
-  if (found.length > 1) fail("Both manifest filenames exist; keep one before running init");
-  const file = found[0] ?? ".contremaitre.yaml";
-  if (found.length && !lstatSync(join(root, file)).isFile())
-    fail("Manifest must be a regular file");
-  return { file, contents: found.length ? readFileSync(join(root, file), "utf8") : undefined };
+  };
+  // The manifest in effect (manifestFile's order), checked without following symlinks.
+  let file = ".contremaitre.yaml",
+    found = false;
+  for (const names of manifestNames()) {
+    const present = names.filter(exists);
+    if (present.length > 1)
+      fail(`Both ${names[0]} and ${names[1]} exist; keep one before running init`);
+    if (present.length) {
+      file = present[0];
+      found = true;
+      break;
+    }
+  }
+  if (found && !lstatSync(join(root, file)).isFile()) fail("Manifest must be a regular file");
+  return { file, contents: found ? readFileSync(join(root, file), "utf8") : undefined };
 }
 export async function assistedInit(
   ctx: Context,
@@ -200,6 +216,7 @@ export async function assistedInit(
       const setup = prepareSetup(root, reply.manifest, reply.resolved);
       const manifest = setup.manifest;
       lock = setup.lock;
+      if (lock) requireVersion1Platform(initial.file);
       for (const s of Object.values(manifest.services)) {
         for (const p of [s.build, s.dockerfile, s.dev?.source]) if (p) safePath(root, p);
         if (s.build) safePath(root, s.dockerfile ?? join(s.build, "Dockerfile"));

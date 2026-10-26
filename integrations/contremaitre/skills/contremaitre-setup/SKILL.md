@@ -3,7 +3,7 @@ name: contremaitre-setup
 description: Configure an application's Contremaitre manifest, development containers, databases and verification profiles. Use when onboarding a repository or changing its local stack, including projects without a manifest.
 ---
 
-Work from the application workspace. Inspect its package scripts, Dockerfiles, active Compose files, env variable names and existing `.contremaitre.yaml` or `.contremaitre.yml`. Preserve the project's commands and package manager. Contremaitre executes the current checkout; it does not create Git worktrees or Jujutsu workspaces.
+Work from the application workspace. Inspect its package scripts, Dockerfiles, active Compose files, env variable names and existing `.contremaitre.yaml` or `.contremaitre.yml`, and any platform manifest such as `.contremaitre.linux.yaml`. Preserve the project's commands and package manager. Contremaitre executes the current checkout; it does not create Git worktrees or Jujutsu workspaces.
 
 Check `contremaitre version` and the runtime prerequisites. The native runtime needs Apple silicon, macOS 26, Apple container, mkcert and local HTTPS forwarding. If the CLI is missing, follow the project's [installation guide](https://github.com/Ligerian-labs/contremaitre#get-started). Report missing prerequisites before promising a running preview. Installing the HTTPS service or trusting a certificate authority changes machine configuration; use the user's existing authorization and let the native administrator prompt handle privileges. Run the hub as the normal user.
 

@@ -1,5 +1,5 @@
 import { existsSync, lstatSync, readFileSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { decode, fail, hash, isCode, message } from "@contremaitre/execution/context";
 import { atomicWrite } from "@contremaitre/execution/files";
 import { Schema } from "effect";
@@ -262,25 +262,52 @@ export function saveSetupLock(root: string, lock: ProjectLock, saveConfig: () =>
     throw error;
   }
 }
-export function manifestFile(root: string) {
-  const files = [".contremaitre.yaml", ".contremaitre.yml"].filter((file) =>
-    existsSync(join(root, file)),
-  );
-  if (files.length > 1) fail("Both manifest filenames exist; keep one");
-  if (!files.length) fail(`No .contremaitre.yaml in ${root}; run contremaitre init`);
-  return join(root, files[0]);
+/**
+ * Manifest filenames in the order they are read: this platform's manifest
+ * (`.contremaitre.<platform>.yaml`, the platform being `process.platform`,
+ * such as `linux` or `darwin`) before the shared `.contremaitre.yaml`. Each
+ * entry is one manifest under its two accepted extensions.
+ */
+export function manifestNames(platform: string = process.platform): string[][] {
+  return [
+    [`.contremaitre.${platform}.yaml`, `.contremaitre.${platform}.yml`],
+    [".contremaitre.yaml", ".contremaitre.yml"],
+  ];
+}
+/** The manifest in effect: this platform's when present, else the shared one. */
+export function manifestFile(root: string, platform: string = process.platform) {
+  for (const names of manifestNames(platform)) {
+    const files = names.filter((file) => existsSync(join(root, file)));
+    if (files.length > 1) fail(`Both ${names[0]} and ${names[1]} exist; keep one`);
+    if (files.length) return join(root, files[0]);
+  }
+  return fail(`No .contremaitre.yaml in ${root}; run contremaitre init`);
+}
+/** True for a platform manifest path (`.contremaitre.<platform>.yaml|yml`). */
+export function isPlatformManifest(path: string) {
+  return /^\.contremaitre\.[^./]+\.ya?ml$/.test(basename(path));
+}
+/** Compact config saves launch settings in the one .contremaitre.lock, which
+    platform manifests would overwrite in turn; they stay version 1. */
+export function requireVersion1Platform(path: string) {
+  if (isPlatformManifest(path))
+    fail(
+      `${basename(path)} must use version 1: compact config shares .contremaitre.lock across platforms`,
+    );
 }
 export function projectName(root: string) {
-  const text = readFileSync(manifestFile(root), "utf8");
-  return isCompact(projectDocument(text))
-    ? parseProject(text).project
-    : parseManifest(text).project;
+  const path = manifestFile(root),
+    text = readFileSync(path, "utf8");
+  if (!isCompact(projectDocument(text))) return parseManifest(text).project;
+  requireVersion1Platform(path);
+  return parseProject(text).project;
 }
 export function loadProject(root: string, options: LoadOptions = {}): Manifest {
   try {
     const path = manifestFile(root),
       text = readFileSync(path, "utf8");
     if (!isCompact(projectDocument(text))) return parseManifest(text);
+    requireVersion1Platform(path);
     const project = parseProject(text),
       previous = readProjectLock(root);
     if (!previous)

@@ -230,10 +230,15 @@ export async function attach(
     if (!chunk.output) await sleep(200, ctx.signal);
   }
 }
+// The manifest names of @contremaitre/projects' manifestNames, inlined: the
+// runner loads this module at startup and must not load the projects package.
+const manifestNames = [`.contremaitre.${process.platform}`, ".contremaitre"].flatMap((base) => [
+  `${base}.yaml`,
+  `${base}.yml`,
+]);
 export function projectRoot(dir = process.cwd()): string {
   for (let path = resolve(dir); ; path = dirname(path)) {
-    if ([".contremaitre.yaml", ".contremaitre.yml"].some((f) => existsSync(join(path, f))))
-      return path;
+    if (manifestNames.some((f) => existsSync(join(path, f)))) return path;
     if (dirname(path) === path) return resolve(dir);
   }
 }
