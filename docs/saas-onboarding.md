@@ -16,7 +16,7 @@ The subscription preflight requires the matching SaaS API change. Deploy that ch
 4. If a credential exists, validate it with `GET /v1/cli/session`. Valid credentials need no browser approval or repeated workspace question. A 401 or 403 starts a new login in an interactive terminal. Network errors, server errors and invalid responses fail without starting another login.
 5. If credentials are missing, open device authorization in the browser. Print the verification URL and code even if the browser cannot open. Existing website login still requires an explicit authorization of this computer. The page shows the account and computer name. Signup and verification can complete while the original command waits.
 6. After approval, request the available workspaces. Ask the user if there is no explicit or saved selection, including when only one workspace exists. Validate explicit and saved choices against current membership.
-7. Enroll a device scoped to the chosen workspace and save its credential in macOS Keychain. Save the workspace choice before installing binaries, so a failed download does not require another login.
+7. Enroll a device scoped to the chosen workspace and save its credential: in macOS Keychain on a Mac, in a private file under the hub home on Linux. Save the workspace choice before installing binaries, so a failed download does not require another login.
 8. Query `GET /v1/cli/access` with the device credential before downloading a provider, reserving URLs or changing services. If a subscription is required, print an actionable message and open the returned subscription page in interactive terminals. Noninteractive commands print the URL without opening a browser. Keep the saved login so subscribing and retrying does not require another authorization.
 9. Prepare the managed provider and create the foreground preview. Pass the selected provider ID to the hub so a concurrent change of default workspace cannot redirect the new session.
 
@@ -93,6 +93,10 @@ The SaaS checks entitlement again before writing reservations or preview metadat
 ## Credential and adapter contract
 
 The Keychain service is `contremaitre-tunnel`. The Keychain account is the exact string `ENDPOINT#WORKSPACE_ID`, where `ENDPOINT` is the endpoint origin, for example `https://contremaitre.ligerianlabs.fr#WORKSPACE_ID` or `https://localhost:8443#WORKSPACE_ID`. Two endpoints therefore never share a credential. The value is base64-encoded JSON with `device_id` and `credential`. Base64 is an encoding; Keychain provides secret storage. The CLI writes through `security -i` stdin and verifies the write, so credentials never enter process arguments. A locked or unavailable Keychain fails explicitly.
+
+On Linux, where a headless server has no login keychain, the CLI stores each credential in `CONTREMAITRE_HOME/saas-credentials/`, by default `~/.local/share/contremaitre/saas-credentials/`. The directory must be mode 0700 and owned by the user. Each account has one file, named by the SHA-256 of the account string and written atomically with mode 0600. The file is JSON with `version`, `account`, `device_id` and `credential`, and the CLI reads it back after writing. A group- or world-accessible directory or file, a symbolic link, a file owned by another user, a corrupt file, or a file whose `account` differs from the one requested fails closed with a message naming the fix. File permissions protect the credential from other users; they do not protect it from the owning user or root. Back the directory up with the rest of the hub home, or log in again on a new machine.
+
+On macOS, the device flow opens the verification page with `open`. On Linux it uses `xdg-open` when `DISPLAY` or `WAYLAND_DISPLAY` is set. On a headless server it opens nothing: the CLI prints the URL and code, and you approve on any device while the command waits.
 
 The managed adapter receives these additional configuration fields through stdin:
 
