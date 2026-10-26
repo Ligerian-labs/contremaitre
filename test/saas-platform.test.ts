@@ -155,3 +155,71 @@ test("the browser opener follows the platform and a Linux graphical session", ()
   expect(browserCommand(url, "linux", { DISPLAY: "" }, found)).toBeUndefined();
   expect(browserCommand(url, "linux", { DISPLAY: ":0" }, missing)).toBeUndefined();
 });
+
+test("the file store refuses to overwrite shared, redirected, corrupt or foreign state", async () => {
+  const home = scratch();
+  const dir = join(home, "saas-credentials");
+  const store = fileCredentials(dir);
+  const replacement = { device_id: "device-9", credential: "secret-9" };
+  const prepare = async () => {
+    rmSync(dir, { recursive: true, force: true });
+    await store.set(account, value, signal);
+    return only(dir);
+  };
+  let file = await prepare();
+  chmodSync(file, 0o644);
+  await expect(store.set(account, replacement, signal)).rejects.toThrow("must be a private file");
+  expect(mode(file)).toBe(0o644);
+
+  file = await prepare();
+  const elsewhere = join(home, "elsewhere.json");
+  writeFileSync(elsewhere, readFileSync(file), { mode: 0o600 });
+  rmSync(file);
+  symlinkSync(elsewhere, file);
+  await expect(store.set(account, replacement, signal)).rejects.toThrow("must be a private file");
+  expect(lstatSync(file).isSymbolicLink()).toBe(true);
+
+  file = await prepare();
+  writeFileSync(file, "{not json", { mode: 0o600 });
+  await expect(store.set(account, replacement, signal)).rejects.toThrow("Invalid SaaS credential");
+  expect(readFileSync(file, "utf8")).toBe("{not json");
+
+  file = await prepare();
+  const foreign = JSON.stringify({ version: 1, account: "https://x.example#other", ...value });
+  writeFileSync(file, foreign, { mode: 0o600 });
+  await expect(store.set(account, replacement, signal)).rejects.toThrow("Invalid SaaS credential");
+  expect(readFileSync(file, "utf8")).toBe(foreign);
+});
+
+test("the file store keeps exact modes whatever the umask", async () => {
+  for (const mask of [0o000, 0o022, 0o200, 0o077]) {
+    const dir = join(scratch(), "saas-credentials");
+    const previous = process.umask(mask);
+    try {
+      const store = fileCredentials(dir);
+      await store.set(account, value, signal);
+      expect(await store.get(account, signal)).toEqual(value);
+      expect([mask, mode(dir)]).toEqual([mask, 0o700]);
+      expect([mask, mode(only(dir))]).toEqual([mask, 0o600]);
+    } finally {
+      process.umask(previous);
+    }
+  }
+});
+
+test("the file store verifies what it wrote and who owns it", async () => {
+  const dir = join(scratch(), "saas-credentials");
+  const substituted = fileCredentials(dir, {
+    write: (path, data) =>
+      writeFileSync(path, data.replace("secret-1", "secret-other"), { mode: 0o600 }),
+  });
+  await expect(substituted.set(account, value, signal)).rejects.toThrow(
+    "Cannot save SaaS credentials",
+  );
+
+  const other = join(scratch(), "saas-credentials");
+  await fileCredentials(other).set(account, value, signal);
+  const foreignUser = fileCredentials(other, { uid: () => (process.getuid?.() ?? 0) + 1 });
+  await expect(foreignUser.get(account, signal)).rejects.toThrow("you own");
+  await expect(foreignUser.set(account, value, signal)).rejects.toThrow("you own");
+});

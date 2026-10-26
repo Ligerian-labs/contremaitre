@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { lstatSync, mkdirSync, readFileSync, type Stats } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, readFileSync, type Stats } from "node:fs";
 import { join } from "node:path";
 import { context, fail, HubError } from "@contremaitre/execution/context";
 import { atomicWrite } from "@contremaitre/execution/files";
@@ -84,14 +84,28 @@ const storedSchema = Schema.Struct({
   device_id: Schema.NonEmptyString,
   credential: Schema.NonEmptyString,
 });
-const owned = (info: Stats) => info.uid === (process.getuid?.() ?? info.uid);
+export interface FileCredentialOptions {
+  /** Writes one credential file; the store sets its mode afterwards. */
+  write?: (path: string, data: string) => void;
+  /** The effective user that must own the directory and files. */
+  uid?: () => number | undefined;
+}
 /**
  * Off macOS there is no login keychain on a headless server, so credentials
  * live in private files: one per account, named by its hash, in a 0700
  * directory. Anything shared, redirected or unreadable fails closed; this
  * protects against other users, not against the owner or root.
  */
-export function fileCredentials(directory: string): Credentials {
+export function fileCredentials(
+  directory: string,
+  options: FileCredentialOptions = {},
+): Credentials {
+  const write = options.write ?? ((path: string, data: string) => atomicWrite(path, data, 0o600));
+  const uid = options.uid ?? (() => process.getuid?.());
+  const owned = (info: Stats) => {
+    const expected = uid();
+    return expected === undefined || info.uid === expected;
+  };
   const insecureDirectory = () =>
     fail(
       `SaaS credential directory ${directory} must be a private directory (mode 0700) you own; fix its permissions or remove it, then run contremaitre tunnel login`,
@@ -104,9 +118,11 @@ export function fileCredentials(directory: string): Credentials {
       if ((e as NodeJS.ErrnoException).code !== "ENOENT") return insecureDirectory();
       if (!create) return false;
       mkdirSync(directory, { recursive: true, mode: 0o700 });
+      // The umask may have taken owner bits too; the store's modes are exact.
+      chmodSync(directory, 0o700);
       info = lstatSync(directory);
     }
-    if (!info.isDirectory() || (info.mode & 0o077) !== 0 || !owned(info)) insecureDirectory();
+    if (!info.isDirectory() || (info.mode & 0o777) !== 0o700 || !owned(info)) insecureDirectory();
     return true;
   };
   const path = (account: string) =>
@@ -122,7 +138,7 @@ export function fileCredentials(directory: string): Credentials {
         if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
         return fail(`Cannot read SaaS credentials from ${file}`);
       }
-      if (!info.isFile() || (info.mode & 0o077) !== 0 || !owned(info))
+      if (!info.isFile() || (info.mode & 0o777) !== 0o600 || !owned(info))
         fail(
           `SaaS credential file ${file} must be a private file (mode 0600) you own; remove it and run contremaitre tunnel login`,
         );
@@ -141,13 +157,13 @@ export function fileCredentials(directory: string): Credentials {
     async set(account, value, signal) {
       if (!isCredentialAccount(account)) fail("Invalid credential account");
       checkDirectory(true);
+      // An existing entry passes the same checks as a read before it is
+      // replaced: shared, redirected, corrupt or foreign state is refused.
+      await store.get(account, signal);
       const file = path(account);
       try {
-        atomicWrite(
-          file,
-          JSON.stringify({ version: 1, account, ...read(credentialSchema, value) }),
-          0o600,
-        );
+        write(file, JSON.stringify({ version: 1, account, ...read(credentialSchema, value) }));
+        chmodSync(file, 0o600);
       } catch {
         fail(`Cannot save SaaS credentials in ${file}`);
       }
