@@ -18,6 +18,7 @@ import {
   lockFilename,
   manifestNames,
   type ProjectLock,
+  presentManifests,
   requireVersion1Platform,
   saveSetupLock,
 } from "./project-lock.js";
@@ -127,21 +128,18 @@ function existingManifest(root: string) {
       throw e;
     }
   };
-  // The manifest in effect (manifestFile's order), checked without following symlinks.
-  let file = ".contremaitre.yaml",
-    found = false;
-  for (const names of manifestNames()) {
-    const present = names.filter(exists);
-    if (present.length > 1)
-      fail(`Both ${names[0]} and ${names[1]} exist; keep one before running init`);
-    if (present.length) {
-      file = present[0];
-      found = true;
-      break;
-    }
-  }
-  if (found && !lstatSync(join(root, file)).isFile()) fail("Manifest must be a regular file");
-  return { file, contents: found ? readFileSync(join(root, file), "utf8") : undefined };
+  // The manifest in effect (manifestFile's order and duplicate rule), checked
+  // without following symlinks.
+  const present = presentManifests(manifestNames(), exists, " before running init").find(
+    (name) => name !== undefined,
+  );
+  const file = present ?? ".contremaitre.yaml";
+  if (present !== undefined && !lstatSync(join(root, file)).isFile())
+    fail("Manifest must be a regular file");
+  return {
+    file,
+    contents: present !== undefined ? readFileSync(join(root, file), "utf8") : undefined,
+  };
 }
 export async function assistedInit(
   ctx: Context,

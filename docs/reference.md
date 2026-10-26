@@ -126,7 +126,7 @@ A project can ship a manifest per host platform beside the shared one. Contremai
 .contremaitre.linux.yaml    # Linux
 ```
 
-The CLI, the hub, verification and init all use the manifest in effect on their host, so they always agree. Another platform's manifest is never a fallback: on Linux, `.contremaitre.darwin.yaml` is ignored. Each manifest may use one extension only; having both `.yaml` and `.yml` for the same manifest is an error. Manifests other than the one in effect are ordinary files in the source fingerprint, so editing them makes verification evidence stale like any other source change.
+The CLI, the hub, verification and init all use the manifest in effect on their host, so they always agree. Another platform's manifest is never a fallback: on Linux, `.contremaitre.darwin.yaml` is ignored. Each manifest may use one extension only; having both `.yaml` and `.yml` for the same manifest is an error, checked for every manifest name before one is chosen: a duplicate shared pair is an error even when a platform manifest is in effect. Manifests other than the one in effect are ordinary files in the source fingerprint, so editing them makes verification evidence stale like any other source change.
 
 Platform manifests use version 1. Compact config saves launch settings in the one `.contremaitre.lock`, which would differ per platform, so a compact platform manifest is refused.
 

@@ -51,7 +51,7 @@ test("the platform manifest takes precedence over the shared one", () => {
   }
 });
 
-test("each manifest accepts one extension, and another platform's is not a fallback", () => {
+test("each manifest accepts one extension, even when another is in effect, and another platform's is not a fallback", () => {
   const f = fixture();
   try {
     writeFileSync(join(f.root, `${other}.yaml`), manifest("elsewhere", 4000));
@@ -62,9 +62,18 @@ test("each manifest accepts one extension, and another platform's is not a fallb
     rmSync(join(f.root, `${own}.yml`));
     writeFileSync(join(f.root, ".contremaitre.yaml"), manifest("shared", 3000));
     writeFileSync(join(f.root, ".contremaitre.yml"), manifest("shared", 3000));
-    // The platform manifest is in effect; the shared pair is never read.
+    // A duplicate shared pair stays an error beside a platform manifest:
+    // every name takes one extension, in effect or not.
+    for (const read of [manifestFile, loadManifest, projectName])
+      expect(() => read(f.root)).toThrow("Both .contremaitre.yaml and .contremaitre.yml exist");
+    rmSync(join(f.root, ".contremaitre.yml"));
     expect(manifestFile(f.root)).toBe(join(f.root, `${own}.yaml`));
+    // Both pairs doubled: the platform pair is reported first.
+    writeFileSync(join(f.root, ".contremaitre.yml"), manifest("shared", 3000));
+    writeFileSync(join(f.root, `${own}.yml`), manifest("here", 5000));
+    expect(() => manifestFile(f.root)).toThrow(`Both ${own}.yaml and ${own}.yml exist`);
     rmSync(join(f.root, `${own}.yaml`));
+    rmSync(join(f.root, `${own}.yml`));
     expect(() => manifestFile(f.root)).toThrow(
       "Both .contremaitre.yaml and .contremaitre.yml exist",
     );

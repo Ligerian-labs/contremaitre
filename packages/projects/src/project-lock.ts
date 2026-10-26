@@ -274,14 +274,31 @@ export function manifestNames(platform: string = process.platform): string[][] {
     [".contremaitre.yaml", ".contremaitre.yml"],
   ];
 }
+/**
+ * The manifest names present in `root`, per entry of `manifestNames`. Each
+ * manifest takes one extension: both extensions of any name are an error,
+ * even for a name another one shadows, so every pair is checked before one
+ * is chosen.
+ */
+export function presentManifests(
+  names: string[][],
+  exists: (file: string) => boolean,
+  suffix = "",
+): (string | undefined)[] {
+  return names.map((pair) => {
+    const present = pair.filter(exists);
+    if (present.length > 1) fail(`Both ${pair[0]} and ${pair[1]} exist; keep one${suffix}`);
+    return present[0];
+  });
+}
 /** The manifest in effect: this platform's when present, else the shared one. */
 export function manifestFile(root: string, platform: string = process.platform) {
-  for (const names of manifestNames(platform)) {
-    const files = names.filter((file) => existsSync(join(root, file)));
-    if (files.length > 1) fail(`Both ${names[0]} and ${names[1]} exist; keep one`);
-    if (files.length) return join(root, files[0]);
-  }
-  return fail(`No .contremaitre.yaml in ${root}; run contremaitre init`);
+  const file = presentManifests(manifestNames(platform), (name) =>
+    existsSync(join(root, name)),
+  ).find((name) => name !== undefined);
+  return file === undefined
+    ? fail(`No .contremaitre.yaml in ${root}; run contremaitre init`)
+    : join(root, file);
 }
 /** True for a platform manifest path (`.contremaitre.<platform>.yaml|yml`). */
 export function isPlatformManifest(path: string) {

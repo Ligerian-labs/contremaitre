@@ -1,6 +1,6 @@
 # Manifest configuration
 
-Keep `.contremaitre.yaml` at the application repository root. A repository that needs different services per host platform can add `.contremaitre.<platform>.yaml` (`linux`, `darwin`, from Node's `process.platform`) beside it: Contremaitre reads that file on the matching host and the shared file elsewhere, never another platform's file. Platform manifests use version 1, because compact config shares one `.contremaitre.lock`. Edit the manifest in effect on the platform you are configuring. Names are lowercase DNS labels, at most 40 characters. Preserve an existing `project` name because it identifies the application's environments and main-data source.
+Keep `.contremaitre.yaml` at the application repository root. A repository that needs different services per host platform can add `.contremaitre.<platform>.yaml` (`linux`, `darwin`, from Node's `process.platform`) beside it: Contremaitre reads that file on the matching host and the shared file elsewhere, never another platform's file. Platform manifests use version 1, because compact config shares one `.contremaitre.lock`. Keep one extension per manifest name: both `.yaml` and `.yml` of any name is an error, even beside the manifest in effect. Edit the manifest in effect on the platform you are configuring. Names are lowercase DNS labels, at most 40 characters. Preserve an existing `project` name because it identifies the application's environments and main-data source.
 
 ## Compact development config
 

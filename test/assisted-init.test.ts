@@ -268,3 +268,35 @@ test("assisted init updates the platform manifest in effect and keeps it version
     f.clean();
   }
 });
+test("assisted init refuses a duplicate pair beside the platform manifest in effect", async () => {
+  const f = fixture(),
+    platform = join(f.root, `.contremaitre.${process.platform}.yaml`);
+  writeFileSync(platform, manifest);
+  writeFileSync(join(f.root, ".contremaitre.yaml"), manifest);
+  writeFileSync(join(f.root, ".contremaitre.yml"), manifest);
+  let calls = 0;
+  const run = () =>
+    assistedInit(
+      context(),
+      f.root,
+      async () => {
+        calls++;
+        return JSON.stringify({ type: "manifest", manifest });
+      },
+      { ask: async () => "", note() {} },
+      f.options,
+    );
+  try {
+    await expect(run()).rejects.toThrow(
+      "Both .contremaitre.yaml and .contremaitre.yml exist; keep one before running init",
+    );
+    rmSync(join(f.root, ".contremaitre.yml"));
+    writeFileSync(join(f.root, `.contremaitre.${process.platform}.yml`), manifest);
+    await expect(run()).rejects.toThrow(
+      `Both .contremaitre.${process.platform}.yaml and .contremaitre.${process.platform}.yml exist`,
+    );
+    expect(calls).toBe(0);
+  } finally {
+    f.clean();
+  }
+});
