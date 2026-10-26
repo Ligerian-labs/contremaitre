@@ -223,3 +223,43 @@ test("the file store verifies what it wrote and who owns it", async () => {
   await expect(foreignUser.get(account, signal)).rejects.toThrow("you own");
   await expect(foreignUser.set(account, value, signal)).rejects.toThrow("you own");
 });
+
+test("the file store creates a missing hub home privately under an owner-bit umask", async () => {
+  for (const mask of [0o200, 0o077]) {
+    const home = join(scratch(), "missing-home", "contremaitre");
+    const previous = process.umask(mask);
+    try {
+      const store = credentialStore(home, "linux");
+      await store.set(account, value, signal);
+      expect(await store.get(account, signal)).toEqual(value);
+      expect([mask, mode(home)]).toEqual([mask, 0o700]);
+      expect([mask, mode(join(home, "saas-credentials"))]).toEqual([mask, 0o700]);
+    } finally {
+      process.umask(previous);
+    }
+  }
+  const blocked = join(scratch(), "read-only");
+  mkdirSync(blocked, { mode: 0o500 });
+  try {
+    await expect(
+      fileCredentials(join(blocked, "home", "saas-credentials")).set(account, value, signal),
+    ).rejects.toThrow("Cannot create SaaS credential directory");
+  } finally {
+    chmodSync(blocked, 0o700);
+  }
+});
+
+test("the file store refuses a credential file owned by someone else in its own directory", async () => {
+  const dir = join(scratch(), "saas-credentials");
+  await fileCredentials(dir).set(account, value, signal);
+  const file = only(dir);
+  const other = (process.getuid?.() ?? 0) + 1;
+  const foreignFile = fileCredentials(dir, {
+    lstat: (path) => {
+      const info = lstatSync(path);
+      return path === file ? Object.create(info, { uid: { value: other } }) : info;
+    },
+  });
+  await expect(foreignFile.get(account, signal)).rejects.toThrow("must be a private file");
+  await expect(foreignFile.set(account, value, signal)).rejects.toThrow("must be a private file");
+});

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, readFileSync, type Stats } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { context, fail, HubError } from "@contremaitre/execution/context";
 import { atomicWrite } from "@contremaitre/execution/files";
 import { run } from "@contremaitre/execution/process";
@@ -89,6 +89,8 @@ export interface FileCredentialOptions {
   write?: (path: string, data: string) => void;
   /** The effective user that must own the directory and files. */
   uid?: () => number | undefined;
+  /** Reads a path's own metadata, never following a link. */
+  lstat?: (path: string) => Stats;
 }
 /**
  * Off macOS there is no login keychain on a headless server, so credentials
@@ -102,6 +104,7 @@ export function fileCredentials(
 ): Credentials {
   const write = options.write ?? ((path: string, data: string) => atomicWrite(path, data, 0o600));
   const uid = options.uid ?? (() => process.getuid?.());
+  const lstat = options.lstat ?? lstatSync;
   const owned = (info: Stats) => {
     const expected = uid();
     return expected === undefined || info.uid === expected;
@@ -110,17 +113,39 @@ export function fileCredentials(
     fail(
       `SaaS credential directory ${directory} must be a private directory (mode 0700) you own; fix its permissions or remove it, then run contremaitre tunnel login`,
     );
+  // Each missing level, the hub home included, is made 0700 one at a time:
+  // the umask may have taken owner bits too, and the store's modes are exact.
+  const createPrivate = () => {
+    const missing: string[] = [];
+    try {
+      for (let level = directory; ; level = dirname(level)) {
+        try {
+          lstat(level);
+          break;
+        } catch (e) {
+          if ((e as NodeJS.ErrnoException).code !== "ENOENT" || dirname(level) === level) throw e;
+          missing.unshift(level);
+        }
+      }
+      for (const level of missing) {
+        mkdirSync(level, { mode: 0o700 });
+        chmodSync(level, 0o700);
+      }
+    } catch {
+      fail(
+        `Cannot create SaaS credential directory ${directory}; make sure you can write to its parent directory, then run contremaitre tunnel login`,
+      );
+    }
+  };
   const checkDirectory = (create: boolean) => {
     let info: Stats;
     try {
-      info = lstatSync(directory);
+      info = lstat(directory);
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "ENOENT") return insecureDirectory();
       if (!create) return false;
-      mkdirSync(directory, { recursive: true, mode: 0o700 });
-      // The umask may have taken owner bits too; the store's modes are exact.
-      chmodSync(directory, 0o700);
-      info = lstatSync(directory);
+      createPrivate();
+      info = lstat(directory);
     }
     if (!info.isDirectory() || (info.mode & 0o777) !== 0o700 || !owned(info)) insecureDirectory();
     return true;
@@ -133,7 +158,7 @@ export function fileCredentials(
       const file = path(account);
       let info: Stats;
       try {
-        info = lstatSync(file);
+        info = lstat(file);
       } catch (e) {
         if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
         return fail(`Cannot read SaaS credentials from ${file}`);
