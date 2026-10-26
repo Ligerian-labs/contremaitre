@@ -278,8 +278,10 @@ function validateWasm(name: string, kind: string, s: Service) {
   if (unsupported) fail(`${name}: ${unsupported[0]} is not supported with runtime: wasm`);
   if (!s.wasm?.component) fail(`${name}: runtime: wasm requires wasm.component`);
   if (!wasmCommand(s) && !s.port) fail(`${name}: runtime: wasm requires a port`);
-  if (wasmCommand(s) && (s.http || keys(s.endpoints).length))
-    fail(`${name}: wasm command mode does not support HTTP endpoints`);
+  // A command service that listens on its reserved port can be routed as
+  // HTTP; named endpoints are refused above for every WASM app.
+  if (wasmCommand(s) && s.http && !s.port)
+    fail(`${name}: wasm command mode requires a port for http`);
   if (
     s.wasm.build &&
     (!s.wasm.build.length || s.wasm.build.some((arg) => !arg || arg.includes("\0")))
