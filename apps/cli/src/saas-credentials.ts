@@ -1,4 +1,8 @@
+import { createHash } from "node:crypto";
+import { chmodSync, lstatSync, mkdirSync, readFileSync, type Stats } from "node:fs";
+import { dirname, join } from "node:path";
 import { context, fail, HubError } from "@contremaitre/execution/context";
+import { atomicWrite } from "@contremaitre/execution/files";
 import { run } from "@contremaitre/execution/process";
 import { Schema } from "effect";
 import { read } from "./saas-client.js";
@@ -72,4 +76,130 @@ export function keychain(): Credentials {
     },
   };
   return store;
+}
+
+const storedSchema = Schema.Struct({
+  version: Schema.Literal(1),
+  account: Schema.String,
+  device_id: Schema.NonEmptyString,
+  credential: Schema.NonEmptyString,
+});
+export interface FileCredentialOptions {
+  /** Writes one credential file; the store sets its mode afterwards. */
+  write?: (path: string, data: string) => void;
+  /** The effective user that must own the directory and files. */
+  uid?: () => number | undefined;
+  /** Reads a path's own metadata, never following a link. */
+  lstat?: (path: string) => Stats;
+}
+/**
+ * Off macOS there is no login keychain on a headless server, so credentials
+ * live in private files: one per account, named by its hash, in a 0700
+ * directory. Anything shared, redirected or unreadable fails closed; this
+ * protects against other users, not against the owner or root.
+ */
+export function fileCredentials(
+  directory: string,
+  options: FileCredentialOptions = {},
+): Credentials {
+  const write = options.write ?? ((path: string, data: string) => atomicWrite(path, data, 0o600));
+  const uid = options.uid ?? (() => process.getuid?.());
+  const lstat = options.lstat ?? lstatSync;
+  const owned = (info: Stats) => {
+    const expected = uid();
+    return expected === undefined || info.uid === expected;
+  };
+  const insecureDirectory = () =>
+    fail(
+      `SaaS credential directory ${directory} must be a private directory (mode 0700) you own; fix its permissions or remove it, then run contremaitre tunnel login`,
+    );
+  // Each missing level, the hub home included, is made 0700 one at a time:
+  // the umask may have taken owner bits too, and the store's modes are exact.
+  const createPrivate = () => {
+    const missing: string[] = [];
+    try {
+      for (let level = directory; ; level = dirname(level)) {
+        try {
+          lstat(level);
+          break;
+        } catch (e) {
+          if ((e as NodeJS.ErrnoException).code !== "ENOENT" || dirname(level) === level) throw e;
+          missing.unshift(level);
+        }
+      }
+      for (const level of missing) {
+        mkdirSync(level, { mode: 0o700 });
+        chmodSync(level, 0o700);
+      }
+    } catch {
+      fail(
+        `Cannot create SaaS credential directory ${directory}; make sure you can write to its parent directory, then run contremaitre tunnel login`,
+      );
+    }
+  };
+  const checkDirectory = (create: boolean) => {
+    let info: Stats;
+    try {
+      info = lstat(directory);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") return insecureDirectory();
+      if (!create) return false;
+      createPrivate();
+      info = lstat(directory);
+    }
+    if (!info.isDirectory() || (info.mode & 0o777) !== 0o700 || !owned(info)) insecureDirectory();
+    return true;
+  };
+  const path = (account: string) =>
+    join(directory, `${createHash("sha256").update(account).digest("hex")}.json`);
+  const store: Credentials = {
+    async get(account) {
+      if (!checkDirectory(false)) return undefined;
+      const file = path(account);
+      let info: Stats;
+      try {
+        info = lstat(file);
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+        return fail(`Cannot read SaaS credentials from ${file}`);
+      }
+      if (!info.isFile() || (info.mode & 0o777) !== 0o600 || !owned(info))
+        fail(
+          `SaaS credential file ${file} must be a private file (mode 0600) you own; remove it and run contremaitre tunnel login`,
+        );
+      let stored: typeof storedSchema.Type;
+      try {
+        stored = read(storedSchema, JSON.parse(readFileSync(file, "utf8")));
+      } catch {
+        return fail(
+          `Invalid SaaS credential in ${file}; remove it and run contremaitre tunnel login`,
+        );
+      }
+      if (stored.account !== account)
+        fail(`Invalid SaaS credential in ${file}; remove it and run contremaitre tunnel login`);
+      return { device_id: stored.device_id, credential: stored.credential };
+    },
+    async set(account, value, signal) {
+      if (!isCredentialAccount(account)) fail("Invalid credential account");
+      checkDirectory(true);
+      // An existing entry passes the same checks as a read before it is
+      // replaced: shared, redirected, corrupt or foreign state is refused.
+      await store.get(account, signal);
+      const file = path(account);
+      try {
+        write(file, JSON.stringify({ version: 1, account, ...read(credentialSchema, value) }));
+        chmodSync(file, 0o600);
+      } catch {
+        fail(`Cannot save SaaS credentials in ${file}`);
+      }
+      const saved = await store.get(account, signal);
+      if (saved?.credential !== value.credential || saved.device_id !== value.device_id)
+        fail(`Cannot save SaaS credentials in ${file}`);
+    },
+  };
+  return store;
+}
+/** Keychain on macOS; private files under the hub home elsewhere. */
+export function credentialStore(home: string, platform: NodeJS.Platform = process.platform) {
+  return platform === "darwin" ? keychain() : fileCredentials(join(home, "saas-credentials"));
 }
