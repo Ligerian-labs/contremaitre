@@ -117,6 +117,9 @@ export class PGliteRuntime implements ServiceRuntime {
         dataDir: instance.data,
         port: instance.port,
         host: "127.0.0.1",
+        ...(instance.spec.service.connection_wait_seconds === undefined
+          ? {}
+          : { connectionWaitMs: instance.spec.service.connection_wait_seconds * 1000 }),
         log: (text) => instance.writer?.append(text),
       });
     } finally {

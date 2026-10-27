@@ -177,6 +177,26 @@ test("managed postgres rejects migration commands", () => {
   );
 });
 
+test("connection_wait_seconds is a ranged option of WASM Postgres only", () => {
+  const manifest = (db: string, extra = "") =>
+    `version: 1\nproject: test\nservices:\n  db: ${db}\n${extra}`;
+  expect(
+    parseManifest(manifest("{kind: postgres, runtime: wasm, connection_wait_seconds: 30}")).services
+      .db?.connection_wait_seconds,
+  ).toBe(30);
+  const refusal =
+    "db: connection_wait_seconds requires kind postgres with runtime: wasm and must be 1..300";
+  for (const db of [
+    "{kind: postgres, runtime: wasm, connection_wait_seconds: 0}",
+    "{kind: postgres, runtime: wasm, connection_wait_seconds: 301}",
+    "{kind: postgres, image: 'postgres:17', connection_wait_seconds: 30}",
+  ])
+    expect(() => parseManifest(manifest(db))).toThrow(refusal);
+  expect(() =>
+    parseManifest(manifest("{kind: postgres, runtime: wasm, connection_wait_seconds: 1.5}")),
+  ).toThrow();
+});
+
 test("compiled Worker embeds PGlite assets and runs without node_modules", async () => {
   const root = await mkdtemp(join(tmpdir(), "cm-pglite-compiled-"));
   try {

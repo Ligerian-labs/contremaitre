@@ -103,3 +103,80 @@ test("V1-F4: thirty immediate reconnects succeed; an occupied slot waits two sec
     await rm(root, { recursive: true, force: true });
   }
 }, 30_000);
+
+const holdThenProbe = async (connectionWaitMs: number, releaseAfterMs: number) => {
+  const root = await mkdtemp(join(tmpdir(), "cm-pglite-wait-"));
+  const server = await startPglite({
+    dataDir: join(root, "db"),
+    port: await freePort(),
+    connectionWaitMs,
+  });
+  const holder = new SQL(server.url(), { max: 1, connectionTimeout: 60 });
+  const waiter = new SQL(server.url(), { max: 1, connectionTimeout: 60 });
+  try {
+    await holder`SELECT 1`;
+    const release = Bun.sleep(releaseAfterMs).then(() => holder.close({ timeout: 0 }));
+    const start = performance.now();
+    const outcome = await waiter`SELECT 7 AS value`.then(
+      (rows) => ({ value: rows[0].value as number }),
+      (error: unknown) => ({ error }),
+    );
+    const elapsed = performance.now() - start;
+    await release;
+    return { outcome, elapsed };
+  } finally {
+    await waiter.close({ timeout: 0 });
+    await holder.close({ timeout: 0 });
+    await server.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+};
+
+test("a configured connection wait refuses at its own deadline", async () => {
+  const { outcome, elapsed } = await holdThenProbe(800, 5000);
+  expect(outcome).toMatchObject({
+    error: { errno: "53300", message: "PGlite allows one connection; use pool size 1" },
+  });
+  expect(elapsed).toBeGreaterThanOrEqual(700);
+  expect(elapsed).toBeLessThan(1900);
+}, 30_000);
+
+test("a longer connection wait admits a client released after the two-second default", async () => {
+  const { outcome, elapsed } = await holdThenProbe(8000, 3000);
+  expect(outcome).toEqual({ value: 7 });
+  expect(elapsed).toBeGreaterThanOrEqual(2900);
+  expect(elapsed).toBeLessThan(8000);
+}, 30_000);
+
+test("waiters are admitted first come, first served within the configured wait", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cm-pglite-fifo-"));
+  const server = await startPglite({
+    dataDir: join(root, "db"),
+    port: await freePort(),
+    connectionWaitMs: 10_000,
+  });
+  const holder = new SQL(server.url(), { max: 1, connectionTimeout: 60 });
+  const clients: SQL[] = [];
+  try {
+    await holder`SELECT 1`;
+    const order: string[] = [];
+    const queued = ["first", "second", "third"].map(async (name, index) => {
+      // Arrive in order, while the slot is still held.
+      await Bun.sleep(100 * index);
+      const sql = new SQL(server.url(), { max: 1, connectionTimeout: 60 });
+      clients.push(sql);
+      await sql`SELECT 1`;
+      order.push(name);
+      await sql.close({ timeout: 0 });
+    });
+    await Bun.sleep(600);
+    await holder.close({ timeout: 0 });
+    await Promise.all(queued);
+    expect(order).toEqual(["first", "second", "third"]);
+  } finally {
+    for (const sql of clients) await sql.close({ timeout: 0 });
+    await holder.close({ timeout: 0 });
+    await server.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+}, 60_000);
