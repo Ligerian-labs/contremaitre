@@ -289,6 +289,24 @@ test("manifests default to Apple and validate WASM services", () => {
   expect(
     invalid("services:\n  web: {image: nginx, command: [x], dev: {source: .}, working_dir: /a}"),
   ).toThrow("web: invalid dev.target");
+  // Command mode: HTTP on the declared port, never without one or through endpoints.
+  const command = "runtime: wasm, wasm: {component: a.wasm, mode: command}";
+  expect(invalid(`services:\n  web: {${command}, port: 3000, http: true}`)).not.toThrow();
+  expect(invalid(`services:\n  web: {${command}, http: true}`)).toThrow(
+    "web: wasm command mode requires a port for http",
+  );
+  expect(invalid(`services:\n  web: {${command}, port: 3000, endpoints: {api: 3000}}`)).toThrow(
+    "web: endpoints is not supported with runtime: wasm",
+  );
+  for (const workload of ["worker", "job"])
+    for (const extra of ["port: 3000", "port: 3000, http: true", "http: true"])
+      expect(
+        invalid(
+          `services:\n  w: {runtime: wasm, workload: ${workload}, wasm: {component: a.wasm}, ${extra}}`,
+        ),
+      ).toThrow(
+        `w: ${workload} workloads cannot declare ports, HTTP endpoints or readiness commands`,
+      );
 });
 test("an older state file upgrades to Apple runtimes with its address", () => {
   const home = mkdtempSync(join(tmpdir(), "cm-runtimes-state-")),
@@ -380,6 +398,43 @@ test("mixed environments address host runtimes by reserved loopback ports", asyn
     f.host.calls = [];
     await f.manager.deploy(context(), p);
     expect(env.Services.db.Ports).toEqual({ "5432": dbPort });
+  } finally {
+    await f.clean();
+  }
+});
+test("a command-mode WASM service with a port serves HTTP on its reserved loopback port", async () => {
+  const f = fixture(`version: 1
+project: example
+services:
+  web:
+    runtime: wasm
+    wasm: {component: web.wasm, mode: command, network: true}
+    command: [--serve]
+    port: 3000
+    http: true
+    environment: {PORT: '{{web.port}}', PUBLIC_BASE_URL: 'http://127.0.0.1:{{web.port}}'}
+`);
+  try {
+    const p = f.prepare();
+    await f.manager.deploy(context(), p);
+    const env = f.manager.resolve(p.identity.ID);
+    const port = env.Services.web.Ports?.["3000"] ?? 0;
+    expect(port).toBeGreaterThan(0);
+    expect(port).not.toBe(3000);
+    const run = f.host.specs.get(env.Services.web.Container) as RunSpec & { environment: string };
+    expect(run.ports).toEqual({ "3000": port });
+    expect(run.environment).toContain(`PORT=${port}\n`);
+    expect(run.environment).toContain(`PUBLIC_BASE_URL=http://127.0.0.1:${port}\n`);
+    expect(f.host.readyChecks).toContain(`web 127.0.0.1:${port}`);
+    const route = routes(f.manager, new URL(f.manager.localURL(env, "web")).hostname);
+    expect(route?.upstream).toBe(`http://127.0.0.1:${port}`);
+    // A redeploy keeps the reservation, so the address the app was given stays valid.
+    await f.manager.deploy(context(), { ...p, request: { rebuild: true } });
+    const again = f.manager.resolve(p.identity.ID).Services.web;
+    expect(again.Ports).toEqual({ "3000": port });
+    expect(
+      (f.host.specs.get(again.Container) as RunSpec & { environment: string }).environment,
+    ).toContain(`PUBLIC_BASE_URL=http://127.0.0.1:${port}\n`);
   } finally {
     await f.clean();
   }
