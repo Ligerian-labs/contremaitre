@@ -170,6 +170,7 @@ Contremaitre is in early development. The local runtime supports managed Postgre
 | --- | --- |
 | [Full reference](docs/reference.md) | Manifest fields, environment identity, data lifecycle, commands, and tunnels |
 | [Services, workers and jobs](docs/workloads.md) | Workload lifecycles, Wasm commands, and networking between containers and Wasm |
+| [Redis Wasm investigation](docs/wasm-redis.md) | Experimental TCP compatibility results and remaining engine gaps |
 | [Local HTTPS](docs/local-https.md) | Certificates, port forwarding, and the hub status page |
 | [Compact configuration](docs/compact-config.md) | Minimal app config, setup detection, shared containers, endpoints and automatic lock refresh |
 | [Initialization and hot reload](docs/assisted-init.md) | Agent-assisted setup, Dockerfiles, and development containers |
