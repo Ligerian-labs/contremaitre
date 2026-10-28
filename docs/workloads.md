@@ -34,7 +34,7 @@ services:
     depends_on: [migrate]
 ```
 
-Deploy with `contremaitre deploy`. Use `contremaitre logs migrate` and `contremaitre logs worker` to read their output. The example's container job reaches the host PGlite database through an automatically managed relay. PGlite clients need a pool size of one.
+Deploy with `contremaitre deploy`. Use `contremaitre logs migrate` and `contremaitre logs worker` to read their output. The example's container job reaches the host PGlite database through an automatically managed relay. PGlite's default session mode requires client pool size one. Select [`pool_mode: transaction`](wasm-postgres.md#retained-connection-pools) on the database to retain application pools.
 
 Jobs have a default timeout of 300 seconds; `timeout_seconds` accepts 1 through 7200. Their last 64 KiB of output remains available through `logs`, including after the task container is removed or the hub restarts. Environment JSON records job status, successful or failed exit code when available, completion time and errors.
 

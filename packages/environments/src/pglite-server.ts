@@ -15,6 +15,7 @@ export async function startPglite(options: {
   dataDir: string;
   port: number;
   host?: string;
+  poolMode?: "session" | "transaction";
   signal?: AbortSignal;
   ctx?: Context;
   log?: (text: string) => void;
@@ -23,6 +24,8 @@ export async function startPglite(options: {
   const host = options.host ?? "127.0.0.1";
   const dataDir = resolve(options.dataDir);
   if (host !== "127.0.0.1") throw new Error("PGlite requires loopback address 127.0.0.1");
+  if (options.poolMode !== undefined && !["session", "transaction"].includes(options.poolMode))
+    throw new Error("Invalid PGlite pool mode");
   if (!Number.isInteger(options.port) || options.port < 1 || options.port > 65535)
     throw new Error("Invalid PGlite port");
   const signal = options.signal ?? options.ctx?.signal;
@@ -99,7 +102,7 @@ export async function startPglite(options: {
       worker.addEventListener("error", onError);
       worker.addEventListener("close", onClose);
       worker.addEventListener("message", onMessage);
-      worker.postMessage({ type, dataDir, port: options.port, host });
+      worker.postMessage({ type, dataDir, port: options.port, host, poolMode: options.poolMode });
     });
   }
   let termination: Promise<void> | undefined;

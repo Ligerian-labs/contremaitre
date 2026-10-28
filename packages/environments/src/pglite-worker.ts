@@ -6,12 +6,14 @@ import type { PGlite } from "@electric-sql/pglite";
 import { PGLiteSocketServer } from "@electric-sql/pglite-socket";
 import { bufferPgliteCopy } from "./pglite-copy.js";
 import { openPglite } from "./pglite-initialize.js";
+import { createPglitePool } from "./pglite-pool.js";
 
 declare const self: Worker;
 let front: Server | undefined;
 let socketDirectory: string | undefined;
 const sockets = new Set<Socket>();
 let db: PGlite | undefined;
+let pool: ReturnType<typeof createPglitePool> | undefined;
 let server: PGLiteSocketServer | undefined;
 let stopping = false;
 let resetting = Promise.resolve();
@@ -24,6 +26,21 @@ self.onmessage = async (event: MessageEvent) => {
         self.postMessage({ type: "log", text });
         return true;
       });
+      if (event.data.poolMode === "transaction") {
+        pool = createPglitePool(db, {
+          resetting: () => self.postMessage({ type: "resetting" }),
+          reset: () => self.postMessage({ type: "reset" }),
+          fatal: (error) =>
+            self.postMessage({ type: "error", message: `PGlite pool failed: ${String(error)}` }),
+        });
+        front = pool.server;
+        await new Promise<void>((resolve, reject) => {
+          front?.once("error", reject);
+          front?.listen(event.data.port, event.data.host, resolve);
+        });
+        self.postMessage({ type: "started" });
+        return;
+      }
       const copy = bufferPgliteCopy(db);
       // mkdtemp creates the parent with mode 0700 before the socket can exist.
       socketDirectory = await mkdtemp(join(tmpdir(), "cm-pglite-socket-"));
@@ -145,6 +162,7 @@ self.onmessage = async (event: MessageEvent) => {
       self.postMessage({ type: "started", socketDirectory });
     } else if (event.data.type === "stop") {
       stopping = true;
+      await pool?.stop();
       for (const waiter of waiters.values()) clearTimeout(waiter.timer);
       waiters.clear();
       await closeClient?.();
@@ -158,6 +176,7 @@ self.onmessage = async (event: MessageEvent) => {
     }
   } catch (error) {
     stopping = true;
+    await pool?.stop().catch(() => {});
     for (const waiter of waiters.values()) clearTimeout(waiter.timer);
     waiters.clear();
     for (const socket of sockets) socket.destroy();
