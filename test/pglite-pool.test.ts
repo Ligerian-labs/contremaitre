@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
+import { once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
-import { createConnection } from "node:net";
+import { createConnection, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SQL } from "bun";
@@ -12,7 +13,7 @@ import { freePort } from "./ports.js";
 checkPgliteCleanup();
 
 async function wire(port: number) {
-  const socket = createConnection(port, "127.0.0.1");
+  const socket = createConnection({ port, host: "127.0.0.1", allowHalfOpen: true });
   let input = Buffer.alloc(0);
   const received: Buffer[] = [];
   let wake: (() => void) | undefined;
@@ -35,7 +36,7 @@ async function wire(port: number) {
       const packet = received.shift();
       if (packet) {
         seen.push(packet);
-        if (packet[0] === type.charCodeAt(0)) return seen;
+        if (type.includes(String.fromCharCode(packet[0]))) return seen;
       } else
         await new Promise<void>((resolve, reject) => {
           const abort = () => reject(signal.reason);
@@ -59,7 +60,11 @@ async function wire(port: number) {
   const body = Buffer.from("user\0app\0database\0app\0\0");
   startup.writeInt32BE(body.length + 8);
   socket.write(Buffer.concat([startup, body]));
-  await next("Z");
+  const greeting = await next("ZE");
+  if (greeting.at(-1)?.[0] === 69) {
+    socket.destroy();
+    throw Error(greeting.at(-1)?.toString());
+  }
   return {
     socket,
     send,
@@ -99,6 +104,37 @@ test("retained pools share PGlite and reuse parameterized statements between tra
     expect(Number((await b`SELECT count(*) AS n FROM pooled`)[0].n)).toBe(1);
   } finally {
     await Promise.all([a.close({ timeout: 0 }), b.close({ timeout: 0 })]);
+    await server.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+}, 30000);
+
+test("Terminate releases capacity even if the client leaves its write side open", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cm-pglite-pool-limit-"));
+  const server = await startPglite({
+    dataDir: join(root, "db"),
+    port: await freePort(),
+    poolMode: "transaction",
+  });
+  const sockets: Socket[] = [];
+  const first = await wire(server.port);
+  sockets.push(first.socket);
+  try {
+    for (let i = 0; i < 99; i++) {
+      const socket = createConnection(server.port, "127.0.0.1");
+      sockets.push(socket);
+      socket.on("error", () => {});
+      await once(socket, "connect");
+    }
+    const end = once(first.socket, "end");
+    first.send("X");
+    await end;
+    // A half-open peer has sent no FIN. Its Terminate still must free the slot.
+    const admitted = await wire(server.port);
+    sockets.push(admitted.socket);
+    expect((await admitted.query("SELECT 42")).some((packet) => packet[0] === 68)).toBe(true);
+  } finally {
+    for (const socket of sockets) socket.destroy();
     await server.stop();
     await rm(root, { recursive: true, force: true });
   }
@@ -233,6 +269,18 @@ test("prepared names are private and a stale cached query does not poison other 
     expect((await a.query("SELECT 1")).some((packet) => packet[0] === 69)).toBe(false);
     expect((await bind(a)).find((packet) => packet[0] === 69)?.toString()).toContain("42P01");
     expect((await b.query("SELECT 2")).some((packet) => packet[0] === 69)).toBe(false);
+    // PostgreSQL destroys the previous unnamed statement as soon as a new Parse
+    // arrives, including when the replacement fails to parse.
+    a.send("P", Buffer.concat([Buffer.from("\0SELECT 19\0"), Buffer.alloc(2)]));
+    a.send("S");
+    await a.next("Z");
+    a.send("P", Buffer.concat([Buffer.from("\0SELECT FROM\0"), Buffer.alloc(2)]));
+    a.send("S");
+    expect((await a.next("Z")).find((packet) => packet[0] === 69)?.toString()).toContain("42601");
+    a.send("B", Buffer.alloc(8));
+    a.send("E", Buffer.alloc(5));
+    a.send("S");
+    expect((await a.next("Z")).find((packet) => packet[0] === 69)?.toString()).toContain("26000");
     expect(server.running).toBe(true);
   } finally {
     a.socket.destroy();

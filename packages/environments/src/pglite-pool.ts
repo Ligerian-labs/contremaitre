@@ -124,6 +124,16 @@ export function createPglitePool(
       }
       const response = replay ?? (await execute(message));
       const output = packets(response);
+      if (
+        message[0] === 80 &&
+        message[5] === 0 &&
+        output.some((packet) => packet[0] === 49 || packet[0] === 69)
+      ) {
+        // A processed unnamed Parse destroys its predecessor even on failure.
+        // Messages ignored after an earlier extended error have no response.
+        client.statements.delete("");
+        loaded.delete("");
+      }
       if (message[0] === 80 && output.some((packet) => packet[0] === 49)) {
         const end = message.indexOf(0, 5);
         const name = message.toString("utf8", 5, end);
@@ -235,7 +245,7 @@ export function createPglitePool(
           }
           client.startup = false;
         } else if (message[0] === 88) {
-          socket.end();
+          socket.end(() => socket.destroy());
           return;
         }
         client.messages.push(message);
