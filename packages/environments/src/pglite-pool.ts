@@ -204,7 +204,9 @@ export function createPglitePool(
       discardTail(client);
       const message = client.messages.shift();
       if (!message) {
-        if (!client.closed) arm(client);
+        // A waiter can wake the pump without activity from the owner. Keep its
+        // existing deadline; only arm here when discarded work left none.
+        if (!client.closed && !client.timer) arm(client);
         return;
       }
       client.bytes -= message.length;

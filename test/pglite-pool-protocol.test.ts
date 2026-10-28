@@ -39,7 +39,7 @@ const value = (packets: Buffer[]) => {
   if (!row) throw Error("Missing DataRow");
   return row.toString("utf8", 11, 11 + row.readInt32BE(7));
 };
-async function wire(port: number) {
+async function wire(port: number, startupTimeout = 10000) {
   const socket = createConnection({ host: "127.0.0.1", port, allowHalfOpen: true });
   const queue: Buffer[] = [];
   let input = Buffer.alloc(0);
@@ -89,7 +89,7 @@ async function wire(port: number) {
   startup.writeInt32BE(8 + params.length);
   startup.writeInt32BE(196608, 4);
   write(startup, params);
-  expect(state(await until("Z"))).toBe("I");
+  expect(state(await until("Z", startupTimeout))).toBe("I");
   return {
     socket,
     write,
@@ -692,3 +692,74 @@ test("output allocation failure refuses only that frontend before native executi
     await files.close();
   }
 });
+
+test("other-client activity cannot extend an idle transaction owner's last-message deadline", async () => {
+  await observedPool(async (port, accepted) => {
+    const owner = await wire(port);
+    const waiter = await wire(port);
+    let newcomer: Awaited<ReturnType<typeof wire>> | undefined;
+    try {
+      await owner.query("CREATE TABLE owner_deadline(id int)");
+      expect(state(await owner.query("BEGIN; INSERT INTO owner_deadline VALUES (1)"))).toBe("T");
+      const lastOwnerActivity = performance.now();
+      const expiry = owner.until("E", 40000).then(
+        (response) => ({ response }),
+        (error) => ({ error }),
+      );
+      // Use the real 30-second policy. Activity after 20 seconds distinguishes
+      // expiry from the owner's last message from a deadline reset by waiters.
+      await Bun.sleep(20000);
+      const request = query("INSERT INTO owner_deadline VALUES (2) RETURNING id");
+      let bytes = 0;
+      const queued = new Promise<void>((resolve) => {
+        const observe = (chunk: Buffer) => {
+          bytes += chunk.length;
+          if (bytes >= request.length) {
+            accepted[1].off("data", observe);
+            resolve();
+          }
+        };
+        // This observer follows the actual framing listener, so the waiting
+        // request really reaches the scheduler before the owner expires.
+        accepted[1].on("data", observe);
+      });
+      waiter.write(request);
+      const waiting = waiter.until("Z", 35000).then(
+        (response) => ({ response }),
+        (error) => ({ error }),
+      );
+      await queued;
+      const joining = wire(port, 30000).then(
+        (client) => {
+          newcomer = client;
+          return { client };
+        },
+        (error) => ({ error }),
+      );
+      const expired = await expiry;
+      if ("error" in expired)
+        throw Error("Idle BEGIN owner did not expire within 40 seconds of its own last message", {
+          cause: expired.error,
+        });
+      expect(error(expired.response)).toContain("53300");
+      expect(performance.now() - lastOwnerActivity).toBeLessThan(40000);
+      const resumed = await waiting;
+      if ("error" in resumed) throw resumed.error;
+      expect(error(resumed.response)).toBeUndefined();
+      expect(value(resumed.response)).toBe("2");
+      expect(state(resumed.response)).toBe("I");
+      // The abandoned owner's row rolled back; the waiting client's row is
+      // committed and a connection that arrived during BEGIN is usable too.
+      expect(
+        value(await waiter.query("SELECT array_agg(id ORDER BY id) FROM owner_deadline")),
+      ).toBe("{2}");
+      const joined = await joining;
+      if ("error" in joined) throw joined.error;
+      expect(value(await joined.client.query("SELECT count(*) FROM owner_deadline"))).toBe("1");
+    } finally {
+      owner.socket.destroy();
+      waiter.socket.destroy();
+      newcomer?.socket.destroy();
+    }
+  });
+}, 60000);
