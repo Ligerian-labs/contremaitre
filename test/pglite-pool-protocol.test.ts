@@ -1,9 +1,12 @@
 import { expect, test } from "bun:test";
 import { once } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
-import { createConnection } from "node:net";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { createConnection, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { lockPgliteData } from "../packages/environments/src/pglite-data.js";
+import { openPglite } from "../packages/environments/src/pglite-initialize.js";
+import { createPglitePool } from "../packages/environments/src/pglite-pool.js";
 import { startPglite } from "../packages/environments/src/pglite-server.js";
 import { checkPgliteCleanup } from "./fixtures/pglite-resources/monitor.js";
 import { freePort } from "./ports.js";
@@ -401,3 +404,77 @@ test("an oversized result packet disconnects only its owner and rolls back its t
     }
   });
 }, 60000);
+
+test("released transaction owners yield to queued clients before their next transaction", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cm-pglite-fairness-"));
+  const dataDir = join(root, "db");
+  await mkdir(dataDir);
+  const unlock = await lockPgliteData(dataDir);
+  const db = await openPglite(dataDir, () => true);
+  let failure: unknown;
+  const pool = createPglitePool(db, {
+    resetting() {},
+    reset() {},
+    fatal(error) {
+      failure = error;
+    },
+  });
+  const accepted: Socket[] = [];
+  pool.server.on("connection", (socket) => accepted.push(socket));
+  let a: Awaited<ReturnType<typeof wire>> | undefined;
+  let b: Awaited<ReturnType<typeof wire>> | undefined;
+  try {
+    const listening = once(pool.server, "listening");
+    pool.server.listen(0, "127.0.0.1");
+    await listening;
+    const address = pool.server.address();
+    if (!address || typeof address === "string") throw Error("No pool port assigned");
+    a = await wire(address.port);
+    expect(
+      error(await a.query("CREATE TABLE turns(id serial PRIMARY KEY, actor text)")),
+    ).toBeUndefined();
+    b = await wire(address.port);
+    // Setup finishes before B connects, so the frontend insertion order is A, B.
+    expect(state(await a.query("BEGIN"))).toBe("T");
+    const request = query("INSERT INTO turns(actor) VALUES ('B') RETURNING id");
+    const backend = accepted[1];
+    let bytes = 0;
+    const queued = new Promise<void>((resolve) => {
+      const observe = (chunk: Buffer) => {
+        bytes += chunk.length;
+        if (bytes >= request.length) {
+          backend.off("data", observe);
+          resolve();
+        }
+      };
+      // The real pool installs its framing listener in its connection callback.
+      // This later listener runs after it has queued B's complete request while
+      // A still owns BEGIN. A client-side write callback would not prove that.
+      backend.on("data", observe);
+    });
+    b.write(request);
+    await queued;
+    a.write(query("COMMIT"), query("INSERT INTO turns(actor) VALUES ('A') RETURNING id"));
+    expect(state(await a.until("Z"))).toBe("I");
+    const following = await a.until("Z");
+    const waiting = await b.until("Z");
+    expect(error(following)).toBeUndefined();
+    expect(error(waiting)).toBeUndefined();
+    expect(value(waiting)).toBe("1");
+    expect(value(following)).toBe("2");
+    expect(
+      value(
+        await a.query("SELECT string_agg(id::text || ':' || actor, ',' ORDER BY id) FROM turns"),
+      ),
+    ).toBe("1:B,2:A");
+    expect(failure).toBeUndefined();
+  } finally {
+    a?.socket.destroy();
+    b?.socket.destroy();
+    await pool.stop();
+    await new Promise<void>((resolve) => pool.server.close(() => resolve()));
+    await db.close();
+    await unlock();
+    await rm(root, { recursive: true, force: true });
+  }
+}, 30000);
