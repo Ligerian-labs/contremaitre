@@ -6,24 +6,76 @@ import type { PGlite } from "@electric-sql/pglite";
 import { PGLiteSocketServer } from "@electric-sql/pglite-socket";
 import { bufferPgliteCopy } from "./pglite-copy.js";
 import { openPglite } from "./pglite-initialize.js";
+import type { PgliteOutputLease } from "./pglite-output.js";
+import { createPglitePool } from "./pglite-pool.js";
+import { rollbackPglite } from "./pglite-protocol.js";
 
 declare const self: Worker;
 let front: Server | undefined;
 let socketDirectory: string | undefined;
 const sockets = new Set<Socket>();
 let db: PGlite | undefined;
+let pool: ReturnType<typeof createPglitePool> | undefined;
 let server: PGLiteSocketServer | undefined;
 let stopping = false;
 let resetting = Promise.resolve();
 let closeClient: (() => Promise<void>) | undefined;
+let outputId = 0;
+const outputRequests = new Map<number, { resolve(fd: number): void; reject(error: Error): void }>();
+const outputReleases = new Map<number, { resolve(): void; reject(error: Error): void }>();
+const openOutput = async (): Promise<PgliteOutputLease> => {
+  const id = ++outputId;
+  const fd = await new Promise<number>((resolve, reject) => {
+    outputRequests.set(id, { resolve, reject });
+    self.postMessage({ type: "output-open", id });
+  });
+  return {
+    fd,
+    release: () =>
+      new Promise<void>((resolve, reject) => {
+        outputReleases.set(id, { resolve, reject });
+        self.postMessage({ type: "output-release", id });
+      }),
+  };
+};
 const waiters = new Map<Socket, { timer: ReturnType<typeof setTimeout>; deadline: number }>();
 self.onmessage = async (event: MessageEvent) => {
   try {
+    if (event.data.type === "output-opened") {
+      const pending = outputRequests.get(event.data.id);
+      outputRequests.delete(event.data.id);
+      if (event.data.error) pending?.reject(Error(event.data.error));
+      else pending?.resolve(event.data.fd);
+      return;
+    }
+    if (event.data.type === "output-released") {
+      const pending = outputReleases.get(event.data.id);
+      outputReleases.delete(event.data.id);
+      if (event.data.error) pending?.reject(Error(event.data.error));
+      else pending?.resolve();
+      return;
+    }
     if (event.data.type === "start") {
       db = await openPglite(event.data.dataDir, (text) => {
         self.postMessage({ type: "log", text });
         return true;
       });
+      if (event.data.poolMode === "transaction") {
+        pool = createPglitePool(db, {
+          openOutput,
+          resetting: () => self.postMessage({ type: "resetting" }),
+          reset: () => self.postMessage({ type: "reset" }),
+          fatal: (error) =>
+            self.postMessage({ type: "error", message: `PGlite pool failed: ${String(error)}` }),
+        });
+        front = pool.server;
+        await new Promise<void>((resolve, reject) => {
+          front?.once("error", reject);
+          front?.listen(event.data.port, event.data.host, resolve);
+        });
+        self.postMessage({ type: "started" });
+        return;
+      }
       const copy = bufferPgliteCopy(db);
       // mkdtemp creates the parent with mode 0700 before the socket can exist.
       socketDirectory = await mkdtemp(join(tmpdir(), "cm-pglite-socket-"));
@@ -94,7 +146,7 @@ self.onmessage = async (event: MessageEvent) => {
           resetting = (async () => {
             await server?.stop();
             if (!db) throw new Error("PGlite database is not open");
-            if (db.isInTransaction()) await db.exec("ROLLBACK");
+            await rollbackPglite(db);
             await db.exec("DISCARD ALL");
             // PGlite initially applies its username as a role; DISCARD restores
             // the bootstrap session authorization, so re-establish app explicitly.
@@ -145,6 +197,7 @@ self.onmessage = async (event: MessageEvent) => {
       self.postMessage({ type: "started", socketDirectory });
     } else if (event.data.type === "stop") {
       stopping = true;
+      await pool?.stop();
       for (const waiter of waiters.values()) clearTimeout(waiter.timer);
       waiters.clear();
       await closeClient?.();
@@ -158,6 +211,7 @@ self.onmessage = async (event: MessageEvent) => {
     }
   } catch (error) {
     stopping = true;
+    await pool?.stop().catch(() => {});
     for (const waiter of waiters.values()) clearTimeout(waiter.timer);
     waiters.clear();
     for (const socket of sockets) socket.destroy();

@@ -15,6 +15,27 @@ import { freePort } from "./ports.js";
 
 checkPgliteCleanup();
 
+test("pool_mode is explicit and limited to managed WASM Postgres", () => {
+  for (const mode of ["session", "transaction"] as const) {
+    const manifest = parseManifest(
+      `version: 1\nproject: pool\nservices:\n  db: {kind: postgres, runtime: wasm, pool_mode: ${mode}}\n`,
+    );
+    expect(manifest.services.db.pool_mode).toBe(mode);
+  }
+  for (const fields of ["kind: postgres", "kind: app, runtime: wasm", "kind: redis"]) {
+    expect(() =>
+      parseManifest(
+        `version: 1\nproject: pool\nservices:\n  db: {${fields}, pool_mode: transaction}\n`,
+      ),
+    ).toThrow("pool_mode requires kind: postgres and runtime: wasm");
+  }
+  expect(() =>
+    parseManifest(
+      "version: 1\nproject: pool\nservices:\n  db: {kind: postgres, runtime: wasm, pool_mode: statement}\n",
+    ),
+  ).toThrow();
+});
+
 const client = (port: number, password = "secret") =>
   new SQL(`postgresql://app:${password}@127.0.0.1:${port}/app?sslmode=disable`, {
     max: 1,

@@ -117,6 +117,7 @@ export class PGliteRuntime implements ServiceRuntime {
         dataDir: instance.data,
         port: instance.port,
         host: "127.0.0.1",
+        poolMode: instance.spec.service.pool_mode,
         log: (text) => instance.writer?.append(text),
       });
     } finally {

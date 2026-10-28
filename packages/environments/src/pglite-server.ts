@@ -2,6 +2,7 @@ import { mkdir, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { Context } from "@contremaitre/execution/context";
 import { lockPgliteData, recoverPglitePublication } from "./pglite-data.js";
+import { pgliteOutputFiles } from "./pglite-output.js";
 import { terminatePgliteWorker } from "./pglite-worker-lifecycle.js";
 
 export interface PgliteHandle {
@@ -15,6 +16,7 @@ export async function startPglite(options: {
   dataDir: string;
   port: number;
   host?: string;
+  poolMode?: "session" | "transaction";
   signal?: AbortSignal;
   ctx?: Context;
   log?: (text: string) => void;
@@ -23,6 +25,8 @@ export async function startPglite(options: {
   const host = options.host ?? "127.0.0.1";
   const dataDir = resolve(options.dataDir);
   if (host !== "127.0.0.1") throw new Error("PGlite requires loopback address 127.0.0.1");
+  if (options.poolMode !== undefined && !["session", "transaction"].includes(options.poolMode))
+    throw new Error("Invalid PGlite pool mode");
   if (!Number.isInteger(options.port) || options.port < 1 || options.port > 65535)
     throw new Error("Invalid PGlite port");
   const signal = options.signal ?? options.ctx?.signal;
@@ -45,6 +49,9 @@ export async function startPglite(options: {
     await unlock();
     throw error;
   }
+  const outputFiles = pgliteOutputFiles();
+  let workerAlive = true;
+  let acceptingOutput = true;
   let running = false;
   let failed = false;
   let socketDirectory: string | undefined;
@@ -54,6 +61,11 @@ export async function startPglite(options: {
       "close",
       () => {
         running = false;
+        workerAlive = false;
+        acceptingOutput = false;
+        void outputFiles
+          .close()
+          .catch((error) => options.log?.(`PGlite output cleanup failed: ${String(error)}`));
         resolve();
       },
       { once: true },
@@ -67,6 +79,31 @@ export async function startPglite(options: {
     void terminate().catch((error) => log(String(error)));
   };
   worker.addEventListener("message", (event: MessageEvent) => {
+    if (event.data.type === "output-open") {
+      const id = event.data.id;
+      void (async () => {
+        try {
+          if (!acceptingOutput) throw Error("PGlite output is shutting down");
+          const fd = await outputFiles.allocate(id);
+          if (workerAlive) worker.postMessage({ type: "output-opened", id, fd });
+          else await outputFiles.release(id);
+        } catch (error) {
+          if (workerAlive) worker.postMessage({ type: "output-opened", id, error: String(error) });
+        }
+      })();
+    }
+    if (event.data.type === "output-release") {
+      const id = event.data.id;
+      void outputFiles.release(id).then(
+        () => {
+          if (workerAlive) worker.postMessage({ type: "output-released", id });
+        },
+        (error) => {
+          if (workerAlive)
+            worker.postMessage({ type: "output-released", id, error: String(error) });
+        },
+      );
+    }
     if (event.data.socketDirectory) socketDirectory = event.data.socketDirectory;
     if (event.data.type === "log") log(event.data.text);
     if (event.data.type === "error") fatal(event.data.message);
@@ -99,7 +136,7 @@ export async function startPglite(options: {
       worker.addEventListener("error", onError);
       worker.addEventListener("close", onClose);
       worker.addEventListener("message", onMessage);
-      worker.postMessage({ type, dataDir, port: options.port, host });
+      worker.postMessage({ type, dataDir, port: options.port, host, poolMode: options.poolMode });
     });
   }
   let termination: Promise<void> | undefined;
@@ -108,6 +145,7 @@ export async function startPglite(options: {
       clearTimeout(resetTimer);
       await terminatePgliteWorker(worker, exited, async () => {
         try {
+          await outputFiles.close();
           if (socketDirectory) await rm(socketDirectory, { recursive: true, force: true });
         } finally {
           await unlock();
@@ -120,8 +158,9 @@ export async function startPglite(options: {
   const stop = () => {
     stopping ??= (async () => {
       signal?.removeEventListener("abort", onAbort);
+      acceptingOutput = false;
       try {
-        if (!failed) await request("stop");
+        if (!failed && workerAlive) await request("stop");
         log("PGlite stopped; data retained");
       } catch (error) {
         if (!failed) throw error;

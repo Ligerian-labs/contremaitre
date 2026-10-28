@@ -9,6 +9,7 @@ export const serviceSchema = Schema.Struct({
   workload: Schema.optional(Schema.Literal("service", "worker", "job")),
   timeout_seconds: Schema.optional(Schema.Int),
   runtime: Schema.optional(Schema.Literal(...runtimeKinds)),
+  pool_mode: Schema.optional(Schema.Literal("session", "transaction")),
   wasm: Schema.optional(
     Schema.Struct({
       build: Schema.optional(Schema.Array(Schema.String)),

@@ -176,6 +176,8 @@ export function parseManifest(text: string): Manifest {
     if (s.command && (!s.command.length || s.command.some((arg) => !arg || arg.includes("\0"))))
       fail(`${name}: command requires nonempty arguments`);
     const wasm = s.runtime === "wasm";
+    if (s.pool_mode !== undefined && (!wasm || kind !== "postgres"))
+      fail(`${name}: pool_mode requires kind: postgres and runtime: wasm`);
     if (s.wasm && !wasm) fail(`${name}: wasm requires runtime: wasm`);
     if (wasm) validateWasm(name, kind, s);
     else if (Boolean(s.image) === Boolean(s.build))
