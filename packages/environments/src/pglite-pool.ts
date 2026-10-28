@@ -1,6 +1,8 @@
 import { createServer, type Socket } from "node:net";
+import { setImmediate as yieldSocketIO } from "node:timers/promises";
 import type { PGlite } from "@electric-sql/pglite";
 import { bufferPgliteCopy, pgliteTokens } from "./pglite-copy.js";
+import { type PgliteOutputLease, pgliteOutput, pgliteOutputFiles } from "./pglite-output.js";
 import {
   PGLITE_MAX_BYTES,
   pgliteMessage,
@@ -22,6 +24,9 @@ interface Client {
   startup: boolean;
   closed: boolean;
   ending: boolean;
+  discardCopy: boolean;
+  output?: ReturnType<typeof pgliteOutput>;
+  sending?: Promise<void>;
   statements: Map<string, { parse: Buffer; signature: string; bytes: number }>;
   timer?: ReturnType<typeof setTimeout>;
 }
@@ -62,10 +67,33 @@ function individualDeallocate(message: Buffer): boolean {
 
 export function createPglitePool(
   db: PGlite,
-  events: { resetting(): void; reset(): void; fatal(error: unknown): void },
+  events: {
+    resetting(): void;
+    reset(): void;
+    fatal(error: unknown): void;
+    openOutput?(): Promise<PgliteOutputLease>;
+  },
 ) {
   const copy = bufferPgliteCopy(db);
   const clients = new Set<Client>();
+  const localOutputFiles = pgliteOutputFiles();
+  let outputId = 0;
+  const openOutput =
+    events.openOutput ??
+    (async () => {
+      const id = ++outputId;
+      const fd = await localOutputFiles.allocate(id);
+      return { fd, release: () => localOutputFiles.release(id) };
+    });
+  const disposals = new Set<Promise<void>>();
+  const dispose = (client: Client) => {
+    if (!client.output) return;
+    const pending = client.output
+      .close()
+      .catch(() => {})
+      .finally(() => disposals.delete(pending));
+    disposals.add(pending);
+  };
   let owner: Client | undefined;
   let processing: Promise<void> | undefined;
   let stopped = false;
@@ -83,6 +111,7 @@ export function createPglitePool(
     client.messages = [];
     client.bytes = 0;
     client.statements.clear();
+    dispose(client);
     const fields = Buffer.from(`SFATAL\0C${code}\0M${message}\0\0`);
     const packet = Buffer.alloc(fields.length + 5);
     packet[0] = 69;
@@ -101,24 +130,61 @@ export function createPglitePool(
       WAIT_MS,
     );
   };
+  const nativeWork = async <T>(work: () => Promise<T>): Promise<T> => {
+    // Other clients can drain idle-transaction output concurrently. Native work
+    // blocks this worker's I/O loop, so its time cannot count as reader stalling.
+    for (const client of clients) client.output?.pauseDeadline();
+    try {
+      return await work();
+    } finally {
+      for (const client of clients) client.output?.resumeDeadline();
+    }
+  };
   const reset = async (abandoned = false) => {
     events.resetting();
     copy.abort();
-    if (abandoned) await rollbackPglite(db);
-    await db.exec("DISCARD ALL");
-    await db.exec("SET SESSION AUTHORIZATION app");
+    await nativeWork(async () => {
+      if (abandoned) await rollbackPglite(db);
+      await db.exec("DISCARD ALL");
+      await db.exec("SET SESSION AUTHORIZATION app");
+    });
     loaded.clear();
     events.reset();
   };
   const execute = async (message: Buffer, output: (packet: Buffer) => void, limit?: () => void) => {
     const frames = pglitePackets(output, limit);
-    await db.execProtocolRawStream(message, { onRawData: frames.data });
+    await nativeWork(() => db.execProtocolRawStream(message, { onRawData: frames.data }));
     frames.finish();
   };
   const describe = async (name: string) => {
     const packets: Buffer[] = [];
     await execute(pgliteMessage("D", Buffer.from(`S${name}\0`)), (packet) => packets.push(packet));
     return packets;
+  };
+  const discardTail = (client: Client) => {
+    while (client.discardCopy && client.messages.length) {
+      const type = client.messages[0][0];
+      if (type !== 100) client.discardCopy = false;
+      if (type !== 100 && type !== 99 && type !== 102) break;
+      const message = client.messages.shift();
+      client.bytes -= message?.length ?? 0;
+    }
+    if (!client.messages.length && owner !== client) clearTimer(client);
+  };
+  const send = (client: Client) => {
+    if (!client.output || client.closed) return Promise.resolve();
+    const sending = client.output
+      .flush()
+      .catch(() => {
+        fail(client, "PGlite output storage or socket drain failed", "58030");
+      })
+      .finally(() => {
+        client.sending = undefined;
+        if (!client.closed && client.messages.length && !client.timer) arm(client);
+        void pump();
+      });
+    client.sending = sending;
+    return sending;
   };
   async function drain() {
     while (!stopped) {
@@ -127,19 +193,41 @@ export function createPglitePool(
         owner = undefined;
       }
       if (!owner) {
-        const next = [...clients].find((client) => !client.closed && client.messages.length);
+        const next = [...clients].find((client) => {
+          discardTail(client);
+          return !client.closed && !client.sending && client.messages.length;
+        });
         if (!next) return;
         owner = next;
       }
       const client = owner;
+      discardTail(client);
       const message = client.messages.shift();
-      if (!message) return;
+      if (!message) {
+        if (!client.closed) arm(client);
+        return;
+      }
       client.bytes -= message.length;
       // The lease timer measures idle frontend time, never native execution.
       clearTimer(client);
+      if (!client.output) {
+        try {
+          const lease = await openOutput();
+          client.output = pgliteOutput(client.socket, lease);
+        } catch {
+          fail(client, "PGlite output storage allocation failed", "58030");
+        }
+        if (client.closed) {
+          dispose(client);
+          continue;
+        }
+      }
+      const responseOutput = client.output;
+      if (!responseOutput) continue;
       if (message[0] === 88) {
         client.closed = true;
         clients.delete(client);
+        dispose(client);
         client.socket.end(() => client.socket.destroy());
         continue;
       }
@@ -162,15 +250,11 @@ export function createPglitePool(
             loaded.clear();
           }
         }
-        if (!client.closed) {
-          if (client.socket.writableLength + packet.length > MAX_BYTES)
-            fail(client, "PGlite transaction pool output buffer exceeds 64 MiB", "54000");
-          else client.socket.write(packet);
-        }
+        if (!client.closed) client.output?.write(packet);
       };
       const reject = async (code: string, text: string, extended = true) => {
         loaded.delete(""); // The private error exchange uses the unnamed statement.
-        await rejectPglite(db, code, text, output, extended);
+        await nativeWork(() => rejectPglite(db, code, text, output, extended));
       };
       let replayFailed = false;
       const skipping = copy.waitingForSync;
@@ -221,6 +305,9 @@ export function createPglitePool(
             fail(client, "PGlite transaction pool response packet exceeds 64 MiB", "54000"),
           );
       }
+      if (message[0] === 100 && copy.discardingInput) client.discardCopy = true;
+      if (responseOutput.failure)
+        fail(client, "PGlite output storage or socket write failed", "58030");
       if (message[0] === 80 && message[5] === 0 && (parsed || failed)) {
         client.statements.delete("");
         loaded.delete("");
@@ -268,10 +355,16 @@ export function createPglitePool(
         clients.delete(client);
         if (!client.closed) {
           clients.add(client);
-          client.socket.write(ready);
-          if (client.messages.length) arm(client);
+          responseOutput.write(ready);
+          void send(client);
         }
-      } else if (!client.closed && !client.messages.length) arm(client);
+        // Rotation covers already-framed requests. A real I/O turn also admits
+        // requests arriving on other sockets during a long autocommit pipeline.
+        await yieldSocketIO();
+      } else {
+        await send(client);
+        if (!client.closed && !client.messages.length) arm(client);
+      }
     }
   }
   function pump(): Promise<void> {
@@ -288,6 +381,18 @@ export function createPglitePool(
         })
         .finally(() => {
           processing = undefined;
+          // An asynchronous output drain can finish while this promise is
+          // settling. Retake runnable work instead of losing that wakeup.
+          if (
+            !stopped &&
+            (owner?.closed ||
+              (owner
+                ? !owner.sending && owner.messages.length > 0
+                : [...clients].some(
+                    (client) => !client.closed && !client.sending && client.messages.length,
+                  )))
+          )
+            void pump();
         });
     }
     return processing;
@@ -301,6 +406,7 @@ export function createPglitePool(
       startup: true,
       closed: false,
       ending: false,
+      discardCopy: false,
       statements: new Map(),
     };
     socket.on("error", () => socket.destroy());
@@ -312,6 +418,7 @@ export function createPglitePool(
       client.closed = true;
       clearTimer(client);
       clients.delete(client);
+      dispose(client);
       void pump();
     });
     if (stopped || clients.size >= MAX_CLIENTS) {
@@ -370,8 +477,11 @@ export function createPglitePool(
       for (const client of clients) {
         clearTimer(client);
         client.socket.destroy();
+        dispose(client);
       }
       await processing;
+      await Promise.allSettled([...disposals]);
+      await localOutputFiles.close();
       copy.abort();
       await rollbackPglite(db);
     },

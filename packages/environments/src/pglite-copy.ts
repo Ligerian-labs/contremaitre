@@ -105,7 +105,11 @@ function copyInput(sql: string): { binary: boolean; single: boolean } | undefine
   };
 }
 /** PGlite reads COPY input synchronously: give it the complete wire exchange at once. */
-export function bufferPgliteCopy(db: PGlite): { abort(): void; readonly waitingForSync: boolean } {
+export function bufferPgliteCopy(db: PGlite): {
+  abort(): void;
+  readonly waitingForSync: boolean;
+  readonly discardingInput: boolean;
+} {
   const execute = db.execProtocolRawStream.bind(db);
   let input: Uint8Array[] = [];
   let size = 0;
@@ -237,6 +241,9 @@ export function bufferPgliteCopy(db: PGlite): { abort(): void; readonly waitingF
     abort,
     get waitingForSync() {
       return readyAfterSync !== undefined;
+    },
+    get discardingInput() {
+      return discardCopy;
     },
   };
 }

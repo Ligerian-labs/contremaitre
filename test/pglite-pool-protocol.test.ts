@@ -4,8 +4,13 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { createConnection, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { SQL } from "bun";
 import { lockPgliteData } from "../packages/environments/src/pglite-data.js";
 import { openPglite } from "../packages/environments/src/pglite-initialize.js";
+import {
+  type PgliteOutputLease,
+  pgliteOutputFiles,
+} from "../packages/environments/src/pglite-output.js";
 import { createPglitePool } from "../packages/environments/src/pglite-pool.js";
 import { startPglite } from "../packages/environments/src/pglite-server.js";
 import { checkPgliteCleanup } from "./fixtures/pglite-resources/monitor.js";
@@ -110,6 +115,44 @@ async function database(
     await run(server);
   } finally {
     await server.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+async function observedPool(
+  run: (port: number, sockets: Socket[]) => Promise<void>,
+  openOutput?: () => Promise<PgliteOutputLease>,
+) {
+  const root = await mkdtemp(join(tmpdir(), "cm-pglite-observed-"));
+  const dataDir = join(root, "db");
+  await mkdir(dataDir);
+  const unlock = await lockPgliteData(dataDir);
+  const db = await openPglite(dataDir, () => true);
+  let failure: unknown;
+  const pool = createPglitePool(db, {
+    openOutput,
+    resetting() {},
+    reset() {},
+    fatal(error) {
+      failure = error;
+    },
+  });
+  const sockets: Socket[] = [];
+  pool.server.on("connection", (socket) => sockets.push(socket));
+  try {
+    const listening = once(pool.server, "listening");
+    pool.server.listen(0, "127.0.0.1");
+    await listening;
+    const address = pool.server.address();
+    if (!address || typeof address === "string") throw Error("No pool port assigned");
+    await run(address.port, sockets);
+    expect(failure).toBeUndefined();
+  } finally {
+    for (const socket of sockets) socket.destroy();
+    await pool.stop();
+    await new Promise<void>((resolve) => pool.server.close(() => resolve()));
+    await db.close();
+    await unlock();
     await rm(root, { recursive: true, force: true });
   }
 }
@@ -282,33 +325,55 @@ test("runtime Execute errors await Sync once and keep the backend leased until t
   });
 }, 30000);
 
-test("large SELECT and COPY output cannot stop other pooled connections", async () => {
+test("large SELECT and COPY return complete results to their requester and keep both clients usable", async () => {
   await database("transaction", async (server) => {
+    const a = await wire(server.port);
     const b = await wire(server.port);
     try {
-      for (const sql of [
-        "SELECT repeat('x',1048576) FROM generate_series(1,70)",
-        "COPY (SELECT repeat('x',1048576) FROM generate_series(1,70)) TO STDOUT",
-      ]) {
-        const a = await wire(server.port);
-        try {
-          a.write(query(sql));
-          const first = await a.until("DdE!");
+      for (const copying of [false, true]) {
+        a.write(
+          query(
+            copying
+              ? "COPY (SELECT repeat('x',1048576) FROM generate_series(1,70)) TO STDOUT"
+              : "SELECT repeat('x',1048576) FROM generate_series(1,70)",
+          ),
+        );
+        const response = await a.until("Z");
+        expect(error(response)).toBeUndefined();
+        expect(state(response)).toBe("I");
+        if (copying) {
           expect(
-            first.some((p) => p[0] === 68 || p[0] === 100 || p.toString().includes("54000")) ||
-              a.socket.destroyed ||
-              a.socket.readableEnded,
-          ).toBe(true);
-          // A response may exceed this client's pending-output budget, but its
-          // operation must unwind normally and leave the shared engine usable.
-        } finally {
-          a.socket.destroy();
+            response.filter((p) => p[0] === 100).reduce((sum, p) => sum + p.length - 5, 0),
+          ).toBe(70 * (1048576 + 1));
+          expect(response.find((p) => p[0] === 67)?.toString()).toContain("COPY 70");
+        } else {
+          const rows = response.filter((p) => p[0] === 68);
+          expect(rows).toHaveLength(70);
+          expect(rows.reduce((sum, p) => sum + p.readInt32BE(7), 0)).toBe(70 * 1048576);
         }
+        expect(value(await a.query("SELECT 43"))).toBe("43");
         expect(value(await b.query("SELECT 44"))).toBe("44");
         expect(server.running).toBe(true);
       }
     } finally {
+      a.socket.destroy();
       b.socket.destroy();
+    }
+  });
+}, 60000);
+
+test("Bun SQL receives every byte of a result larger than the socket output budget", async () => {
+  await database("transaction", async (server) => {
+    const sql = new SQL(server.url(), { max: 1, connectionTimeout: 5 });
+    try {
+      const rows = await sql.unsafe("SELECT repeat('x',1048576) AS v FROM generate_series(1,70)");
+      expect(rows).toHaveLength(70);
+      expect(rows.reduce((sum: number, row: { v: string }) => sum + row.v.length, 0)).toBe(
+        70 * 1048576,
+      );
+      expect((await sql`SELECT ${47}::int AS value`)[0].value).toBe(47);
+    } finally {
+      await sql.close({ timeout: 0 });
     }
   });
 }, 60000);
@@ -478,3 +543,152 @@ test("released transaction owners yield to queued clients before their next tran
     await rm(root, { recursive: true, force: true });
   }
 }, 30000);
+
+for (const explicit of [false, true]) {
+  test(`oversized streamed COPY discards its tail and recovers ${explicit ? "with same-client rollback" : "before a bystander query"}`, async () => {
+    await observedPool(async (port, accepted) => {
+      const a = await wire(port);
+      const b = await wire(port);
+      try {
+        await a.query("CREATE TABLE copy_tail(t text)");
+        if (explicit) await a.query("BEGIN");
+        a.write(query("COPY copy_tail FROM STDIN"));
+        await a.until("G");
+        const chunk = packet("d", Buffer.from(`${"z".repeat(1048575)}\n`));
+        const done = packet("c");
+        // Confirm all 70 CopyData packets and CopyDone reached the actual
+        // framing listener, even when TCP fragments the stream. This schedules
+        // B after the tail, not after an arbitrary wait or an A recovery query.
+        let received = 0;
+        const tailQueued = new Promise<void>((resolve) => {
+          const observe = (bytes: Buffer) => {
+            received += bytes.length;
+            if (received >= 70 * chunk.length + done.length) {
+              accepted[0].off("data", observe);
+              resolve();
+            }
+          };
+          accepted[0].on("data", observe);
+        });
+        for (let i = 0; i < 70; i++) a.write(chunk);
+        a.write(done);
+        const response = await a.until("Z");
+        expect(error(response)).toContain("54000");
+        expect(state(response)).toBe(explicit ? "E" : "I");
+        await tailQueued;
+        const bystander = b.query("SELECT count(*) FROM copy_tail");
+        if (explicit) {
+          expect(error(await a.query("SELECT 1"))).toContain("25P02");
+          expect(state(await a.query("ROLLBACK"))).toBe("I");
+        }
+        expect(value(await bystander)).toBe("0");
+        expect(value(await a.query("SELECT count(*) FROM copy_tail"))).toBe("0");
+        expect(value(await a.query("SELECT 48"))).toBe("48");
+      } finally {
+        a.socket.destroy();
+        b.socket.destroy();
+      }
+    });
+  }, 30000);
+}
+
+test("socket input gets a turn while another client drains an autocommit pipeline", async () => {
+  await database("transaction", async (server) => {
+    const busy = await wire(server.port);
+    const late = await wire(server.port);
+    try {
+      await busy.query("CREATE TABLE socket_turns(id serial PRIMARY KEY, actor text)");
+      const total = 300;
+      for (let i = 0; i < total; i++)
+        busy.write(
+          query("INSERT INTO socket_turns(actor) SELECT 'busy' FROM pg_sleep(0.01) RETURNING id"),
+        );
+      // A real response proves the busy stream has begun. The late request
+      // arrives over another socket after the first complete transaction.
+      expect(state(await busy.until("Z"))).toBe("I");
+      const response = await late.query(
+        "INSERT INTO socket_turns(actor) VALUES ('late') RETURNING id",
+      );
+      expect(error(response)).toBeUndefined();
+      expect(Number(value(response))).toBeLessThan(total + 1);
+      for (let i = 1; i < total; i++) await busy.until("Z");
+      expect(value(await late.query("SELECT count(*) FROM socket_turns"))).toBe(String(total + 1));
+    } finally {
+      busy.socket.destroy();
+      late.socket.destroy();
+    }
+  });
+}, 30000);
+
+test("a readable spooled result survives another client's native execution beyond the drain deadline", async () => {
+  await database("transaction", async (server) => {
+    const a = await wire(server.port);
+    const b = await wire(server.port);
+    try {
+      a.write(query("SELECT repeat('x',1048576) FROM generate_series(1,70)"));
+      // Start the competing native execution only after A has received a real
+      // row, while the rest of its large result is still being delivered.
+      const prefix = await a.until("D");
+      b.write(query("SELECT pg_sleep(31)"));
+      const receiving = a.until("Z", 90000);
+      const sleeping = b.until("Z", 90000);
+      const response = [...prefix, ...(await receiving)];
+      expect(error(response)).toBeUndefined();
+      const rows = response.filter((p) => p[0] === 68);
+      expect(rows).toHaveLength(70);
+      expect(rows.reduce((sum, p) => sum + p.readInt32BE(7), 0)).toBe(70 * 1048576);
+      expect(state(await sleeping)).toBe("I");
+      expect(value(await a.query("SELECT 51"))).toBe("51");
+    } finally {
+      a.socket.destroy();
+      b.socket.destroy();
+    }
+  });
+}, 120000);
+
+test("pipelined messages and Terminate wait for the prior complete spooled result", async () => {
+  await database("transaction", async (server) => {
+    const a = await wire(server.port);
+    try {
+      a.write(
+        query("SELECT repeat('x',1048576) FROM generate_series(1,70)"),
+        query("SELECT 53"),
+        packet("X"),
+      );
+      a.socket.end();
+      const response = await a.until("Z");
+      expect(error(response)).toBeUndefined();
+      expect(response.filter((p) => p[0] === 68)).toHaveLength(70);
+      expect(value(await a.until("Z"))).toBe("53");
+      expect(server.running).toBe(true);
+    } finally {
+      a.socket.destroy();
+    }
+  });
+}, 60000);
+
+test("output allocation failure refuses only that frontend before native execution", async () => {
+  const files = pgliteOutputFiles();
+  let id = 0;
+  try {
+    await observedPool(
+      async (port) => {
+        await expect(wire(port)).rejects.toThrow("Socket closed before response");
+        const healthy = await wire(port);
+        try {
+          expect(value(await healthy.query("SELECT 54"))).toBe("54");
+        } finally {
+          healthy.socket.destroy();
+        }
+      },
+      async () => {
+        const request = ++id;
+        if (request === 1) throw Error("ENOSPC: injected output allocation failure");
+        const fd = await files.allocate(request);
+        return { fd, release: () => files.release(request) };
+      },
+    );
+  } finally {
+    await files.close();
+  }
+});

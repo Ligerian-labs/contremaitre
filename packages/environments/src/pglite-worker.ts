@@ -6,6 +6,7 @@ import type { PGlite } from "@electric-sql/pglite";
 import { PGLiteSocketServer } from "@electric-sql/pglite-socket";
 import { bufferPgliteCopy } from "./pglite-copy.js";
 import { openPglite } from "./pglite-initialize.js";
+import type { PgliteOutputLease } from "./pglite-output.js";
 import { createPglitePool } from "./pglite-pool.js";
 import { rollbackPglite } from "./pglite-protocol.js";
 
@@ -19,9 +20,41 @@ let server: PGLiteSocketServer | undefined;
 let stopping = false;
 let resetting = Promise.resolve();
 let closeClient: (() => Promise<void>) | undefined;
+let outputId = 0;
+const outputRequests = new Map<number, { resolve(fd: number): void; reject(error: Error): void }>();
+const outputReleases = new Map<number, { resolve(): void; reject(error: Error): void }>();
+const openOutput = async (): Promise<PgliteOutputLease> => {
+  const id = ++outputId;
+  const fd = await new Promise<number>((resolve, reject) => {
+    outputRequests.set(id, { resolve, reject });
+    self.postMessage({ type: "output-open", id });
+  });
+  return {
+    fd,
+    release: () =>
+      new Promise<void>((resolve, reject) => {
+        outputReleases.set(id, { resolve, reject });
+        self.postMessage({ type: "output-release", id });
+      }),
+  };
+};
 const waiters = new Map<Socket, { timer: ReturnType<typeof setTimeout>; deadline: number }>();
 self.onmessage = async (event: MessageEvent) => {
   try {
+    if (event.data.type === "output-opened") {
+      const pending = outputRequests.get(event.data.id);
+      outputRequests.delete(event.data.id);
+      if (event.data.error) pending?.reject(Error(event.data.error));
+      else pending?.resolve(event.data.fd);
+      return;
+    }
+    if (event.data.type === "output-released") {
+      const pending = outputReleases.get(event.data.id);
+      outputReleases.delete(event.data.id);
+      if (event.data.error) pending?.reject(Error(event.data.error));
+      else pending?.resolve();
+      return;
+    }
     if (event.data.type === "start") {
       db = await openPglite(event.data.dataDir, (text) => {
         self.postMessage({ type: "log", text });
@@ -29,6 +62,7 @@ self.onmessage = async (event: MessageEvent) => {
       });
       if (event.data.poolMode === "transaction") {
         pool = createPglitePool(db, {
+          openOutput,
           resetting: () => self.postMessage({ type: "resetting" }),
           reset: () => self.postMessage({ type: "reset" }),
           fatal: (error) =>
