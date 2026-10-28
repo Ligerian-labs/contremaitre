@@ -1,11 +1,18 @@
 import { createServer, type Socket } from "node:net";
 import type { PGlite } from "@electric-sql/pglite";
-import { bufferPgliteCopy } from "./pglite-copy.js";
+import { bufferPgliteCopy, pgliteTokens } from "./pglite-copy.js";
+import {
+  PGLITE_MAX_BYTES,
+  pgliteMessage,
+  pglitePackets,
+  rejectPglite,
+  rollbackPglite,
+} from "./pglite-protocol.js";
 
 // PGlite has one backend. Lease it through ReadyForQuery, retaining ownership
 // while a transaction or an extended-protocol exchange is still open.
 const MAX_CLIENTS = 100;
-const MAX_BYTES = 64 * 1024 * 1024;
+const MAX_BYTES = PGLITE_MAX_BYTES;
 const WAIT_MS = 30_000;
 interface Client {
   socket: Socket;
@@ -14,8 +21,43 @@ interface Client {
   bytes: number;
   startup: boolean;
   closed: boolean;
-  statements: Map<string, Buffer>;
+  ending: boolean;
+  statements: Map<string, { parse: Buffer; signature: string; bytes: number }>;
   timer?: ReturnType<typeof setTimeout>;
+}
+
+// Ignore source table OIDs and attribute positions. PostgreSQL's fixed row
+// contract covers names, types, lengths, modifiers and formats.
+function signature(packet: Buffer): string {
+  if (packet[0] === 110) return "NoData";
+  const fields: string[] = [];
+  for (let at = 7; at < packet.length; ) {
+    const end = packet.indexOf(0, at);
+    fields.push(`${packet.toString("hex", at, end)}:${packet.toString("hex", end + 7, end + 19)}`);
+    at = end + 19;
+  }
+  return fields.join("|");
+}
+function individualDeallocate(message: Buffer): boolean {
+  if (message[0] !== 81 && message[0] !== 80) return false;
+  const start = message[0] === 81 ? 5 : message.indexOf(0, 5) + 1;
+  const words = pgliteTokens(message.toString("utf8", start, message.indexOf(0, start)));
+  let first = true;
+  for (let at = 0; at < words.length; at++) {
+    const token = words[at];
+    if (token.depth) continue;
+    if (token.word === ";" && !token.literal) {
+      first = true;
+      continue;
+    }
+    if (first && !token.literal && token.word === "DEALLOCATE") {
+      const target =
+        words[at + 1]?.word === "PREPARE" && !words[at + 1].literal ? words[at + 2] : words[at + 1];
+      if (!target || target.literal || target.word !== "ALL") return true;
+    }
+    first = false;
+  }
+  return false;
 }
 
 export function createPglitePool(
@@ -36,12 +78,20 @@ export function createPglitePool(
     if (client.closed) return;
     client.closed = true;
     clearTimer(client);
+    clients.delete(client);
+    client.input = Buffer.alloc(0);
+    client.messages = [];
+    client.bytes = 0;
+    client.statements.clear();
     const fields = Buffer.from(`SFATAL\0C${code}\0M${message}\0\0`);
     const packet = Buffer.alloc(fields.length + 5);
     packet[0] = 69;
     packet.writeInt32BE(fields.length + 4, 1);
     fields.copy(packet, 5);
-    client.socket.end(packet, () => client.socket.destroy());
+    // A stalled reader cannot be allowed to retain a full output budget while
+    // waiting for the fatal packet to flush. Disconnect it immediately.
+    if (client.socket.writableLength) client.socket.destroy();
+    else client.socket.end(packet, () => client.socket.destroy());
     void pump();
   };
   const arm = (client: Client) => {
@@ -51,128 +101,183 @@ export function createPglitePool(
       WAIT_MS,
     );
   };
-  const reset = async () => {
+  const reset = async (abandoned = false) => {
     events.resetting();
     copy.abort();
-    if (db.isInTransaction()) await db.exec("ROLLBACK");
+    if (abandoned) await rollbackPglite(db);
     await db.exec("DISCARD ALL");
     await db.exec("SET SESSION AUTHORIZATION app");
     loaded.clear();
     events.reset();
   };
-  const execute = async (message: Buffer) => {
-    const chunks: Uint8Array[] = [];
-    let bytes = 0;
-    await db.execProtocolRawStream(message, {
-      onRawData: (chunk) => {
-        bytes += chunk.length;
-        if (bytes > MAX_BYTES) throw Error("PGlite transaction pool response exceeds 64 MiB");
-        chunks.push(chunk.slice());
-      },
-    });
-    return Buffer.concat(chunks);
+  const execute = async (message: Buffer, output: (packet: Buffer) => void, limit?: () => void) => {
+    const frames = pglitePackets(output, limit);
+    await db.execProtocolRawStream(message, { onRawData: frames.data });
+    frames.finish();
   };
-  const packets = (response: Buffer) => {
-    const result: Buffer[] = [];
-    for (let at = 0; at < response.length; ) {
-      if (at + 5 > response.length) throw Error("Incomplete PGlite response");
-      const end = at + 1 + response.readInt32BE(at + 1);
-      if (end <= at + 4 || end > response.length) throw Error("Invalid PGlite response");
-      result.push(response.subarray(at, end));
-      at = end;
-    }
-    return result;
+  const describe = async (name: string) => {
+    const packets: Buffer[] = [];
+    await execute(pgliteMessage("D", Buffer.from(`S${name}\0`)), (packet) => packets.push(packet));
+    return packets;
   };
   async function drain() {
     while (!stopped) {
       if (owner?.closed) {
-        await reset();
+        await reset(true);
         owner = undefined;
       }
       if (!owner) {
         const next = [...clients].find((client) => !client.closed && client.messages.length);
         if (!next) return;
         owner = next;
-        arm(next);
       }
       const client = owner;
       const message = client.messages.shift();
       if (!message) return;
       client.bytes -= message.length;
-      arm(client);
-      let replay: Buffer | undefined;
+      // The lease timer measures idle frontend time, never native execution.
+      clearTimer(client);
+      if (message[0] === 88) {
+        client.closed = true;
+        clients.delete(client);
+        client.socket.end(() => client.socket.destroy());
+        continue;
+      }
+      let ready: Buffer | undefined;
+      let parsed = false;
+      let failed = false;
+      let closedStatement = false;
+      const output = (packet: Buffer) => {
+        if (packet[0] === 90 && packet[5] === 73) {
+          ready = packet;
+          return;
+        }
+        if (packet[0] === 49) parsed = true;
+        if (packet[0] === 69) failed = true;
+        if (packet[0] === 51) closedStatement = true;
+        if (packet[0] === 67) {
+          const tag = packet.toString("utf8", 5, packet.length - 1);
+          if (tag === "DEALLOCATE ALL" || tag === "DISCARD ALL") {
+            client.statements.clear();
+            loaded.clear();
+          }
+        }
+        if (!client.closed) {
+          if (client.socket.writableLength + packet.length > MAX_BYTES)
+            fail(client, "PGlite transaction pool output buffer exceeds 64 MiB", "54000");
+          else client.socket.write(packet);
+        }
+      };
+      const reject = async (code: string, text: string, extended = true) => {
+        loaded.delete(""); // The private error exchange uses the unnamed statement.
+        await rejectPglite(db, code, text, output, extended);
+      };
+      let replayFailed = false;
+      const skipping = copy.waitingForSync;
       const statementStart =
         message[0] === 66
           ? message.indexOf(0, 5) + 1
           : message[0] === 68 && message[5] === 83
             ? 6
             : undefined;
-      if (statementStart !== undefined) {
+      if (!skipping && statementStart !== undefined) {
         const name = message.toString("utf8", statementStart, message.indexOf(0, statementStart));
         const statement = client.statements.get(name);
         if (statement && !loaded.has(name)) {
-          // Restore only the referenced statement. An unrelated cached statement
-          // may no longer parse after a migration and must not poison the pool.
-          const restored = await execute(statement);
-          if (packets(restored).some((packet) => packet[0] === 49)) loaded.add(name);
-          else replay = restored;
+          // Restore only the referenced statement, with its original inferred OIDs.
+          let restored = false;
+          await execute(statement.parse, (packet) => {
+            if (packet[0] === 49) restored = true;
+            else output(packet);
+          });
+          if (restored) {
+            const description = await describe(name);
+            const result = description.find((packet) => packet[0] === 84 || packet[0] === 110);
+            if (result && signature(result) !== statement.signature) {
+              await reject("0A000", "cached plan must not change result type");
+              replayFailed = true;
+            } else if (result) loaded.add(name);
+            else {
+              for (const packet of description)
+                if (packet[0] === 69 || packet[0] === 90) output(packet);
+              replayFailed = true;
+            }
+          } else replayFailed = true;
         }
       }
-      if (message[0] === 81) {
+      if (!skipping && message[0] === 81) {
         client.statements.delete("");
         loaded.delete("");
       }
-      const response = replay ?? (await execute(message));
-      const output = packets(response);
-      if (
-        message[0] === 80 &&
-        message[5] === 0 &&
-        output.some((packet) => packet[0] === 49 || packet[0] === 69)
-      ) {
-        // A processed unnamed Parse destroys its predecessor even on failure.
-        // Messages ignored after an earlier extended error have no response.
+      if (!replayFailed) {
+        if (!skipping && individualDeallocate(message))
+          await reject(
+            "0A000",
+            "PGlite transaction pooling supports only DEALLOCATE ALL",
+            message[0] !== 81,
+          );
+        else
+          await execute(message, output, () =>
+            fail(client, "PGlite transaction pool response packet exceeds 64 MiB", "54000"),
+          );
+      }
+      if (message[0] === 80 && message[5] === 0 && (parsed || failed)) {
         client.statements.delete("");
         loaded.delete("");
       }
-      if (message[0] === 80 && output.some((packet) => packet[0] === 49)) {
+      if (message[0] === 80 && parsed && !client.closed) {
         const end = message.indexOf(0, 5);
         const name = message.toString("utf8", 5, end);
-        const previous = client.statements.get(name)?.length ?? 0;
-        const total = [...client.statements.values()].reduce((sum, value) => sum + value.length, 0);
-        if (
-          total - previous + message.length > MAX_BYTES ||
-          (client.statements.size >= 1000 && !client.statements.has(name))
-        ) {
-          fail(client, "PGlite transaction pool prepared statement limit exceeded", "54000");
-        } else {
-          client.statements.set(name, message);
-          loaded.add(name);
-        }
+        const description = await describe(name);
+        const parameters = description.find((packet) => packet[0] === 116);
+        const result = description.find((packet) => packet[0] === 84 || packet[0] === 110);
+        if (parameters && result) {
+          const queryEnd = message.indexOf(0, end + 1);
+          const frozen = pgliteMessage(
+            "P",
+            Buffer.concat([message.subarray(5, queryEnd + 1), parameters.subarray(5)]),
+          );
+          const shape = signature(result);
+          const bytes = frozen.length + Buffer.byteLength(shape);
+          const previous = client.statements.get(name)?.bytes ?? 0;
+          const total = [...client.statements.values()].reduce(
+            (sum, value) => sum + value.bytes,
+            0,
+          );
+          if (
+            total - previous + bytes > MAX_BYTES ||
+            (client.statements.size >= 1000 && !client.statements.has(name))
+          )
+            fail(client, "PGlite transaction pool prepared statement limit exceeded", "54000");
+          else {
+            client.statements.set(name, { parse: frozen, signature: shape, bytes });
+            loaded.add(name);
+          }
+        } else
+          for (const packet of description)
+            if (packet[0] === 69 || packet[0] === 90) output(packet);
       }
-      if (message[0] === 67 && message[5] === 83 && output.some((packet) => packet[0] === 51)) {
+      if (message[0] === 67 && message[5] === 83 && closedStatement) {
         const name = message.toString("utf8", 6, message.indexOf(0, 6));
         client.statements.delete(name);
         loaded.delete(name);
       }
-      if (output.some((packet) => packet[0] === 90 && packet[5] === 73)) {
+      if (ready) {
         await reset();
-        clearTimer(client);
         owner = undefined;
-        // Move the previous owner behind clients already waiting for a turn.
         clients.delete(client);
-        if (!client.closed) clients.add(client);
-        if (client.messages.length && !client.closed) arm(client);
-      }
-      if (!client.closed) {
-        if (client.socket.writableLength + response.length > MAX_BYTES)
-          fail(client, "PGlite transaction pool output buffer exceeds 64 MiB", "54000");
-        else client.socket.write(response);
-      }
+        if (!client.closed) {
+          clients.add(client);
+          client.socket.write(ready);
+          if (client.messages.length) arm(client);
+        }
+      } else if (!client.closed && !client.messages.length) arm(client);
     }
   }
   function pump(): Promise<void> {
     if (!processing) {
-      processing = drain()
+      processing = Promise.resolve()
+        .then(drain)
         .catch((error) => {
           stopped = true;
           for (const client of clients) {
@@ -187,7 +292,7 @@ export function createPglitePool(
     }
     return processing;
   }
-  const server = createServer((socket) => {
+  const server = createServer({ allowHalfOpen: true }, (socket) => {
     const client: Client = {
       socket,
       input: Buffer.alloc(0),
@@ -195,9 +300,14 @@ export function createPglitePool(
       bytes: 0,
       startup: true,
       closed: false,
+      ending: false,
       statements: new Map(),
     };
     socket.on("error", () => socket.destroy());
+    socket.on("end", () => {
+      // Keep queued work preceding Terminate alive through an immediate FIN.
+      if (!client.ending) socket.destroy();
+    });
     socket.on("close", () => {
       client.closed = true;
       clearTimer(client);
@@ -212,7 +322,7 @@ export function createPglitePool(
     arm(client);
     socket.setNoDelay(true);
     socket.on("data", (data: Buffer) => {
-      if (client.closed) return;
+      if (client.closed || client.ending) return;
       if (client.input.length + client.bytes + data.length > MAX_BYTES + 5) {
         fail(client, "PGlite transaction pool input buffer exceeds 64 MiB", "54000");
         return;
@@ -244,13 +354,11 @@ export function createPglitePool(
             return;
           }
           client.startup = false;
-        } else if (message[0] === 88) {
-          socket.end(() => socket.destroy());
-          return;
-        }
+        } else if (message[0] === 88) client.ending = true;
         client.messages.push(message);
         client.bytes += message.length;
         if (owner !== client && !client.timer) arm(client);
+        if (client.ending) break;
       }
       void pump();
     });
@@ -265,7 +373,7 @@ export function createPglitePool(
       }
       await processing;
       copy.abort();
-      if (db.isInTransaction()) await db.exec("ROLLBACK");
+      await rollbackPglite(db);
     },
   };
 }

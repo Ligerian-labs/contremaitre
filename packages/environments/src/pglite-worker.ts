@@ -7,6 +7,7 @@ import { PGLiteSocketServer } from "@electric-sql/pglite-socket";
 import { bufferPgliteCopy } from "./pglite-copy.js";
 import { openPglite } from "./pglite-initialize.js";
 import { createPglitePool } from "./pglite-pool.js";
+import { rollbackPglite } from "./pglite-protocol.js";
 
 declare const self: Worker;
 let front: Server | undefined;
@@ -111,7 +112,7 @@ self.onmessage = async (event: MessageEvent) => {
           resetting = (async () => {
             await server?.stop();
             if (!db) throw new Error("PGlite database is not open");
-            if (db.isInTransaction()) await db.exec("ROLLBACK");
+            await rollbackPglite(db);
             await db.exec("DISCARD ALL");
             // PGlite initially applies its username as a role; DISCARD restores
             // the bootstrap session authorization, so re-establish app explicitly.
