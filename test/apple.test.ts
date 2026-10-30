@@ -8,6 +8,38 @@ import { Apple } from "@contremaitre/environments/apple";
 import { context } from "@contremaitre/execution/context";
 import { run } from "@contremaitre/execution/process";
 
+test("private network commands have a short deadline and identify stuck creation", async () => {
+  const apple = new Apple();
+  const output = spyOn(apple, "output").mockImplementation(async (_ctx, args) => {
+    if (args[1] === "inspect") throw Error("network not found");
+    throw Error("network has a pending operation");
+  });
+  try {
+    await expect(apple.network(context(), "private")).rejects.toThrow(
+      "Cannot create private network private: network has a pending operation",
+    );
+    expect(output.mock.calls.map((call) => [call[1], call[2]?.timeout])).toEqual([
+      [["network", "inspect", "private"], 10_000],
+      [["network", "create", "private"], 10_000],
+    ]);
+  } finally {
+    output.mockRestore();
+  }
+});
+
+test("a network inspection failure never triggers a speculative create", async () => {
+  const apple = new Apple();
+  const output = spyOn(apple, "output").mockRejectedValue(Error("helper unavailable"));
+  try {
+    await expect(apple.network(context(), "private")).rejects.toThrow(
+      "Cannot inspect private network private: helper unavailable",
+    );
+    expect(output).toHaveBeenCalledTimes(1);
+  } finally {
+    output.mockRestore();
+  }
+});
+
 async function fixture(configured = true, small = false) {
   const dir = await mkdtemp(join(tmpdir(), "cm-apple-")),
     root = join(dir, "context"),

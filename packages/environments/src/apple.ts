@@ -148,11 +148,23 @@ export class Apple implements Runtime {
     }
   }
   async network(ctx: Context, name: string) {
+    const network = async (action: string) => {
+      try {
+        await this.output(ctx, ["network", action, name], { timeout: 10_000 });
+      } catch (error) {
+        if (ctx.signal.aborted || (action === "inspect" && missing(error))) throw error;
+        throw new HubError({
+          message: `Cannot ${action} private network ${name}: ${message(error)}. Check container network list and the Apple container network helper logs. Unused environment networks can exhaust vmnet resources; stop unused environments before retrying.`,
+          classification: "transient",
+          cause: error,
+        });
+      }
+    };
     try {
-      await this.call(ctx, "network", "inspect", name);
+      await network("inspect");
     } catch (e) {
       if (!missing(e)) throw e;
-      await this.call(ctx, "network", "create", name);
+      await network("create");
     }
   }
   async volume(ctx: Context, name: string) {
@@ -173,7 +185,11 @@ export class Apple implements Runtime {
     await this.deleteIfPresent(ctx, kind, "delete", name);
   }
   removeNetwork(ctx: Context, name: string) {
-    return this.removeResource(ctx, "network", name);
+    return this.removeResource(
+      { ...ctx, signal: AbortSignal.any([ctx.signal, AbortSignal.timeout(10_000)]) },
+      "network",
+      name,
+    );
   }
   removeVolume(ctx: Context, name: string) {
     return this.removeResource(ctx, "volume", name);
