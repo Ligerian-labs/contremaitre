@@ -18,10 +18,11 @@ import { FakeRuntime } from "./fake-runtime.js";
 export async function idleFixture(retain = false) {
   const home = mkdtempSync(join(tmpdir(), "cm-idle-fixture-"));
   let time = Date.now();
+  const runtime = new FakeRuntime();
   const hub = await startServer({
     home,
     port: 0,
-    runtime: new FakeRuntime(),
+    runtime,
     skipSystemStart: true,
     now: () => time,
   });
@@ -101,6 +102,10 @@ services:
     assert.equal(statuses[idle.environment_id], "stopped");
     assert.equal(statuses[background.environment_id], "running");
     assert.equal(readFileSync(idle.sentinel, "utf8"), "preserved");
+    const idleEnv = hub.manager.resolve(idle.environment_id);
+    const backgroundEnv = hub.manager.resolve(background.environment_id);
+    assert(runtime.calls.includes(`remove network ${idleEnv.Network}`));
+    assert(!runtime.calls.includes(`remove network ${backgroundEnv.Network}`));
     return {
       scenario: "hub/idle-shutdown",
       input: {},
@@ -109,6 +114,7 @@ services:
       home,
       statuses,
       data_preserved: true,
+      network_released: true,
       retained: retain,
     };
   } finally {

@@ -38,6 +38,102 @@ function fixture() {
     clean: () => rmSync(home, { recursive: true, force: true }),
   };
 }
+test("network failure is detected before building or replacing services", async () => {
+  const f = fixture();
+  try {
+    const p = f.prepare();
+    f.runtime.network = async () => {
+      throw Error("network unavailable");
+    };
+    await expect(f.manager.deploy(context(), p)).rejects.toThrow("network unavailable");
+    expect(f.runtime.calls).not.toContain("build");
+    expect(f.runtime.calls.some((c) => /^(run|stop|remove) /.test(c))).toBe(false);
+  } finally {
+    f.clean();
+  }
+});
+
+test("down releases the private network while retaining data for redeployment", async () => {
+  const f = fixture();
+  try {
+    const p = f.prepare();
+    await f.manager.deploy(context(), p);
+    const env = f.manager.resolve(p.identity.ID);
+    const volumes = [...env.Volumes];
+    await f.manager.down(context(), env);
+    expect(f.runtime.calls).toContain(`remove network ${env.Network}`);
+    expect(env.Status).toBe("stopped");
+    expect(env.Volumes).toEqual(volumes);
+    expect(f.runtime.calls.some((c) => c.startsWith("remove volume "))).toBe(false);
+    await f.manager.deploy(context(), p);
+    expect(env.Status).toBe("running");
+    expect(env.Volumes).toEqual(volumes);
+  } finally {
+    f.clean();
+  }
+});
+
+test("a failed initial build releases the network prepared before the build", async () => {
+  const f = fixture();
+  try {
+    const p = f.prepare();
+    f.runtime.failBuild = true;
+    await expect(f.manager.deploy(context(), p)).rejects.toThrow("build failed");
+    const env = f.manager.resolve(p.identity.ID);
+    expect(f.runtime.calls).toContain(`remove network ${env.Network}`);
+    expect(Object.keys(env.Services)).toEqual([]);
+    expect(f.runtime.calls.some((c) => c.startsWith("remove volume "))).toBe(false);
+  } finally {
+    f.clean();
+  }
+});
+
+test("failed service shutdown retains its network until shutdown succeeds", async () => {
+  const f = fixture();
+  try {
+    const p = f.prepare();
+    await f.manager.deploy(context(), p);
+    const env = f.manager.resolve(p.identity.ID);
+    const stop = f.runtime.stop.bind(f.runtime);
+    f.runtime.stop = async () => {
+      throw Error("cannot stop");
+    };
+    await expect(f.manager.down(context(), env)).rejects.toThrow("cannot stop");
+    expect(env.Status).toBe("stopping");
+    expect(f.runtime.calls).not.toContain(`remove network ${env.Network}`);
+    f.runtime.stop = stop;
+    await f.manager.down(context(), env);
+    expect(env.Status).toBe("stopped");
+    expect(f.runtime.calls).toContain(`remove network ${env.Network}`);
+  } finally {
+    f.clean();
+  }
+});
+
+test("network cleanup failure remains retryable and never deletes data", async () => {
+  const f = fixture();
+  try {
+    const p = f.prepare();
+    await f.manager.deploy(context(), p);
+    const env = f.manager.resolve(p.identity.ID);
+    const remove = f.runtime.removeNetwork.bind(f.runtime);
+    f.runtime.removeNetwork = async () => {
+      throw Error("network helper unavailable");
+    };
+    await expect(f.manager.down(context(), env, true)).rejects.toThrow(
+      "network helper unavailable",
+    );
+    expect(env.Status).toBe("deleting");
+    expect(env.Volumes.length).toBe(1);
+    expect(f.runtime.calls.some((c) => c.startsWith("remove volume "))).toBe(false);
+    f.runtime.removeNetwork = remove;
+    await f.manager.down(context(), env, true);
+    expect(f.manager.list()).toEqual([]);
+  } finally {
+    f.clean();
+  }
+});
+
 test("failed build leaves running services, cache survives and down retains data", async () => {
   const f = fixture();
   try {
