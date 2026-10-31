@@ -130,7 +130,7 @@ services:
     depends_on: [db]
 `;
 const appleOnly = (project: string) =>
-  `version: 1\nproject: ${project}\nservices:\n  web: {image: nginx, port: 80, ready: ["true"]}\n`;
+  `version: 1\nproject: ${project}\nservices:\n  web: {runtime: apple, image: nginx, port: 80, ready: ["true"]}\n`;
 
 async function fixture() {
   const home = realpathSync(mkdtempSync(join(tmpdir(), "cm-wasm-standalone-"))),
@@ -138,7 +138,11 @@ async function fixture() {
     apple = new Apple(container.binary, { startSystem: true }),
     host = new HostRuntime(),
     base = runtimeRegistry({ home, apple }),
-    runtimes: RuntimeRegistry = { apple: base.apple, wasm: { app: host, postgres: host } };
+    runtimes: RuntimeRegistry = {
+      apple: base.apple,
+      docker: base.docker,
+      wasm: { app: host, postgres: host },
+    };
   const start = () => startServer({ home, port: 0, runtime: apple, runtimes });
   const project = (name: string, manifest: string) => {
     const root = join(home, name);
@@ -273,6 +277,7 @@ test("Apple and mixed environments keep their network, and the last Apple servic
     base = runtimeRegistry({ home, apple }),
     manager = new Manager(store, apple, 8080, "http", {
       apple: base.apple,
+      docker: base.docker,
       wasm: { app: host, postgres: host },
     });
   const deploy = async (project: string, manifest: string) => {
@@ -380,30 +385,33 @@ test("a cancelled caller stops waiting for a shared system start, and others sti
   }
 });
 
-test("the default hub runtime starts the container system on demand", async () => {
-  const f = await fixture(),
-    path = process.env.PATH;
-  // The hub's own Apple runtime resolves `container` through PATH.
-  process.env.PATH = `${join(f.home, "fake")}:${path}`;
-  let hub = await startServer({ home: f.home, port: 0 });
-  try {
-    expect(f.container.calls()).toEqual([]);
-    const prepared = await hub.manager.prepare(context(), {
-      root: f.project("apple", appleOnly("apple")),
-      branch: "main",
-    });
-    await hub.manager.deploy(context(), prepared);
-    expect(f.container.calls()[0]).toBe("system start --enable-kernel-install");
-    await hub.close();
-    writeFileSync(join(f.home, "fake", "calls"), "");
-    // Recovery of a running Apple environment is the first use after a restart.
-    hub = await startServer({ home: f.home, port: 0 });
-    expect(f.container.calls()[0]).toBe("system start --enable-kernel-install");
-    expect(f.container.calls().filter((c) => c.startsWith("system "))).toHaveLength(1);
-    expect(hub.manager.resolve(prepared.identity.ID).Status).toBe("running");
-  } finally {
-    process.env.PATH = path;
-    await hub.close();
-    rmSync(f.home, { recursive: true, force: true });
-  }
-});
+test.skipIf(process.platform !== "darwin")(
+  "the default macOS hub runtime starts the container system on demand",
+  async () => {
+    const f = await fixture(),
+      path = process.env.PATH;
+    // The hub's own Apple runtime resolves `container` through PATH.
+    process.env.PATH = `${join(f.home, "fake")}:${path}`;
+    let hub = await startServer({ home: f.home, port: 0 });
+    try {
+      expect(f.container.calls()).toEqual([]);
+      const prepared = await hub.manager.prepare(context(), {
+        root: f.project("apple", appleOnly("apple")),
+        branch: "main",
+      });
+      await hub.manager.deploy(context(), prepared);
+      expect(f.container.calls()[0]).toBe("system start --enable-kernel-install");
+      await hub.close();
+      writeFileSync(join(f.home, "fake", "calls"), "");
+      // Recovery of a running Apple environment is the first use after a restart.
+      hub = await startServer({ home: f.home, port: 0 });
+      expect(f.container.calls()[0]).toBe("system start --enable-kernel-install");
+      expect(f.container.calls().filter((c) => c.startsWith("system "))).toHaveLength(1);
+      expect(hub.manager.resolve(prepared.identity.ID).Status).toBe("running");
+    } finally {
+      process.env.PATH = path;
+      await hub.close();
+      rmSync(f.home, { recursive: true, force: true });
+    }
+  },
+);

@@ -56,6 +56,7 @@ function fixture(wasm = false) {
       wasm
         ? {
             apple: registry.apple,
+            docker: registry.docker,
             wasm: { app: runtime as HostRuntime, postgres: runtime as HostRuntime },
           }
         : registry,

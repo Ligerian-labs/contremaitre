@@ -74,9 +74,60 @@ jobs:
           name: cli-release
           path: bin/release/
           if-no-files-found: error
+  check-linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
+      - run: bun install --frozen-lockfile
+      - run: bun run lint && bun run check:boundaries && bun run typecheck
+      - name: Native runtime regressions
+        run: bun test --timeout 30000 test/docker.test.ts test/docker-cli.test.ts test/docker-defaults.test.ts test/apple.test.ts test/runtimes.test.ts test/redeploy-stopped.test.ts test/development.test.ts test/wasm-standalone.test.ts test/manager.test.ts
+      - run: bun run build
+      - name: Docker lifecycle and data fixture
+        run: CONTREMAITRE_FIXTURES=1 bun scripts/verify-docker.ts --cleanup
+      - name: Compiled Linux example
+        shell: bash
+        run: |
+          export CONTREMAITRE_HOME="$(mktemp -d)"
+          CLI="$PWD/bin/contremaitre"
+          PROXY_PID=""
+          cleanup() {
+            if [ -n "$PROXY_PID" ]; then
+              kill "$PROXY_PID" 2>/dev/null || true
+              wait "$PROXY_PID" 2>/dev/null || true
+            fi
+            "$CLI" down --delete-data || true
+            "$CLI" stop || true
+          }
+          cd examples/linux-docker
+          trap cleanup EXIT
+          "$CLI" start --http --http-port 18080
+          "$CLI" ensure --http --http-port 18080 --json
+          "$CLI" verify --profile smoke --json
+          "$CLI" report --json
+          "$CLI" exec web -- echo docker-exec-ok
+          "$CLI" logs web
+          "$CLI" proxy web 18082:3000 > "$CONTREMAITRE_HOME/proxy.log" 2>&1 &
+          PROXY_PID=$!
+          for attempt in {1..40}; do
+            if curl -fsS http://127.0.0.1:18082/ > "$CONTREMAITRE_HOME/proxy-response.json"; then
+              break
+            fi
+            sleep 0.25
+          done
+          bun -e 'const r=await Bun.file(process.argv[1]).json();if(r.runtime!=="docker"||r.messages[0]?.body!=="Hello from Linux Docker")process.exit(1)' "$CONTREMAITRE_HOME/proxy-response.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: contremaitre-linux-x64
+          path: bin/contremaitre
+          if-no-files-found: error
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: check
+    needs: [check, check-linux]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
