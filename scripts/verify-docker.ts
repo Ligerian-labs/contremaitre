@@ -45,6 +45,39 @@ let app = application({
   },
 });
 let keep = false;
+const anonymousVolumes = new Set<string>();
+const rememberAnonymousVolumes = async (probe = ctx) => {
+  for (const env of Object.values(hub.manager.state.Environments)) {
+    const cache = env.Services.cache;
+    if (!cache || !(await runtime.inspect(probe, cache.Container))) continue;
+    const [container] = JSON.parse(
+      (await runtime.output(probe, ["inspect", "--type", "container", cache.Container])).toString(),
+    ) as {
+      HostConfig: { Binds: string[] | null };
+      Mounts: { Type: string; Name?: string }[];
+    }[];
+    // Explicit named mounts survive container removal. Image-declared VOLUME
+    // mounts are anonymous and must disappear with their owned container.
+    const named = new Set((container.HostConfig.Binds ?? []).map((bind) => bind.split(":")[0]));
+    for (const mount of container.Mounts)
+      if (mount.Type === "volume" && mount.Name && !named.has(mount.Name))
+        anonymousVolumes.add(mount.Name);
+  }
+};
+
+const assertAnonymousVolumesRemoved = async () => {
+  for (const volume of anonymousVolumes) {
+    let exists = true;
+    try {
+      await runtime.output(context(AbortSignal.timeout(10_000)), ["volume", "inspect", volume]);
+    } catch (error) {
+      if (!/No such volume/i.test(String(error))) throw error;
+      exists = false;
+    }
+    assert.equal(exists, false, `Anonymous volume ${volume} survived environment cleanup`);
+  }
+};
+
 try {
   const deployment = defineFixture({
     key: "docker/deployment",
@@ -102,6 +135,7 @@ try {
   };
   assert.equal((await response()).messages[0].body, "Hello from Linux Docker");
   assert((await response()).visits >= 2);
+  await rememberAnonymousVolumes();
   const images = JSON.stringify(env.builds);
   const job = JSON.stringify(env.Services.migrate.job);
   const container = env.Services.web.Container;
@@ -116,6 +150,43 @@ try {
     "completed job retained",
   );
   assert.equal(hub.manager.resolve(id).Services.web.Container, container);
+  // Changed context must rebuild even when the old image still exists. Verify
+  // the actual image bytes without the development source mount masking them.
+  const migration = join(root, "migrate.mjs");
+  const marker = "docker-build-input-changed";
+  writeFileSync(migration, `${readFileSync(migration, "utf8")}\n// ${marker}\n`);
+  const previousBuild = hub.manager.resolve(id).builds?.migrate;
+  assert(previousBuild);
+  await hub.manager.deploy(
+    ctx,
+    await hub.manager.prepare(ctx, { root, branch: env.Identity.Branch }),
+  );
+  const rebuilt = hub.manager.resolve(id).builds?.migrate;
+  assert(rebuilt);
+  assert.notEqual(rebuilt.image, previousBuild.image, "changed context must produce a new image");
+  assert.notEqual(rebuilt.digest, previousBuild.digest);
+  const artifactProbe = `${env.Services.migrate.Container}-artifact`;
+  try {
+    await runtime.run(ctx, {
+      name: artifactProbe,
+      network: env.Network,
+      image: rebuilt.image,
+      service: {
+        command: [
+          "bun",
+          "-e",
+          `if(!(await Bun.file('/app/migrate.mjs').text()).includes('${marker}'))throw Error('stale image')`,
+        ],
+      },
+      volumes: {},
+      envFile: "",
+      task: true,
+      timeout: 15_000,
+    });
+  } finally {
+    await runtime.remove(context(AbortSignal.timeout(15_000)), artifactProbe);
+  }
+
   const query = (environment: string, sql: string) =>
     hub.manager.exec(ctx, hub.manager.resolve(environment).Services.db, [
       "psql",
@@ -136,6 +207,7 @@ try {
   );
   assert.equal((await hub.operations.wait(forkOp.id)).status, "succeeded");
   const fork = forkOp.environmentId;
+  await rememberAnonymousVolumes();
   assert.equal((await response(fork)).messages.length, 2);
   await query(fork, "INSERT INTO messages VALUES (3, 'branch only')");
   // Docker must reject direct access from another environment's bridge.
@@ -200,6 +272,7 @@ try {
     await hub.manager.prepare(ctx, { root, branch: env.Identity.Branch }),
   );
   assert.equal((await response()).messages.length, 2, "down preserves PostgreSQL data");
+  await rememberAnonymousVolumes();
   await app.dispose();
   await hub.close();
   hub = await startServer({ home, port });
@@ -236,6 +309,7 @@ try {
   }
 } finally {
   if (!keep) {
+    await rememberAnonymousVolumes(context(AbortSignal.timeout(30_000)));
     for (const env of Object.values(hub.manager.state.Environments)) {
       await hub.manager.down(context(AbortSignal.timeout(60_000)), env, true);
       assert.equal(await runtime.inspect(context(), env.Services.web.Container), undefined);
@@ -243,5 +317,8 @@ try {
   }
   await app.dispose();
   await hub.close();
-  if (!keep) rmSync(directory, { recursive: true, force: true });
+  if (!keep) {
+    rmSync(directory, { recursive: true, force: true });
+    await assertAnonymousVolumesRemoved();
+  }
 }

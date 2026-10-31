@@ -214,3 +214,44 @@ test("Docker builds filter secrets, clean staging and reuse only existing unchan
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("Docker removal requests anonymous-volume cleanup while named volumes remain engine-owned", async () => {
+  const docker = new Docker();
+  const output = spyOn(docker, "output").mockResolvedValue(Buffer.alloc(0));
+  try {
+    await docker.remove(context(), "web");
+    expect(output.mock.calls[0][1]).toEqual(["rm", "--force", "--volumes", "web"]);
+  } finally {
+    output.mockRestore();
+  }
+});
+
+test("Docker rebuilds an existing image when a filtered build input changes", async () => {
+  const root = mkdtempSync(join(tmpdir(), "cm-docker-rebuild-"));
+  writeFileSync(join(root, "Dockerfile"), "FROM scratch\nCOPY input /input\n");
+  writeFileSync(join(root, "input"), "one");
+  const docker = new Docker();
+  const built: string[] = [];
+  const output = spyOn(docker, "output").mockImplementation(async (_ctx, args) => {
+    if (args[0] === "build") {
+      const directory = args.at(-1);
+      if (!directory) throw Error("Missing build context");
+      built.push(readFileSync(join(directory, "input"), "utf8"));
+    }
+    return Buffer.alloc(0);
+  });
+  try {
+    const first = await docker.build(context(), root, join(root, "Dockerfile"), "image-1");
+    expect(await docker.build(context(), root, join(root, "Dockerfile"), "unused", first)).toEqual(
+      first,
+    );
+    writeFileSync(join(root, "input"), "two");
+    const changed = await docker.build(context(), root, join(root, "Dockerfile"), "image-2", first);
+    expect(changed.image).toBe("image-2");
+    expect(changed.digest).not.toBe(first.digest);
+    expect(built).toEqual(["one", "two"]);
+  } finally {
+    output.mockRestore();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
