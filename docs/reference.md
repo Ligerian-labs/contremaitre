@@ -436,3 +436,9 @@ macOS ARM64 build. See
 Startup retries interrupted clones within a shared two-minute recovery budget. A failed clone recovery retains its journal, records the error on the source and target, and allows the hub to start. Inspect the source environment's status and service logs to diagnose readiness or migration failures. Deployment and deletion remain blocked for the affected pair until recovery succeeds.
 
 You can stop a container environment with pending clone recovery without deleting its data. A confirmed source stop supersedes the journal's request to restart its writers; the next hub startup completes cleanup without restarting them. Project-driver environments retain their recovery guard because the driver owns its recovery journal. Invalid clone journals still prevent startup rather than admitting changes with unknown recovery ownership.
+
+## Native runtime on Linux
+
+Services accept `runtime: docker`, `runtime: apple` or `runtime: wasm`. Omitting the runtime chooses Docker on Linux and Apple on macOS. The resolved runtime is stored with each deployed service; legacy state without a runtime remains Apple. Changing a deployed runtime requires explicitly removing that service or deleting its environment data. A hub uses one native container engine, alongside WASM services.
+
+Docker requires local rootful Docker Engine on Linux, a local Unix socket, and direct host access to bridge addresses. Networks are private per environment, with no published database or application ports. The hub provides HTTP routing and explicit TCP proxies. Remote daemons, rootless engines and Docker Desktop are unsupported. See the [Linux example](../examples/linux-docker/README.md).

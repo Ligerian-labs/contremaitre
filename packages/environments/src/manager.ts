@@ -431,6 +431,7 @@ export class Manager {
       );
       if (containers) {
         phase(ctx, `Preparing network for ${e.Identity.Name}`);
+        await this.runtime.startSystem(ctx);
         await this.runtime.network(ctx, e.Network);
         networkPrepared = true;
       }
@@ -731,10 +732,13 @@ export class Manager {
     );
   }
   private deploymentFingerprint(env: Environment, s: ServiceState): string {
-    // Apple image tags change with every build, so the image identifies its artifact.
+    // Native image tags change with every build, so the image identifies its artifact.
     // Other runtimes can rebuild an artifact in place; include its digest instead.
     // Apple keeps its earlier fingerprint shape so upgrades retain running services.
-    const artifact = (s.Runtime ?? "apple") === "apple" ? [] : [env.builds?.[s.Name]?.digest ?? ""];
+    const artifact =
+      this.backend(s).capabilities.network === "container"
+        ? []
+        : [env.builds?.[s.Name]?.digest ?? ""];
     return hash(
       JSON.stringify([
         s.Image,
@@ -1315,7 +1319,7 @@ export class Manager {
           s.Host = v.Host;
           const ready =
             s.Spec.kind === "postgres"
-              ? ["pg_isready", "-U", "app", "-d", "app"]
+              ? ["pg_isready", "-h", "127.0.0.1", "-U", "app", "-d", "app"]
               : s.Spec.kind === "redis"
                 ? ["redis-cli", "ping"]
                 : s.Spec.ready;
