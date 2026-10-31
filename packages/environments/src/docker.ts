@@ -139,7 +139,7 @@ export class Docker implements Runtime {
     return this.delete(ctx, ["image", "rm", name]);
   }
   remove(ctx: Context, name: string) {
-    return this.delete(ctx, ["rm", "--force", name]);
+    return this.delete(ctx, ["rm", "--force", "--volumes", name]);
   }
   async inspect(ctx: Context, name: string): Promise<Inspection | undefined> {
     try {
