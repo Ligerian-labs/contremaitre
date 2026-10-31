@@ -10,7 +10,8 @@ import { operationSchema } from "@contremaitre/operations/operations";
 import { agentAssets } from "../apps/cli/src/agent-assets.js";
 import { version } from "../apps/cli/src/version.js";
 
-const signal = AbortSignal.timeout(60_000),
+// Several fresh hubs, self-updates and a cold embedded worker share this budget.
+const signal = AbortSignal.timeout(120_000),
   ctx = context(signal),
   dir = await mkdtemp(join(tmpdir(), "cm-packaging-")),
   home = join(dir, "home"),

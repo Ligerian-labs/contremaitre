@@ -8,9 +8,13 @@
 
 **Every branch gets its own stack.**
 
-Run your app, PostgreSQL, Redis, and uploaded files in isolated local environments for Git branches and Jujutsu workspaces. New environments copy data from your designated main environment and get their own HTTPS `.localhost` URLs. Built on [Apple container](https://github.com/apple/container) for Apple silicon Macs.
+Run your app, PostgreSQL, Redis, and uploaded files in isolated local environments for Git branches and Jujutsu workspaces. New environments copy data from your designated main environment and get their own HTTPS `.localhost` URLs. Native containers use [Apple container](https://github.com/apple/container) on Apple silicon Macs and local Docker Engine on Linux. Linux uses HTTP routing.
 
 [Get started](#get-started) · [Try a data fork](#try-a-data-fork) · [Coding agents](#use-with-coding-agents) · [Documentation](#documentation) · [Contribute](CONTRIBUTING.md)
+
+## Linux Docker
+
+Linux native services use local Docker Engine. See the [runnable Linux stack](examples/linux-docker/README.md) for building the CLI, deploying PostgreSQL, Redis and an HTTP app, and running smoke verification. macOS keeps Apple containers as its default.
 
 ## Why Contremaitre?
 

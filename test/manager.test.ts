@@ -623,3 +623,45 @@ test("startup recovery budget leaves the hub context usable and keeps pending jo
     f.clean();
   }
 });
+
+test("managed Postgres waits for TCP instead of the entrypoint's temporary Unix socket", async () => {
+  const f = fixture();
+  const prepared = f.prepare();
+  await f.manager.deploy(context(), prepared);
+  const service = f.manager.resolve(prepared.identity.ID).Services.db;
+  const probe = spyOn(f.runtime, "exec").mockImplementation(async (_ctx, _name, args) => {
+    if (args[0] === "pg_isready") {
+      // During initdb the temporary server only accepts Unix socket connections.
+      if (!args.includes("-h")) return Buffer.from("accepting Unix socket connections");
+      throw Error("TCP is not accepting connections yet");
+    }
+    return Buffer.from("ok");
+  });
+  try {
+    await expect(f.manager.waitReady(context(AbortSignal.timeout(300)), service)).rejects.toThrow();
+    expect(service.ready).toBe(false);
+    expect(probe.mock.calls.some((c) => c[2][0] === "pg_isready")).toBe(true);
+    expect(probe.mock.calls.every((c) => c[2].includes("127.0.0.1"))).toBe(true);
+    probe.mockResolvedValue(Buffer.from("accepting TCP connections"));
+    await f.manager.waitReady(context(), service);
+    expect(service.ready).toBe(true);
+  } finally {
+    probe.mockRestore();
+    f.clean();
+  }
+});
+
+test("a rejected native engine preflight creates no network or services", async () => {
+  const f = fixture();
+  f.runtime.startSystem = async () => {
+    throw Error("unsupported Docker engine");
+  };
+  try {
+    await expect(f.manager.deploy(context(), f.prepare())).rejects.toThrow(
+      "unsupported Docker engine",
+    );
+    expect(f.runtime.calls).toEqual([]);
+  } finally {
+    f.clean();
+  }
+});
