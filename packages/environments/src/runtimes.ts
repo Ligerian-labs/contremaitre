@@ -2,7 +2,8 @@ import type { Readable } from "node:stream";
 import { type Context, fail } from "@contremaitre/execution/context";
 import type { RunOptions } from "@contremaitre/execution/process";
 import type { RuntimeKind, Service, ServiceKind } from "@contremaitre/projects/model";
-import { appleRuntime, type Runtime } from "./apple.js";
+import { Apple, containerRuntime, type Runtime } from "./apple.js";
+import { Docker } from "./docker.js";
 import type { BuildRecord, ServiceState } from "./model.js";
 import { PGliteRuntime } from "./pglite-runtime.js";
 import { WasmtimeRuntime } from "./wasmtime.js";
@@ -113,12 +114,30 @@ export type RuntimeRegistry = {
 export interface RegistryOptions {
   /** Hub state directory. */
   home: string;
+  /** Native container adapter; the option name is retained for existing callers. */
   apple: Runtime;
 }
 export function runtimeRegistry(options: RegistryOptions): RuntimeRegistry {
-  const apple = appleRuntime(options.apple, options.home);
+  const native = containerRuntime(options.apple, options.home);
+  const apple = {
+    ...native,
+    preflight: async (ctx: Context) => {
+      if (options.apple instanceof Docker)
+        fail("Apple containers require macOS; use runtime: docker on Linux");
+      await native.preflight(ctx);
+    },
+  };
+  const docker = {
+    ...native,
+    preflight: async (ctx: Context) => {
+      if (options.apple instanceof Apple)
+        fail("Docker native containers require a Linux hub; use runtime: apple on macOS");
+      await native.preflight(ctx);
+    },
+  };
   return {
     apple: { app: apple, postgres: apple, redis: apple },
+    docker: { app: docker, postgres: docker, redis: docker },
     wasm: {
       app: new WasmtimeRuntime(options),
       postgres: new PGliteRuntime(options),

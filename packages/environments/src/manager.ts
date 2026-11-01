@@ -391,7 +391,8 @@ export class Manager {
     this.use(env);
     const e = env,
       previousStatus = e.Status;
-    let mutated = false;
+    let mutated = false,
+      networkPrepared = false;
     const names = order(manifest.services);
     const scopes = Object.fromEntries(names.map((name) => [name, serviceContext(ctx, name)]));
     const errors: string[] = [];
@@ -423,6 +424,16 @@ export class Manager {
           fail(
             `${name}: runtime changed from ${recorded} to ${next}; Contremaitre does not convert services. Remove ${name} from the manifest and deploy, or delete the environment with contremaitre down --delete-data, then deploy with the new runtime`,
           );
+      }
+      // A missing or broken private network must fail before expensive builds.
+      const containers = names.some(
+        (name) => this.specBackend(manifest.services[name]).capabilities.network === "container",
+      );
+      if (containers) {
+        phase(ctx, `Preparing network for ${e.Identity.Name}`);
+        await this.runtime.startSystem(ctx);
+        await this.runtime.network(ctx, e.Network);
+        networkPrepared = true;
       }
       const images: Record<string, string> = {};
       const preflights = new Map<ServiceRuntime, Promise<void>>();
@@ -549,12 +560,7 @@ export class Manager {
       e.Status = "deploying";
       e.Error = "";
       this.save();
-      const containers = names.some(
-        (name) => this.backend(services[name]).capabilities.network === "container",
-      );
       if (mutated) {
-        phase(ctx, `Preparing network for ${e.Identity.Name}`);
-        if (containers) await this.runtime.network(ctx, e.Network);
         // Settle all cleanup calls before proceeding or releasing the environment lock.
         const stopped = await Promise.allSettled(
           removing.map(async (name) => {
@@ -700,6 +706,17 @@ export class Manager {
     } catch (error) {
       await Promise.allSettled(sources.values());
       e.Error = message(error);
+      if (networkPrepared && !keys(e.Services).length) {
+        try {
+          await this.runtime.removeNetwork(
+            { ...ctx, signal: AbortSignal.timeout(10_000) },
+            e.Network,
+          );
+        } catch (cleanup) {
+          e.Error += `; network cleanup: ${message(cleanup)}`;
+          ctx.log(`${e.Error}\n`);
+        }
+      }
       e.Status = mutated ? "failed" : previousStatus;
       e.UpdatedAt = now();
       this.save();
@@ -715,10 +732,13 @@ export class Manager {
     );
   }
   private deploymentFingerprint(env: Environment, s: ServiceState): string {
-    // Apple image tags change with every build, so the image identifies its artifact.
+    // Native image tags change with every build, so the image identifies its artifact.
     // Other runtimes can rebuild an artifact in place; include its digest instead.
     // Apple keeps its earlier fingerprint shape so upgrades retain running services.
-    const artifact = (s.Runtime ?? "apple") === "apple" ? [] : [env.builds?.[s.Name]?.digest ?? ""];
+    const artifact =
+      this.backend(s).capabilities.network === "container"
+        ? []
+        : [env.builds?.[s.Name]?.digest ?? ""];
     return hash(
       JSON.stringify([
         s.Image,
@@ -1299,7 +1319,7 @@ export class Manager {
           s.Host = v.Host;
           const ready =
             s.Spec.kind === "postgres"
-              ? ["pg_isready", "-U", "app", "-d", "app"]
+              ? ["pg_isready", "-h", "127.0.0.1", "-U", "app", "-d", "app"]
               : s.Spec.kind === "redis"
                 ? ["redis-cli", "ping"]
                 : s.Spec.ready;
@@ -1392,6 +1412,16 @@ export class Manager {
           errors.push(`${name}: ${message(error)}`);
         }
       }
+      if (!localFailure && this.usesContainers(env)) {
+        try {
+          await this.bridges.close(env.Identity.ID);
+          await this.runtime.removeNetwork(ctx, env.Network);
+          delete env.host_network;
+        } catch (error) {
+          localFailure = true;
+          errors.push(`network: ${message(error)}`);
+        }
+      }
     }
     env.Status = deleting ? "deleting" : localFailure ? "stopping" : "stopped";
     // No service runs with the shared URLs anymore; the next deploy uses local ones.
@@ -1411,7 +1441,6 @@ export class Manager {
       if (env.driver) {
         if (env.driver_directory) rmSync(env.driver_directory, { recursive: true, force: true });
       } else {
-        const containers = this.usesContainers(env);
         while (env.Volumes.length) {
           await this.runtime.removeVolume(ctx, env.Volumes[0]);
           env.Volumes.shift();
@@ -1419,7 +1448,6 @@ export class Manager {
         }
         rmSync(join(this.store.home, "data", env.Identity.ID), { recursive: true, force: true });
         rmSync(join(this.store.home, "sources", env.Identity.ID), { recursive: true, force: true });
-        if (containers) await this.runtime.removeNetwork(ctx, env.Network);
         for (const image of env.Images) await this.runtime.removeImage(ctx, image);
       }
       delete this.state.Environments[env.Identity.ID];

@@ -2,6 +2,7 @@ import { chmodSync, existsSync, unlinkSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { join } from "node:path";
 import { Apple, type Runtime } from "@contremaitre/environments/apple";
+import { Docker } from "@contremaitre/environments/docker";
 import { Manager } from "@contremaitre/environments/manager";
 import {
   addressURL,
@@ -206,8 +207,10 @@ export async function startServer(
   };
   try {
     await reapProcesses(context(signal), join(store.home, "processes"));
-    // WASM-only environments never need the container system; Apple services start it.
-    const runtime = options.runtime ?? new Apple("container", { startSystem: true });
+    // WASM-only environments never need a container engine; native services preflight it.
+    const runtime =
+      options.runtime ??
+      (process.platform === "linux" ? new Docker() : new Apple("container", { startSystem: true }));
     const manager = new Manager(
       store,
       runtime,

@@ -30,7 +30,7 @@ import { Store } from "@contremaitre/environments/store";
 import { type Context, context, hash, type ServiceProgress } from "@contremaitre/execution/context";
 import { routes } from "@contremaitre/hub/server";
 import { parseManifest, prepareManifest } from "@contremaitre/projects/config";
-import { newIdentity } from "@contremaitre/projects/model";
+import { newIdentity, serviceRuntime } from "@contremaitre/projects/model";
 import { FakeRuntime } from "./fake-runtime.js";
 
 /** A host-process runtime that listens on its reserved loopback ports. */
@@ -129,7 +129,11 @@ function fixture(text = mixed) {
     host = new FakeHostRuntime(),
     store = new Store(home),
     base = runtimeRegistry({ home: store.home, apple }),
-    registry: RuntimeRegistry = { apple: base.apple, wasm: { app: host, postgres: host } },
+    registry: RuntimeRegistry = {
+      apple: base.apple,
+      docker: base.docker,
+      wasm: { app: host, postgres: host },
+    },
     manager = new Manager(store, apple, 8080, "http", registry);
   let manifest = text;
   const prepare = (branch = "main"): PreparedDeploy => ({
@@ -345,7 +349,7 @@ test("mixed environments address host runtimes by reserved loopback ports", asyn
     const env = f.manager.resolve(p.identity.ID);
     expect(env.Status).toBe("running");
     const { db, web, cache } = env.Services;
-    expect([db.Runtime, web.Runtime, cache.Runtime]).toEqual(["wasm", "wasm", "apple"]);
+    expect([db.Runtime, web.Runtime, cache.Runtime]).toEqual(["wasm", "wasm", serviceRuntime({})]);
     expect(db.Host).toBe("127.0.0.1");
     expect(cache.Host).toBe("127.0.0.1");
     const dbPort = db.Ports?.["5432"] ?? 0,
@@ -394,7 +398,7 @@ test("changing a recorded runtime fails before any mutation", async () => {
     f.host.calls = [];
     f.apple.calls = [];
     await expect(f.manager.deploy(context(), f.prepare())).rejects.toThrow(
-      "db: runtime changed from wasm to apple; Contremaitre does not convert services",
+      `db: runtime changed from wasm to ${serviceRuntime({})}; Contremaitre does not convert services`,
     );
     expect(env.Status).toBe("running");
     expect(env.Services.db.Runtime).toBe("wasm");
@@ -414,6 +418,7 @@ test("placeholder WASM runtimes fail clearly and leave the environment deletable
   const registry = runtimeRegistry({ home, apple });
   const manager = new Manager(new Store(home), apple, 48399, "http", {
     apple: registry.apple,
+    docker: registry.docker,
     wasm: { app: unavailableRuntime("app"), postgres: unavailableRuntime("postgres") },
   });
   try {
@@ -522,7 +527,7 @@ test("cloning between different Postgres runtimes fails clearly", async () => {
     await f.manager.deploy(context(), f.prepare());
     f.setManifest(mixed);
     await expect(f.manager.deploy(context(), f.prepare("feature"))).rejects.toThrow(
-      "Clone db: main uses runtime apple and this environment uses wasm",
+      `Clone db: main uses runtime ${serviceRuntime({})} and this environment uses wasm`,
     );
   } finally {
     await f.clean();
