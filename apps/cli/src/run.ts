@@ -115,6 +115,7 @@ export function makeRoot(passthrough: readonly string[] = []) {
           switch (action) {
             case "update": {
               if (args.length) fail("update does not accept positional arguments");
+              if (o.beta && o.nightly) fail("Choose either --beta or --nightly");
               if (!o.updateCheck && !Bun.main.startsWith("/$bunfs/"))
                 fail("update requires the compiled CLI; use --check when running from source");
               if (!o.updateCheck && process.getuid?.() === 0)
@@ -127,6 +128,7 @@ export function makeRoot(passthrough: readonly string[] = []) {
                   executable: process.execPath,
                   home,
                   check: o.updateCheck,
+                  channel: o.nightly ? "nightly" : o.beta ? "beta" : "stable",
                 },
               );
               output(o.json, o.json ? result : formatUpdate(result));
