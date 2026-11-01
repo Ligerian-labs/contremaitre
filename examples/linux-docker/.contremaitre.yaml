@@ -1,0 +1,39 @@
+version: 1
+project: linux-docker
+idle_timeout_seconds: 0
+services:
+  db:
+    kind: postgres
+  cache:
+    kind: redis
+  migrate:
+    build: .
+    workload: job
+    command: [bun, migrate.mjs]
+    depends_on: [db]
+    environment:
+      DATABASE_URL: '{{db.url}}'
+  web:
+    runtime: docker
+    build: .
+    command: [bun, --watch, server.mjs]
+    working_dir: /app
+    port: 3000
+    http: true
+    depends_on: [db, cache, migrate]
+    environment:
+      DATABASE_URL: '{{db.url}}'
+      REDIS_URL: '{{cache.url}}'
+    dev:
+      source: .
+      target: /app
+      exclude: [README.md]
+verification:
+  profiles:
+    smoke:
+      - name: postgres-and-redis
+        service: web
+        command:
+          - bun
+          - -e
+          - "const r=await fetch('http://127.0.0.1:3000');if(!r.ok)throw Error(await r.text());const j=await r.json();if(j.runtime!=='docker'||j.messages[0]?.body!=='Hello from Linux Docker'||j.visits<1)throw Error(JSON.stringify(j));console.log(JSON.stringify(j))"
