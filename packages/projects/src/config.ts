@@ -19,7 +19,7 @@ import {
 } from "./model.js";
 import { type LoadOptions, loadProject } from "./project-lock.js";
 
-export { projectName } from "./project-lock.js";
+export { manifestFile, manifestNames, projectName } from "./project-lock.js";
 export const validName = /^[a-z][a-z0-9-]{0,39}$/;
 export const envKey = /^[A-Za-z_][A-Za-z0-9_]*$/;
 export function serviceDefaults(original: Service): Service {
