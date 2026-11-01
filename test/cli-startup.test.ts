@@ -64,6 +64,7 @@ test("runner retains literal dynamic imports for each command implementation", (
     [
       "@contremaitre/hub/server",
       "@contremaitre/environments/apple",
+      "@contremaitre/environments/docker",
       "@contremaitre/environments/driver",
       "@contremaitre/environments/runtimes",
       "@contremaitre/environments/model",

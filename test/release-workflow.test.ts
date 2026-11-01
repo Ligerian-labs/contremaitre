@@ -20,11 +20,17 @@ function runStep(name: string, env: Record<string, string>, mockGh?: string) {
   try {
     const output = join(directory, "output");
     writeFileSync(output, "");
+    mkdirSync(join(directory, "apps/cli/src"), { recursive: true });
+    writeFileSync(
+      join(directory, "apps/cli/src/releases.ts"),
+      readFileSync(resolve(import.meta.dir, "../apps/cli/src/releases.ts")),
+    );
     if (mockGh) writeFileSync(join(directory, "gh"), mockGh, { mode: 0o755 });
     const result = Bun.spawnSync(["bash", "-e", "-o", "pipefail", "-c", script(name)], {
       cwd: directory,
       env: {
         ...process.env,
+        NIGHTLY: "false",
         ...env,
         GITHUB_OUTPUT: output,
         GH_LOG: output,
@@ -44,16 +50,26 @@ function runStep(name: string, env: Record<string, string>, mockGh?: string) {
 for (const [tag, prerelease] of [
   ["v1.2.3", "false"],
   ["v1.2.3-rc.1", "true"],
+  ["v1.2.3.beta.0", "true"],
+  ["v1.2.3-beta.10", "true"],
 ] as const) {
   test(`release parses ${tag}`, () => {
     const result = runStep("Parse version from tag", { GITHUB_REF_NAME: tag });
     expect(result.code).toBe(0);
-    expect(result.output).toContain(`version=${tag.slice(1)}\n`);
+    expect(result.output).toContain(`version=${tag.slice(1).replace(".beta.", "-beta.")}\n`);
     expect(result.output).toContain(`prerelease=${prerelease}\n`);
   });
 }
 
-for (const tag of ["vnext", "v1.2", "v1.2.3-", "v1.2.3;echo bad"]) {
+for (const tag of [
+  "vnext",
+  "v1.2",
+  "v1.2.3-",
+  "v1.2.3;echo bad",
+  "v01.2.3",
+  "v1.2.3.beta.01",
+  "v1.2.3-rc..1",
+]) {
   test(`release rejects ${tag}`, () => {
     const result = runStep("Parse version from tag", { GITHUB_REF_NAME: tag });
     expect(result.code).not.toBe(0);
@@ -61,7 +77,7 @@ for (const tag of ["vnext", "v1.2", "v1.2.3-", "v1.2.3;echo bad"]) {
   });
 }
 
-for (const version of ["1.2.3", "1.2.3-rc.1"]) {
+for (const version of ["1.2.3", "1.2.3-rc.1", "1.2.3-beta.0", "0.0.0-nightly.123.gabcdef123456"]) {
   test(`release stamps ${version} into the manifest and CLI module`, () => {
     const directory = mkdtempSync(join(tmpdir(), "cm-release-version-"));
     try {
@@ -109,7 +125,7 @@ esac
 for (const state of ["missing", "draft", "published"]) {
   for (const prerelease of ["false", "true"]) {
     test(`release handles ${state}, prerelease=${prerelease}`, () => {
-      const tag = prerelease === "true" ? "v1.2.3-rc.1" : "v1.2.3";
+      const tag = prerelease === "true" ? "v1.2.3.beta.0" : "v1.2.3";
       const result = runStep(
         "Publish a complete release",
         { RELEASE_TAG: tag, PRERELEASE: prerelease, RELEASE_STATE: state },
@@ -140,4 +156,44 @@ test("failed asset uploads leave the release as a draft", () => {
   );
   expect(result.code).not.toBe(0);
   expect(result.output).not.toContain("release edit");
+});
+
+for (const sha of [
+  "abcdef1234567890123456789012345678901234",
+  "0123456789012345678901234567890123456789",
+]) {
+  test(`main builds get a valid nightly version for commit ${sha}`, () => {
+    const result = runStep("Prepare nightly version", {
+      GITHUB_RUN_NUMBER: "123",
+      GITHUB_SHA: sha,
+    });
+    expect(result.code).toBe(0);
+    expect(result.output).toContain(`version=0.0.0-nightly.123.g${sha.slice(0, 12)}\n`);
+    expect(result.output).toContain(`release_tag=v0.0.0-nightly.123.g${sha.slice(0, 12)}\n`);
+    expect(result.output).toContain("prerelease=true\n");
+    const parsed = runStep("Parse version from tag", {
+      GITHUB_REF_NAME: `v0.0.0-nightly.123.g${sha.slice(0, 12)}`,
+    });
+    expect(parsed.code).toBe(0);
+  });
+}
+
+test("nightlies publish as prereleases at the exact checked source commit", () => {
+  const tag = "v0.0.0-nightly.123.gabcdef123456";
+  const result = runStep(
+    "Publish a complete release",
+    {
+      RELEASE_TAG: tag,
+      PRERELEASE: "true",
+      NIGHTLY: "true",
+      SOURCE_SHA: "abcdef1234567890",
+      RELEASE_STATE: "missing",
+    },
+    mockGh,
+  );
+  expect(result.code).toBe(0);
+  expect(result.output).toContain(`release create ${tag} --target abcdef1234567890 --draft`);
+  expect(result.output).toContain(
+    `release edit ${tag} --draft=false --prerelease=true --latest=false`,
+  );
 });

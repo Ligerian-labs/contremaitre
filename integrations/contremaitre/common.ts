@@ -3,8 +3,11 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 export function project(cwd: string): string | undefined {
   for (let path = cwd; ; path = dirname(path)) {
-    if ([".contremaitre.yaml", ".contremaitre.yml"].some((name) => existsSync(join(path, name))))
-      return path;
+    const names = [`.contremaitre.${process.platform}`, ".contremaitre"].flatMap((base) => [
+      `${base}.yaml`,
+      `${base}.yml`,
+    ]);
+    if (names.some((name) => existsSync(join(path, name)))) return path;
     if (dirname(path) === path) return;
   }
 }

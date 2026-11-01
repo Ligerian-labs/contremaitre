@@ -11,10 +11,14 @@ export interface PgliteHandle {
   url(password?: string): string;
   stop(): Promise<void>;
 }
+/** How long a connection waits for the single PGlite slot by default. */
+export const DEFAULT_PGLITE_CONNECTION_WAIT_MS = 2000;
 export async function startPglite(options: {
   dataDir: string;
   port: number;
   host?: string;
+  /** How long a connection waits for the occupied slot before SQLSTATE 53300. */
+  connectionWaitMs?: number;
   signal?: AbortSignal;
   ctx?: Context;
   log?: (text: string) => void;
@@ -99,7 +103,13 @@ export async function startPglite(options: {
       worker.addEventListener("error", onError);
       worker.addEventListener("close", onClose);
       worker.addEventListener("message", onMessage);
-      worker.postMessage({ type, dataDir, port: options.port, host });
+      worker.postMessage({
+        type,
+        dataDir,
+        port: options.port,
+        host,
+        connectionWaitMs: options.connectionWaitMs ?? DEFAULT_PGLITE_CONNECTION_WAIT_MS,
+      });
     });
   }
   let termination: Promise<void> | undefined;
