@@ -1,7 +1,8 @@
 import type { PGlite } from "@electric-sql/pglite";
+import { pglitePackets } from "./pglite-protocol.js";
 
 // Recognize SQL keywords only outside quoted strings/identifiers and comments.
-function tokens(sql: string): { word: string; depth: number; literal?: boolean }[] {
+export function pgliteTokens(sql: string): { word: string; depth: number; literal?: boolean }[] {
   const result: { word: string; depth: number; literal?: boolean }[] = [];
   let depth = 0;
   for (let at = 0; at < sql.length; ) {
@@ -61,7 +62,7 @@ function tokens(sql: string): { word: string; depth: number; literal?: boolean }
   return result;
 }
 function copyInput(sql: string): { binary: boolean; single: boolean } | undefined {
-  const words = tokens(sql);
+  const words = pgliteTokens(sql);
   let copying = false;
   let first = true;
   let found = -1;
@@ -104,7 +105,11 @@ function copyInput(sql: string): { binary: boolean; single: boolean } | undefine
   };
 }
 /** PGlite reads COPY input synchronously: give it the complete wire exchange at once. */
-export function bufferPgliteCopy(db: PGlite): { abort(): void } {
+export function bufferPgliteCopy(db: PGlite): {
+  abort(): void;
+  readonly waitingForSync: boolean;
+  readonly discardingInput: boolean;
+} {
   const execute = db.execProtocolRawStream.bind(db);
   let input: Uint8Array[] = [];
   let size = 0;
@@ -184,25 +189,22 @@ export function bufferPgliteCopy(db: PGlite): { abort(): void } {
       }
     }
     if (!input.length) {
-      if (![80, 66, 68].includes(message[0])) return execute(message, options);
-      const chunks: Uint8Array[] = [];
-      await execute(message, { ...options, onRawData: (bytes) => chunks.push(bytes.slice()) });
-      const response = Buffer.concat(chunks);
-      const packets: Uint8Array[] = [];
-      for (let at = 0; at < response.length; ) {
-        const end = at + 1 + response.readInt32BE(at + 1);
-        packets.push(response.subarray(at, end));
-        at = end;
-      }
-      const failed = packets.some((packet) => packet[0] === 69);
-      for (const packet of packets) {
-        // PGlite emits ReadyForQuery early after a failed extended message. PostgreSQL
-        // waits for Sync; forward that Sync to clear the backend protocol state.
-        if (failed && packet[0] === 90) {
-          readyAfterSync = packet.slice();
-          backendNeedsSync = true;
-        } else options.onRawData(packet);
-      }
+      if (![80, 66, 68, 69].includes(message[0])) return execute(message, options);
+      let failed = false;
+      const frames = pglitePackets(
+        (packet) => {
+          if (packet[0] === 69) failed = true;
+          // Include Execute-time errors without retaining SELECT/COPY results.
+          if (failed && packet[0] === 90) {
+            readyAfterSync = packet;
+            backendNeedsSync = true;
+          } else options.onRawData(packet);
+        },
+        undefined,
+        options.onRawData,
+      );
+      await execute(message, { ...options, onRawData: frames.data });
+      frames.finish();
       return;
     }
     input.push(message.slice());
@@ -235,5 +237,13 @@ export function bufferPgliteCopy(db: PGlite): { abort(): void } {
       at = end;
     }
   };
-  return { abort };
+  return {
+    abort,
+    get waitingForSync() {
+      return readyAfterSync !== undefined;
+    },
+    get discardingInput() {
+      return discardCopy;
+    },
+  };
 }

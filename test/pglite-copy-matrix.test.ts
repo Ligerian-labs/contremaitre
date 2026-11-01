@@ -145,190 +145,210 @@ function binaryRows(): Buffer {
   ]);
 }
 
-test("systematic COPY matrix: protocol × transaction × scenario, wire status and committed data", async () => {
-  const root = await mkdtemp(join(tmpdir(), "cm-pglite-copy-matrix-"));
-  const server = await startPglite({ dataDir: join(root, "db"), port: await freePort() });
-  const outcomes: object[] = [];
-  let client: Awaited<ReturnType<typeof connect>> | undefined;
-  try {
-    for (const extended of [false, true])
-      for (const transaction of [false, true])
-        for (const scenario of scenarios) {
-          const cell = `${extended ? "extended" : "simple"}/${transaction ? "BEGIN" : "autocommit"}/${scenario}`;
-          client = await connect(server.port);
-          try {
-            expect(
-              errors(
-                await client.query(
-                  "DROP TABLE IF EXISTS matrix; CREATE TABLE matrix(id int); DROP TABLE IF EXISTS stdin; CREATE TABLE stdin(copy int); INSERT INTO stdin VALUES(42)",
+for (const poolMode of ["session", "transaction"] as const) {
+  test(`systematic COPY matrix (${poolMode} pool): protocol × transaction × scenario, wire status and committed data`, async () => {
+    const root = await mkdtemp(join(tmpdir(), "cm-pglite-copy-matrix-"));
+    const server = await startPglite({
+      dataDir: join(root, "db"),
+      port: await freePort(),
+      poolMode,
+    });
+    const outcomes: object[] = [];
+    let client: Awaited<ReturnType<typeof connect>> | undefined;
+    try {
+      for (const extended of [false, true])
+        for (const transaction of [false, true])
+          for (const scenario of scenarios) {
+            const cell = `${extended ? "extended" : "simple"}/${transaction ? "BEGIN" : "autocommit"}/${scenario}`;
+            client = await connect(server.port);
+            try {
+              expect(
+                errors(
+                  await client.query(
+                    "DROP TABLE IF EXISTS matrix; CREATE TABLE matrix(id int); DROP TABLE IF EXISTS stdin; CREATE TABLE stdin(copy int); INSERT INTO stdin VALUES(42)",
+                  ),
                 ),
-              ),
-              cell,
-            ).toEqual([]);
-            if (transaction) await client.query("BEGIN; INSERT INTO matrix VALUES (999)");
-            const nonCopy = scenario in falseSql;
-            let packets: Packet[];
-            let disconnected = false;
-            const rejected = !nonCopy && (extended || scenario === "unsupported");
-            if (nonCopy)
-              packets = await client.query(falseSql[scenario as keyof typeof falseSql], extended);
-            else if (rejected)
-              packets = await client.query(
-                scenario === "unsupported"
-                  ? "SELECT 1; COPY matrix FROM STDIN"
-                  : `COPY matrix FROM STDIN${scenario === "csv" ? " WITH (FORMAT csv, HEADER true)" : scenario === "binary" ? " WITH (FORMAT binary)" : ""}`,
-                extended,
-              );
-            else {
-              const format =
-                scenario === "csv"
-                  ? " WITH (FORMAT csv, HEADER true)"
-                  : scenario === "binary"
-                    ? " WITH (FORMAT binary)"
-                    : "";
-              client.send("Q", `COPY matrix FROM STDIN${format}\0`);
-              expect((await client.until("G")).at(-1)?.type, cell).toBe("G");
-              if (scenario === "disconnect") {
-                client.send("d", "1\n2\n");
-                // Ensure the worker has received partial CopyData before disconnecting.
-                await Bun.sleep(20);
+                cell,
+              ).toEqual([]);
+              if (transaction) await client.query("BEGIN; INSERT INTO matrix VALUES (999)");
+              const nonCopy = scenario in falseSql;
+              let packets: Packet[];
+              let disconnected = false;
+              const rejected = !nonCopy && (extended || scenario === "unsupported");
+              if (nonCopy)
+                packets = await client.query(falseSql[scenario as keyof typeof falseSql], extended);
+              else if (rejected)
+                packets = await client.query(
+                  scenario === "unsupported"
+                    ? "SELECT 1; COPY matrix FROM STDIN"
+                    : `COPY matrix FROM STDIN${scenario === "csv" ? " WITH (FORMAT csv, HEADER true)" : scenario === "binary" ? " WITH (FORMAT binary)" : ""}`,
+                  extended,
+                );
+              else {
+                const format =
+                  scenario === "csv"
+                    ? " WITH (FORMAT csv, HEADER true)"
+                    : scenario === "binary"
+                      ? " WITH (FORMAT binary)"
+                      : "";
+                client.send("Q", `COPY matrix FROM STDIN${format}\0`);
+                expect((await client.until("G")).at(-1)?.type, cell).toBe("G");
+                if (scenario === "disconnect") {
+                  client.send("d", "1\n2\n");
+                  // Ensure the worker has received partial CopyData before disconnecting.
+                  await Bun.sleep(20);
+                  client.socket.destroy();
+                  disconnected = true;
+                  packets = [];
+                } else {
+                  if (scenario === "cap") {
+                    // Even if the cap is removed, bad input must not satisfy the required 54000.
+                    const chunk = Buffer.from("bad\n".repeat(256 * 1024));
+                    for (let n = 0; n < 65; n++) client.send("d", chunk);
+                  } else if (scenario === "binary") client.send("d", binaryRows());
+                  else if (scenario === "bad-row") {
+                    client.send("d", "1\n");
+                    client.send("d", "bad\n2\n");
+                  } else client.send("d", scenario === "csv" ? 'id\n"1"\n"2"\n' : "1\n2\n");
+                  client.send("c");
+                  packets = await client.until("Z");
+                }
+              }
+              const failed = rejected || scenario === "bad-row" || scenario === "cap";
+              const expectedRows =
+                failed || disconnected ? 0 : (nonCopy ? 0 : 2) + (transaction ? 1 : 0);
+              let commit = "unobservable: connection destroyed";
+              let ready = "unobservable: connection destroyed";
+              if (!disconnected) {
+                ready = status(packets);
+                expect(ready, cell).toBe(transaction ? (failed ? "E" : "T") : "I");
+                if (failed) {
+                  const expectedCode = rejected ? "0A000" : scenario === "cap" ? "54000" : "22P02";
+                  const expectedMessage = rejected
+                    ? "PGlite COPY input requires a single simple-query COPY statement"
+                    : scenario === "cap"
+                      ? "PGlite COPY input exceeds 64 MiB"
+                      : 'invalid input syntax for type integer: "bad"';
+                  expect(
+                    errors(packets).map((e) => [e.C, e.M]),
+                    cell,
+                  ).toEqual([[expectedCode, expectedMessage]]);
+                } else {
+                  expect(errors(packets), cell).toEqual([]);
+                  expect(tags(packets), cell).toEqual([
+                    nonCopy ? (scenario === "DO" ? "DO" : "SELECT 1") : "COPY 2",
+                  ]);
+                }
+                const probe = await client.query("SELECT 42", extended);
+                if (failed && transaction) {
+                  expect(errors(probe)[0]?.C, cell).toBe("25P02");
+                  expect(status(probe), cell).toBe("E");
+                } else {
+                  expect(value(probe), cell).toBe("42");
+                  expect(status(probe), cell).toBe(transaction ? "T" : "I");
+                }
+                const committed = await client.query("COMMIT");
+                commit = failed && transaction ? "ROLLBACK" : "COMMIT";
+                expect(errors(committed), cell).toEqual([]);
+                expect(tags(committed), cell).toEqual([commit]);
+                expect(status(committed), cell).toBe("I");
+                if (poolMode === "transaction" && scenario === "cap" && !extended) {
+                  // Keep the original frontend alive while an independent owner
+                  // queries after the rejected stream's queued CopyData/CopyDone.
+                  const bystander = await connect(server.port);
+                  try {
+                    expect(value(await bystander.query("SELECT count(*) FROM matrix")), cell).toBe(
+                      "0",
+                    );
+                    expect(status(await bystander.query("SELECT 42")), cell).toBe("I");
+                    expect(server.running, cell).toBe(true);
+                  } finally {
+                    bystander.socket.destroy();
+                  }
+                }
+                expect(value(await client.query("SELECT count(*) FROM matrix")), cell).toBe(
+                  String(expectedRows),
+                );
+                expect(value(await client.query("SELECT 42", extended)), cell).toBe("42");
                 client.socket.destroy();
-                disconnected = true;
-                packets = [];
-              } else {
-                if (scenario === "cap") {
-                  // Even if the cap is removed, bad input must not satisfy the required 54000.
-                  const chunk = Buffer.from("bad\n".repeat(256 * 1024));
-                  for (let n = 0; n < 65; n++) client.send("d", chunk);
-                } else if (scenario === "binary") client.send("d", binaryRows());
-                else if (scenario === "bad-row") {
-                  client.send("d", "1\n");
-                  client.send("d", "bad\n2\n");
-                } else client.send("d", scenario === "csv" ? 'id\n"1"\n"2"\n' : "1\n2\n");
-                client.send("c");
-                packets = await client.until("Z");
               }
-            }
-            const failed = rejected || scenario === "bad-row" || scenario === "cap";
-            const expectedRows =
-              failed || disconnected ? 0 : (nonCopy ? 0 : 2) + (transaction ? 1 : 0);
-            let commit = "unobservable: connection destroyed";
-            let ready = "unobservable: connection destroyed";
-            if (!disconnected) {
-              ready = status(packets);
-              expect(ready, cell).toBe(transaction ? (failed ? "E" : "T") : "I");
-              if (failed) {
-                const expectedCode = rejected ? "0A000" : scenario === "cap" ? "54000" : "22P02";
-                const expectedMessage = rejected
-                  ? "PGlite COPY input requires a single simple-query COPY statement"
-                  : scenario === "cap"
-                    ? "PGlite COPY input exceeds 64 MiB"
-                    : 'invalid input syntax for type integer: "bad"';
-                expect(
-                  errors(packets).map((e) => [e.C, e.M]),
-                  cell,
-                ).toEqual([[expectedCode, expectedMessage]]);
-              } else {
-                expect(errors(packets), cell).toEqual([]);
-                expect(tags(packets), cell).toEqual([
-                  nonCopy ? (scenario === "DO" ? "DO" : "SELECT 1") : "COPY 2",
-                ]);
-              }
-              const probe = await client.query("SELECT 42", extended);
-              if (failed && transaction) {
-                expect(errors(probe)[0]?.C, cell).toBe("25P02");
-                expect(status(probe), cell).toBe("E");
-              } else {
-                expect(value(probe), cell).toBe("42");
-                expect(status(probe), cell).toBe(transaction ? "T" : "I");
-              }
-              const committed = await client.query("COMMIT");
-              commit = failed && transaction ? "ROLLBACK" : "COMMIT";
-              expect(errors(committed), cell).toEqual([]);
-              expect(tags(committed), cell).toEqual([commit]);
-              expect(status(committed), cell).toBe("I");
+              client = await connect(server.port);
               expect(value(await client.query("SELECT count(*) FROM matrix")), cell).toBe(
                 String(expectedRows),
               );
               expect(value(await client.query("SELECT 42", extended)), cell).toBe("42");
               client.socket.destroy();
+              outcomes.push({
+                cell,
+                outcome: disconnected
+                  ? "discarded partial input"
+                  : failed
+                    ? errors(packets)[0]?.C
+                    : tags(packets)[0],
+                ready,
+                commit,
+                rows: expectedRows,
+              });
+            } finally {
+              client.socket.destroy();
             }
-            client = await connect(server.port);
-            expect(value(await client.query("SELECT count(*) FROM matrix")), cell).toBe(
-              String(expectedRows),
-            );
-            expect(value(await client.query("SELECT 42", extended)), cell).toBe("42");
-            client.socket.destroy();
-            outcomes.push({
-              cell,
-              outcome: disconnected
-                ? "discarded partial input"
-                : failed
-                  ? errors(packets)[0]?.C
-                  : tags(packets)[0],
-              ready,
-              commit,
-              rows: expectedRows,
-            });
-          } finally {
-            client.socket.destroy();
           }
-        }
-    console.log(`COPY_MATRIX ${JSON.stringify(outcomes)}`);
-    // psql exercises its client-side \copy and single-transaction file driver too.
-    if (Bun.which("psql")) {
-      const run = async (args: string[], input?: Buffer) => {
-        const child = Bun.spawn(["psql", server.url(), "-X", ...args], {
-          stdin: input ?? "ignore",
-          stdout: "pipe",
-          stderr: "pipe",
-        });
-        const [code, stdout, stderr] = await Promise.all([
-          child.exited,
-          new Response(child.stdout).text(),
-          new Response(child.stderr).text(),
-        ]);
-        expect(code, stderr).toBe(0);
-        return { stdout, stderr };
-      };
-      await run(["-c", "TRUNCATE matrix"]);
-      expect(
-        (await run(["-c", "\\copy matrix FROM STDIN WITH (FORMAT csv)"], Buffer.from("1\n2\n")))
-          .stdout,
-      ).toContain("COPY 2");
-      expect((await run(["-Atc", "SELECT count(*) FROM matrix"])).stdout.trim()).toBe("2");
-      const dump = join(root, "dump.sql");
-      await writeFile(
-        dump,
-        Buffer.concat([
-          Buffer.from(
-            "CREATE TABLE dump_a(id int); INSERT INTO dump_a VALUES(1);\nCREATE TABLE dump_b(id int);\nCOPY dump_b FROM STDIN;\n",
-          ),
-          Buffer.from("1\n".repeat(65 * 512 * 1024)),
-          Buffer.from("\\.\nCREATE TABLE dump_c(id int);\n"),
-        ]),
-      );
-      const restore = await run(["-1", "-f", dump]);
-      expect(restore.stderr).toContain("PGlite COPY input exceeds 64 MiB");
-      expect(restore.stderr).toContain("current transaction is aborted");
-      expect(
-        (
-          await run([
-            "-Atc",
-            "SELECT count(*) FROM pg_tables WHERE tablename IN ('dump_a','dump_b','dump_c')",
-          ])
-        ).stdout.trim(),
-      ).toBe("0");
-    } else
-      console.log(
-        "COPY_MATRIX psql cells skipped: psql is not installed; raw protocol cells remain mandatory",
-      );
-  } finally {
-    client?.socket.destroy();
-    await server.stop();
-    await rm(root, { recursive: true, force: true });
-  }
-}, 60000);
+      console.log(`COPY_MATRIX ${JSON.stringify(outcomes)}`);
+      // psql exercises its client-side \copy and single-transaction file driver too.
+      if (Bun.which("psql")) {
+        const run = async (args: string[], input?: Buffer) => {
+          const child = Bun.spawn(["psql", server.url(), "-X", ...args], {
+            stdin: input ?? "ignore",
+            stdout: "pipe",
+            stderr: "pipe",
+          });
+          const [code, stdout, stderr] = await Promise.all([
+            child.exited,
+            new Response(child.stdout).text(),
+            new Response(child.stderr).text(),
+          ]);
+          expect(code, stderr).toBe(0);
+          return { stdout, stderr };
+        };
+        await run(["-c", "TRUNCATE matrix"]);
+        expect(
+          (await run(["-c", "\\copy matrix FROM STDIN WITH (FORMAT csv)"], Buffer.from("1\n2\n")))
+            .stdout,
+        ).toContain("COPY 2");
+        expect((await run(["-Atc", "SELECT count(*) FROM matrix"])).stdout.trim()).toBe("2");
+        const dump = join(root, "dump.sql");
+        await writeFile(
+          dump,
+          Buffer.concat([
+            Buffer.from(
+              "CREATE TABLE dump_a(id int); INSERT INTO dump_a VALUES(1);\nCREATE TABLE dump_b(id int);\nCOPY dump_b FROM STDIN;\n",
+            ),
+            Buffer.from("1\n".repeat(65 * 512 * 1024)),
+            Buffer.from("\\.\nCREATE TABLE dump_c(id int);\n"),
+          ]),
+        );
+        const restore = await run(["-1", "-f", dump]);
+        expect(restore.stderr).toContain("PGlite COPY input exceeds 64 MiB");
+        expect(restore.stderr).toContain("current transaction is aborted");
+        expect(
+          (
+            await run([
+              "-Atc",
+              "SELECT count(*) FROM pg_tables WHERE tablename IN ('dump_a','dump_b','dump_c')",
+            ])
+          ).stdout.trim(),
+        ).toBe("0");
+      } else
+        console.log(
+          "COPY_MATRIX psql cells skipped: psql is not installed; raw protocol cells remain mandatory",
+        );
+    } finally {
+      client?.socket.destroy();
+      await server.stop();
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 60000);
+}
 
 test("V5 extended error differential cells: Execute/Bind/Describe, Flush, Close and multiple Syncs", async () => {
   const root = await mkdtemp(join(tmpdir(), "cm-pglite-pipeline-"));

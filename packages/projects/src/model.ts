@@ -10,6 +10,7 @@ export const serviceSchema = Schema.Struct({
   timeout_seconds: Schema.optional(Schema.Int),
   connection_wait_seconds: Schema.optional(Schema.Int),
   runtime: Schema.optional(Schema.Literal(...runtimeKinds)),
+  pool_mode: Schema.optional(Schema.Literal("session", "transaction")),
   wasm: Schema.optional(
     Schema.Struct({
       build: Schema.optional(Schema.Array(Schema.String)),
