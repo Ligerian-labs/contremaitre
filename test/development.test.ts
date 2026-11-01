@@ -117,7 +117,7 @@ test("development deployment installs before startup, resumes sync and stops it 
     await manager.deploy(context(), { root, identity, manifest, request: {} });
     expect(allocations).toEqual(["2G", "2G"]);
     const env = manager.resolve(identity.ID);
-    expect(runtime.calls.some((c) => c.includes("initial main.ts"))).toBe(true);
+    expect(runtime.calls.some((c) => c.includes(" initial ") && c.includes("main.ts"))).toBe(true);
     expect(runtime.calls.indexOf(`run ${env.Services.api.Container}-task`)).toBeLessThan(
       runtime.calls.indexOf(`run ${env.Services.api.Container}`),
     );

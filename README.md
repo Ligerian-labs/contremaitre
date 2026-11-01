@@ -8,9 +8,13 @@
 
 **Every branch gets its own stack.**
 
-Run your app, PostgreSQL, Redis, and uploaded files in isolated local environments for Git branches and Jujutsu workspaces. New environments copy data from your designated main environment and get their own HTTPS `.localhost` URLs. Built on [Apple container](https://github.com/apple/container) for Apple silicon Macs.
+Run your app, PostgreSQL, Redis, and uploaded files in isolated local environments for Git branches and Jujutsu workspaces. New environments copy data from your designated main environment and get their own HTTPS `.localhost` URLs. Native containers use [Apple container](https://github.com/apple/container) on Apple silicon Macs and local Docker Engine on Linux. Linux uses HTTP routing.
 
 [Get started](#get-started) · [Try a data fork](#try-a-data-fork) · [Coding agents](#use-with-coding-agents) · [Documentation](#documentation) · [Contribute](CONTRIBUTING.md)
+
+## Linux Docker
+
+Linux native services use local Docker Engine. See the [runnable Linux stack](examples/linux-docker/README.md) for building the CLI, deploying PostgreSQL, Redis and an HTTP app, and running smoke verification. macOS keeps Apple containers as its default.
 
 ## Why Contremaitre?
 
@@ -49,7 +53,9 @@ contremaitre start
 
 You need [Homebrew](https://brew.sh) for these prerequisites. `mkcert -install` trusts a local development certificate authority. The HTTPS service requests administrator approval to forward port 443 in the background. Run the installer, hub and applications as your normal user. See [HTTPS setup and troubleshooting](docs/local-https.md).
 
-Update an installed CLI with `contremaitre update`. It checks the latest stable GitHub release, including major versions, verifies the download checksum and replaces the executable you invoked. Custom installation paths and symlinks are supported. If already current, it reports that without downloading or restarting; newer development versions are never downgraded. The download installer also remains available for updates.
+Update an installed CLI with `contremaitre update`. It selects the highest stable GitHub release by semantic version, including patch and major versions, verifies the download checksum and replaces the executable you invoked. Custom installation paths and symlinks are supported. If already current, it reports that without downloading or restarting; stable updates refuse downgrades. The download installer also remains available for updates.
+
+Use `contremaitre update --beta` for the highest beta prerelease or `contremaitre update --nightly` for the latest checked build of `main`. Each successful `main` build publishes a versioned GitHub prerelease. Both flags work with `--check` and `--json`, are mutually exclusive, and explicitly allow switching from a higher version. They apply to that invocation only. Beta tags such as `v1.0.0.beta.0` appear as `1.0.0-beta.0` in the CLI. See [release publishing](docs/releases.md) to create a beta.
 
 An update automatically restarts a running hub with the new binary, preserving its HTTP or HTTPS ports and running environments. Active operations and tunnel sessions end, and local routing pauses during the restart. A stopped hub stays stopped. Set `CONTREMAITRE_HOME` or pass `--home PATH` when updating a hub that uses a custom data directory. Run as your normal user, without sudo.
 
@@ -170,6 +176,7 @@ Contremaitre is in early development. The local runtime supports managed Postgre
 | --- | --- |
 | [Full reference](docs/reference.md) | Manifest fields, environment identity, data lifecycle, commands, and tunnels |
 | [Services, workers and jobs](docs/workloads.md) | Workload lifecycles, Wasm commands, and networking between containers and Wasm |
+| [Redis Wasm investigation](docs/wasm-redis.md) | Experimental TCP compatibility results and remaining engine gaps |
 | [Local HTTPS](docs/local-https.md) | Certificates, port forwarding, and the hub status page |
 | [Compact configuration](docs/compact-config.md) | Minimal app config, setup detection, shared containers, endpoints and automatic lock refresh |
 | [Initialization and hot reload](docs/assisted-init.md) | Agent-assisted setup, Dockerfiles, and development containers |

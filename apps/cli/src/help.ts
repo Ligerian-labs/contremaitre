@@ -61,6 +61,8 @@ export const flags = {
     false,
     "Check the latest release without downloading or restarting the hub.",
   ),
+  beta: flag("beta", { kind: "boolean" }, false, "Install the latest beta prerelease."),
+  nightly: flag("nightly", { kind: "boolean" }, false, "Install the latest checked build of main."),
   timeout: flag(
     "timeout",
     { kind: "integer" },
@@ -467,9 +469,14 @@ export const commands: readonly CommandHelp[] = [
     group: "Hub and tools",
     description: "Update this executable to the latest release",
     details:
-      "Install the latest stable GitHub release, including major versions, after verifying its checksum. Requires the compiled CLI and curl. Already-current versions are left untouched and newer versions are never downgraded. A running hub restarts without prompting, ending active operations and tunnel sessions; a stopped hub stays stopped. --check only reports availability and also works from source.",
-    flags: ["updateCheck", "home", "json"],
-    examples: ["contremaitre update", "contremaitre update --check --json"],
+      "Install the highest stable GitHub release, including patches and major versions, after verifying its checksum. --beta selects beta prereleases; --nightly selects checked main builds. These flags are mutually exclusive and allow switching from a higher version. Stable updates refuse downgrades. Requires the compiled CLI and curl. Already-current versions are left untouched. A running hub restarts, ending active operations and tunnel sessions; a stopped hub stays stopped. --check only reports availability and also works from source.",
+    flags: ["updateCheck", "beta", "nightly", "home", "json"],
+    examples: [
+      "contremaitre update",
+      "contremaitre update --check --json",
+      "contremaitre update --beta",
+      "contremaitre update --nightly",
+    ],
   },
   {
     name: "self-install",

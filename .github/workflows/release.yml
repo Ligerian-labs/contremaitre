@@ -13,7 +13,9 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 20
     outputs:
-      prerelease: ${{ steps.version.outputs.prerelease }}
+      prerelease: ${{ steps.version.outputs.prerelease || steps.nightly.outputs.prerelease }}
+      version: ${{ steps.version.outputs.version || steps.nightly.outputs.version }}
+      release_tag: ${{ steps.version.outputs.release_tag || steps.nightly.outputs.release_tag }}
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -26,23 +28,28 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         id: version
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          if ! printf '%s' "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
-            echo "::error::Tag must be vX.Y.Z or vX.Y.Z-prerelease, got: $GITHUB_REF_NAME"
-            exit 1
-          fi
-          case "$VERSION" in
-            *-*) PRERELEASE=true ;;
-            *)   PRERELEASE=false ;;
-          esac
+          bun run - <<'JS' >> "$GITHUB_OUTPUT"
+            import { parseReleaseTag } from "./apps/cli/src/releases.ts";
+            const release = parseReleaseTag(process.env.GITHUB_REF_NAME);
+            if (!release) throw new Error("Tag must be vX.Y.Z, vX.Y.Z.beta.N or vX.Y.Z-prerelease");
+            console.log(`version=${release.version}`);
+            console.log(`prerelease=${release.prerelease}`);
+            console.log(`release_tag=${release.tag}`);
+          JS
+      - name: Prepare nightly version
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        id: nightly
+        run: |
+          VERSION="0.0.0-nightly.${GITHUB_RUN_NUMBER}.g${GITHUB_SHA:0:12}"
           {
             echo "version=$VERSION"
-            echo "prerelease=$PRERELEASE"
+            echo "prerelease=true"
+            echo "release_tag=v$VERSION"
           } >> "$GITHUB_OUTPUT"
       - name: Stamp tag version into the CLI
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: steps.version.outputs.version || steps.nightly.outputs.version
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ steps.version.outputs.version || steps.nightly.outputs.version }}
         run: |
           bun run - <<'JS'
             const manifest = await Bun.file("package.json").json();
@@ -55,13 +62,13 @@ jobs:
         env:
           CONTREMAITRE_REQUIRE_WASMTIME: '1'
       - name: Package release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: steps.version.outputs.version || steps.nightly.outputs.version
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          VERSION: ${{ steps.version.outputs.version || steps.nightly.outputs.version }}
         run: |
-          test "$RELEASE_TAG" = "v$(bun -p "require('./package.json').version")"
-          test "$(bin/contremaitre version)" = "contremaitre ${RELEASE_TAG#v}"
-          test "$(bin/contremaitre --version)" = "${RELEASE_TAG#v}"
+          test "$VERSION" = "$(bun -p "require('./package.json').version")"
+          test "$(bin/contremaitre version)" = "contremaitre $VERSION"
+          test "$(bin/contremaitre --version)" = "$VERSION"
           codesign --verify --strict bin/contremaitre
           mkdir -p bin/release
           cp bin/contremaitre bin/release/contremaitre-darwin-arm64
@@ -69,14 +76,65 @@ jobs:
           cd bin/release
           shasum -a 256 contremaitre-darwin-arm64 > contremaitre-darwin-arm64.sha256
       - uses: actions/upload-artifact@v4
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: steps.version.outputs.version || steps.nightly.outputs.version
         with:
           name: cli-release
           path: bin/release/
           if-no-files-found: error
+  check-linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
+      - run: bun install --frozen-lockfile
+      - run: bun run lint && bun run check:boundaries && bun run typecheck
+      - name: Native runtime regressions
+        run: bun test --timeout 30000 test/docker.test.ts test/docker-cli.test.ts test/docker-defaults.test.ts test/apple.test.ts test/runtimes.test.ts test/redeploy-stopped.test.ts test/development.test.ts test/wasm-standalone.test.ts test/manager.test.ts
+      - run: bun run build
+      - name: Docker lifecycle and data fixture
+        run: CONTREMAITRE_FIXTURES=1 bun scripts/verify-docker.ts --cleanup
+      - name: Compiled Linux example
+        shell: bash
+        run: |
+          export CONTREMAITRE_HOME="$(mktemp -d)"
+          CLI="$PWD/bin/contremaitre"
+          PROXY_PID=""
+          cleanup() {
+            if [ -n "$PROXY_PID" ]; then
+              kill "$PROXY_PID" 2>/dev/null || true
+              wait "$PROXY_PID" 2>/dev/null || true
+            fi
+            "$CLI" down --delete-data || true
+            "$CLI" stop || true
+          }
+          cd examples/linux-docker
+          trap cleanup EXIT
+          "$CLI" start --http --http-port 18080
+          "$CLI" ensure --http --http-port 18080 --json
+          "$CLI" verify --profile smoke --json
+          "$CLI" report --json
+          "$CLI" exec web -- echo docker-exec-ok
+          "$CLI" logs web
+          "$CLI" proxy web 18082:3000 > "$CONTREMAITRE_HOME/proxy.log" 2>&1 &
+          PROXY_PID=$!
+          for attempt in {1..40}; do
+            if curl -fsS http://127.0.0.1:18082/ > "$CONTREMAITRE_HOME/proxy-response.json"; then
+              break
+            fi
+            sleep 0.25
+          done
+          bun -e 'const r=await Bun.file(process.argv[1]).json();if(r.runtime!=="docker"||r.messages[0]?.body!=="Hello from Linux Docker")process.exit(1)' "$CONTREMAITRE_HOME/proxy-response.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: contremaitre-linux-x64
+          path: bin/contremaitre
+          if-no-files-found: error
   publish:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: check
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    needs: [check, check-linux]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -90,8 +148,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ needs.check.outputs.release_tag }}
           PRERELEASE: ${{ needs.check.outputs.prerelease }}
+          NIGHTLY: ${{ github.ref == 'refs/heads/main' }}
+          SOURCE_SHA: ${{ github.sha }}
         run: |
           if gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft > draft; then
             if [ "$(cat draft)" = false ]; then
@@ -99,7 +159,11 @@ jobs:
               exit 0
             fi
           else
-            gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG" --generate-notes
+            if [ "$NIGHTLY" = true ]; then
+              gh release create "$RELEASE_TAG" --target "$SOURCE_SHA" --draft --title "$RELEASE_TAG" --generate-notes
+            else
+              gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG" --generate-notes
+            fi
           fi
           gh release upload "$RELEASE_TAG" release/* --clobber
           LATEST=true

@@ -59,6 +59,8 @@ export function optionsFor(command: Pick<CommandHelp, "flags">) {
     run: option("run", flags.run),
     check: option("check", flags.check),
     updateCheck: option("updateCheck", flags.updateCheck),
+    beta: option("beta", flags.beta),
+    nightly: option("nightly", flags.nightly),
     timeout: option("timeout", flags.timeout),
   };
 }
