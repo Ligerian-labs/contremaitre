@@ -26,7 +26,7 @@ main() (
     latest=$(download -o /dev/null -w '%{url_effective}' "$repository/releases/latest") || die 'Cannot find the latest release.'
     case "$latest" in "$repository/releases/tag/"*) version=${latest##*/} ;; *) die 'No published release found.' ;; esac
   fi
-  printf '%s\n' "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || die 'Expected a stable release tag such as v0.2.0.'
+  printf '%s\n' "$version" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\.beta\.(0|[1-9][0-9]*)|-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' || die 'Expected a release tag such as v0.2.0 or v1.0.0.beta.0.'
 
   temporary=$(mktemp -d "${TMPDIR:-/tmp}/contremaitre-install.XXXXXXXX")
   trap 'rm -rf "$temporary"' 0

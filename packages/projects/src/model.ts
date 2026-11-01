@@ -1,13 +1,14 @@
 import { basename } from "node:path";
 import { hash, strings } from "@contremaitre/execution/context";
 import { Schema } from "effect";
-export const runtimeKinds = ["apple", "wasm"] as const;
+export const runtimeKinds = ["apple", "docker", "wasm"] as const;
 export type RuntimeKind = (typeof runtimeKinds)[number];
 export type ServiceKind = "app" | "postgres" | "redis";
 export const serviceSchema = Schema.Struct({
   kind: Schema.optional(Schema.String),
   workload: Schema.optional(Schema.Literal("service", "worker", "job")),
   timeout_seconds: Schema.optional(Schema.Int),
+  connection_wait_seconds: Schema.optional(Schema.Int),
   runtime: Schema.optional(Schema.Literal(...runtimeKinds)),
   pool_mode: Schema.optional(Schema.Literal("session", "transaction")),
   wasm: Schema.optional(
@@ -46,7 +47,10 @@ export const serviceSchema = Schema.Struct({
   memory: Schema.optional(Schema.String),
 });
 export type Service = Schema.Schema.Type<typeof serviceSchema>;
-export const serviceRuntime = (service: Service): RuntimeKind => service.runtime ?? "apple";
+export const serviceRuntime = (
+  service: Service,
+  platform: NodeJS.Platform = process.platform,
+): RuntimeKind => service.runtime ?? (platform === "linux" ? "docker" : "apple");
 export const serviceKind = (service: Service): ServiceKind =>
   (service.kind || "app") as ServiceKind;
 export const isJob = (service: Service): boolean => service.workload === "job";

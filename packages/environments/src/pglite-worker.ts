@@ -56,6 +56,9 @@ self.onmessage = async (event: MessageEvent) => {
       return;
     }
     if (event.data.type === "start") {
+      // Waiters are admitted first come, first served until this deadline
+      // (startPglite always sends it; 2 s is its default).
+      const connectionWaitMs: number = event.data.connectionWaitMs ?? 2000;
       db = await openPglite(event.data.dataDir, (text) => {
         self.postMessage({ type: "log", text });
         return true;
@@ -186,8 +189,8 @@ self.onmessage = async (event: MessageEvent) => {
           const timer = setTimeout(() => {
             waiters.delete(socket);
             refuse(socket);
-          }, 2000);
-          waiters.set(socket, { timer, deadline: Date.now() + 2000 });
+          }, connectionWaitMs);
+          waiters.set(socket, { timer, deadline: Date.now() + connectionWaitMs });
         }
       });
       await new Promise<void>((resolve, reject) => {

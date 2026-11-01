@@ -115,6 +115,7 @@ export function makeRoot(passthrough: readonly string[] = []) {
           switch (action) {
             case "update": {
               if (args.length) fail("update does not accept positional arguments");
+              if (o.beta && o.nightly) fail("Choose either --beta or --nightly");
               if (!o.updateCheck && !Bun.main.startsWith("/$bunfs/"))
                 fail("update requires the compiled CLI; use --check when running from source");
               if (!o.updateCheck && process.getuid?.() === 0)
@@ -127,6 +128,7 @@ export function makeRoot(passthrough: readonly string[] = []) {
                   executable: process.execPath,
                   home,
                   check: o.updateCheck,
+                  channel: o.nightly ? "nightly" : o.beta ? "beta" : "stable",
                 },
               );
               output(o.json, o.json ? result : formatUpdate(result));
@@ -317,6 +319,7 @@ export function makeRoot(passthrough: readonly string[] = []) {
               if (!args[0]) fail(`${name} requires a service`);
               const [
                 { Apple },
+                { Docker },
                 { driverProcess },
                 { runtimeRegistry, selectRuntime },
                 { serviceAddress },
@@ -324,6 +327,7 @@ export function makeRoot(passthrough: readonly string[] = []) {
                 { tcpProxy },
               ] = await Promise.all([
                 import("@contremaitre/environments/apple"),
+                import("@contremaitre/environments/docker"),
                 import("@contremaitre/environments/driver"),
                 import("@contremaitre/environments/runtimes"),
                 import("@contremaitre/environments/model"),
@@ -352,7 +356,7 @@ export function makeRoot(passthrough: readonly string[] = []) {
                   await driverProcess(activeCtx, env, name, undefined, args[0], command, io);
                   return;
                 }
-                const runtime = new Apple();
+                const runtime = s.Runtime === "docker" ? new Docker() : new Apple();
                 const backend = selectRuntime(
                   runtimeRegistry({ home, apple: runtime }),
                   s.Runtime ?? "apple",

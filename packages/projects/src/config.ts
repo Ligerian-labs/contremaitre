@@ -19,7 +19,7 @@ import {
 } from "./model.js";
 import { type LoadOptions, loadProject } from "./project-lock.js";
 
-export { projectName } from "./project-lock.js";
+export { manifestFile, manifestNames, projectName } from "./project-lock.js";
 export const validName = /^[a-z][a-z0-9-]{0,39}$/;
 export const envKey = /^[A-Za-z_][A-Za-z0-9_]*$/;
 export function serviceDefaults(original: Service): Service {
@@ -173,6 +173,16 @@ export function parseManifest(text: string): Manifest {
     )
       fail(`${name}: timeout_seconds requires a job and must be 1..7200`);
     if (isJob(s) && s.dev) fail(`${name}: jobs do not support dev watchers`);
+    if (
+      s.connection_wait_seconds !== undefined &&
+      (kind !== "postgres" ||
+        s.runtime !== "wasm" ||
+        s.connection_wait_seconds < 1 ||
+        s.connection_wait_seconds > 300)
+    )
+      fail(
+        `${name}: connection_wait_seconds requires kind postgres with runtime: wasm and must be 1..300`,
+      );
     if (s.command && (!s.command.length || s.command.some((arg) => !arg || arg.includes("\0"))))
       fail(`${name}: command requires nonempty arguments`);
     const wasm = s.runtime === "wasm";
@@ -280,8 +290,10 @@ function validateWasm(name: string, kind: string, s: Service) {
   if (unsupported) fail(`${name}: ${unsupported[0]} is not supported with runtime: wasm`);
   if (!s.wasm?.component) fail(`${name}: runtime: wasm requires wasm.component`);
   if (!wasmCommand(s) && !s.port) fail(`${name}: runtime: wasm requires a port`);
-  if (wasmCommand(s) && (s.http || keys(s.endpoints).length))
-    fail(`${name}: wasm command mode does not support HTTP endpoints`);
+  // A command service that listens on its reserved port can be routed as
+  // HTTP; named endpoints are refused above for every WASM app.
+  if (wasmCommand(s) && s.http && !s.port)
+    fail(`${name}: wasm command mode requires a port for http`);
   if (
     s.wasm.build &&
     (!s.wasm.build.length || s.wasm.build.some((arg) => !arg || arg.includes("\0")))

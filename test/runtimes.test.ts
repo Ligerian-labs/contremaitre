@@ -30,7 +30,7 @@ import { Store } from "@contremaitre/environments/store";
 import { type Context, context, hash, type ServiceProgress } from "@contremaitre/execution/context";
 import { routes } from "@contremaitre/hub/server";
 import { parseManifest, prepareManifest } from "@contremaitre/projects/config";
-import { newIdentity } from "@contremaitre/projects/model";
+import { newIdentity, serviceRuntime } from "@contremaitre/projects/model";
 import { FakeRuntime } from "./fake-runtime.js";
 
 /** A host-process runtime that listens on its reserved loopback ports. */
@@ -129,7 +129,11 @@ function fixture(text = mixed) {
     host = new FakeHostRuntime(),
     store = new Store(home),
     base = runtimeRegistry({ home: store.home, apple }),
-    registry: RuntimeRegistry = { apple: base.apple, wasm: { app: host, postgres: host } },
+    registry: RuntimeRegistry = {
+      apple: base.apple,
+      docker: base.docker,
+      wasm: { app: host, postgres: host },
+    },
     manager = new Manager(store, apple, 8080, "http", registry);
   let manifest = text;
   const prepare = (branch = "main"): PreparedDeploy => ({
@@ -289,6 +293,24 @@ test("manifests default to Apple and validate WASM services", () => {
   expect(
     invalid("services:\n  web: {image: nginx, command: [x], dev: {source: .}, working_dir: /a}"),
   ).toThrow("web: invalid dev.target");
+  // Command mode: HTTP on the declared port, never without one or through endpoints.
+  const command = "runtime: wasm, wasm: {component: a.wasm, mode: command}";
+  expect(invalid(`services:\n  web: {${command}, port: 3000, http: true}`)).not.toThrow();
+  expect(invalid(`services:\n  web: {${command}, http: true}`)).toThrow(
+    "web: wasm command mode requires a port for http",
+  );
+  expect(invalid(`services:\n  web: {${command}, port: 3000, endpoints: {api: 3000}}`)).toThrow(
+    "web: endpoints is not supported with runtime: wasm",
+  );
+  for (const workload of ["worker", "job"])
+    for (const extra of ["port: 3000", "port: 3000, http: true", "http: true"])
+      expect(
+        invalid(
+          `services:\n  w: {runtime: wasm, workload: ${workload}, wasm: {component: a.wasm}, ${extra}}`,
+        ),
+      ).toThrow(
+        `w: ${workload} workloads cannot declare ports, HTTP endpoints or readiness commands`,
+      );
 });
 test("an older state file upgrades to Apple runtimes with its address", () => {
   const home = mkdtempSync(join(tmpdir(), "cm-runtimes-state-")),
@@ -345,7 +367,7 @@ test("mixed environments address host runtimes by reserved loopback ports", asyn
     const env = f.manager.resolve(p.identity.ID);
     expect(env.Status).toBe("running");
     const { db, web, cache } = env.Services;
-    expect([db.Runtime, web.Runtime, cache.Runtime]).toEqual(["wasm", "wasm", "apple"]);
+    expect([db.Runtime, web.Runtime, cache.Runtime]).toEqual(["wasm", "wasm", serviceRuntime({})]);
     expect(db.Host).toBe("127.0.0.1");
     expect(cache.Host).toBe("127.0.0.1");
     const dbPort = db.Ports?.["5432"] ?? 0,
@@ -384,6 +406,43 @@ test("mixed environments address host runtimes by reserved loopback ports", asyn
     await f.clean();
   }
 });
+test("a command-mode WASM service with a port serves HTTP on its reserved loopback port", async () => {
+  const f = fixture(`version: 1
+project: example
+services:
+  web:
+    runtime: wasm
+    wasm: {component: web.wasm, mode: command, network: true}
+    command: [--serve]
+    port: 3000
+    http: true
+    environment: {PORT: '{{web.port}}', PUBLIC_BASE_URL: 'http://127.0.0.1:{{web.port}}'}
+`);
+  try {
+    const p = f.prepare();
+    await f.manager.deploy(context(), p);
+    const env = f.manager.resolve(p.identity.ID);
+    const port = env.Services.web.Ports?.["3000"] ?? 0;
+    expect(port).toBeGreaterThan(0);
+    expect(port).not.toBe(3000);
+    const run = f.host.specs.get(env.Services.web.Container) as RunSpec & { environment: string };
+    expect(run.ports).toEqual({ "3000": port });
+    expect(run.environment).toContain(`PORT=${port}\n`);
+    expect(run.environment).toContain(`PUBLIC_BASE_URL=http://127.0.0.1:${port}\n`);
+    expect(f.host.readyChecks).toContain(`web 127.0.0.1:${port}`);
+    const route = routes(f.manager, new URL(f.manager.localURL(env, "web")).hostname);
+    expect(route?.upstream).toBe(`http://127.0.0.1:${port}`);
+    // A redeploy keeps the reservation, so the address the app was given stays valid.
+    await f.manager.deploy(context(), { ...p, request: { rebuild: true } });
+    const again = f.manager.resolve(p.identity.ID).Services.web;
+    expect(again.Ports).toEqual({ "3000": port });
+    expect(
+      (f.host.specs.get(again.Container) as RunSpec & { environment: string }).environment,
+    ).toContain(`PUBLIC_BASE_URL=http://127.0.0.1:${port}\n`);
+  } finally {
+    await f.clean();
+  }
+});
 test("changing a recorded runtime fails before any mutation", async () => {
   const f = fixture();
   try {
@@ -394,7 +453,7 @@ test("changing a recorded runtime fails before any mutation", async () => {
     f.host.calls = [];
     f.apple.calls = [];
     await expect(f.manager.deploy(context(), f.prepare())).rejects.toThrow(
-      "db: runtime changed from wasm to apple; Contremaitre does not convert services",
+      `db: runtime changed from wasm to ${serviceRuntime({})}; Contremaitre does not convert services`,
     );
     expect(env.Status).toBe("running");
     expect(env.Services.db.Runtime).toBe("wasm");
@@ -414,6 +473,7 @@ test("placeholder WASM runtimes fail clearly and leave the environment deletable
   const registry = runtimeRegistry({ home, apple });
   const manager = new Manager(new Store(home), apple, 48399, "http", {
     apple: registry.apple,
+    docker: registry.docker,
     wasm: { app: unavailableRuntime("app"), postgres: unavailableRuntime("postgres") },
   });
   try {
@@ -522,7 +582,7 @@ test("cloning between different Postgres runtimes fails clearly", async () => {
     await f.manager.deploy(context(), f.prepare());
     f.setManifest(mixed);
     await expect(f.manager.deploy(context(), f.prepare("feature"))).rejects.toThrow(
-      "Clone db: main uses runtime apple and this environment uses wasm",
+      `Clone db: main uses runtime ${serviceRuntime({})} and this environment uses wasm`,
     );
   } finally {
     await f.clean();

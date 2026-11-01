@@ -118,6 +118,9 @@ export class PGliteRuntime implements ServiceRuntime {
         port: instance.port,
         host: "127.0.0.1",
         poolMode: instance.spec.service.pool_mode,
+        ...(instance.spec.service.connection_wait_seconds === undefined
+          ? {}
+          : { connectionWaitMs: instance.spec.service.connection_wait_seconds * 1000 }),
         log: (text) => instance.writer?.append(text),
       });
     } finally {

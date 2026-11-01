@@ -225,3 +225,78 @@ test("agent execution failures are not retried as invalid model output", async (
     f.clean();
   }
 });
+test("assisted init updates the platform manifest in effect and keeps it version 1", async () => {
+  const f = fixture(),
+    shared = join(f.root, ".contremaitre.yaml"),
+    platform = join(f.root, `.contremaitre.${process.platform}.yaml`);
+  writeFileSync(shared, manifest);
+  writeFileSync(platform, manifest);
+  const ui = { ask: async () => "Add a worker", note() {} };
+  const updated = `${manifest}  worker: {image: node:22}\n`;
+  const compact = {
+    type: "manifest",
+    manifest: "project: turbo\napps: {web: '.'}\n",
+    resolved: {
+      web: {
+        image: "oven/bun:1.3.4",
+        command: ["bun", "run", "dev"],
+        working_dir: "/app",
+        dev: { source: ".", target: "/app", install: ["bun", "install"] },
+        endpoints: { web: 3000 },
+      },
+    },
+  };
+  try {
+    const prompts: string[] = [];
+    const replies = [compact, { type: "manifest", manifest: updated }];
+    const target = await assistedInit(
+      context(),
+      f.root,
+      async (_ctx, prompt) => {
+        prompts.push(prompt);
+        return JSON.stringify(replies.shift());
+      },
+      ui,
+      f.options,
+    );
+    expect(target).toBe(platform);
+    expect(prompts[1]).toContain("must use version 1");
+    expect(readFileSync(platform, "utf8")).toBe(updated);
+    expect(readFileSync(shared, "utf8")).toBe(manifest);
+    expect(readdirSync(f.root)).not.toContain(".contremaitre.lock");
+  } finally {
+    f.clean();
+  }
+});
+test("assisted init refuses a duplicate pair beside the platform manifest in effect", async () => {
+  const f = fixture(),
+    platform = join(f.root, `.contremaitre.${process.platform}.yaml`);
+  writeFileSync(platform, manifest);
+  writeFileSync(join(f.root, ".contremaitre.yaml"), manifest);
+  writeFileSync(join(f.root, ".contremaitre.yml"), manifest);
+  let calls = 0;
+  const run = () =>
+    assistedInit(
+      context(),
+      f.root,
+      async () => {
+        calls++;
+        return JSON.stringify({ type: "manifest", manifest });
+      },
+      { ask: async () => "", note() {} },
+      f.options,
+    );
+  try {
+    await expect(run()).rejects.toThrow(
+      "Both .contremaitre.yaml and .contremaitre.yml exist; keep one before running init",
+    );
+    rmSync(join(f.root, ".contremaitre.yml"));
+    writeFileSync(join(f.root, `.contremaitre.${process.platform}.yml`), manifest);
+    await expect(run()).rejects.toThrow(
+      `Both .contremaitre.${process.platform}.yaml and .contremaitre.${process.platform}.yml exist`,
+    );
+    expect(calls).toBe(0);
+  } finally {
+    f.clean();
+  }
+});
