@@ -25,7 +25,19 @@ Managed databases reject `init`, `migrate`, custom commands, environment overrid
 
 ## Connections and limits
 
-Set the application's database pool size to **1**. One connection occupies the database until it disconnects, including while idle. A connection arriving while the slot is occupied waits up to two seconds for it to become available. After that deadline it receives a PostgreSQL fatal error with SQLSTATE `53300` and the exact message `PGlite allows one connection; use pool size 1`. Configure the client connection timeout above two seconds if it needs to receive that server error. Before admitting the next client, the runtime rolls back any open transaction and runs `DISCARD ALL`, clearing prepared statements, session settings, temporary objects, listeners and advisory locks. Readiness also needs a connection, so an application's retained connection can make a readiness probe fail.
+Set the application's database pool size to **1**. One connection occupies the database until it disconnects, including while idle. A connection arriving while the slot is occupied waits for it to become available, for two seconds by default. Waiting connections are admitted first come, first served. After the deadline a connection receives a PostgreSQL fatal error with SQLSTATE `53300` and the exact message `PGlite allows one connection; use pool size 1`. Configure the client connection timeout above the wait if it needs to receive that server error.
+
+An application with several pools, or background loops that briefly hold the slot, can lengthen the wait on the service:
+
+```yaml
+services:
+  db:
+    kind: postgres
+    runtime: wasm
+    connection_wait_seconds: 30
+```
+
+`connection_wait_seconds` is an integer from 1 to 300 and applies only to `kind: postgres` with `runtime: wasm`. A changed value takes effect when the deployment restarts the database. A longer wait turns short contention into latency rather than errors; it does not admit a second concurrent connection. Before admitting the next client, the runtime rolls back any open transaction and runs `DISCARD ALL`, clearing prepared statements, session settings, temporary objects, listeners and advisory locks. Readiness also needs a connection, so an application's retained connection can make a readiness probe fail.
 
 The loopback server accepts **any password, user and database name**. Every connection maps to the single `app` role and `app` database regardless of the names in the URL. The URL carries the generated password for compatibility with managed Postgres configuration, but the PGlite wire layer does not authenticate it. Any local process that can reach the port can access the database. Binding is restricted to `127.0.0.1`; TLS is disabled. This runtime is for local environments.
 

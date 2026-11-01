@@ -26,7 +26,7 @@ import {
   sameOrigin,
   withTrust,
 } from "./saas-client.js";
-import { type Credentials, credentialSchema, keychain } from "./saas-credentials.js";
+import { type Credentials, credentialSchema, credentialStore } from "./saas-credentials.js";
 import { installProvider } from "./saas-install.js";
 
 const id = Schema.String.pipe(Schema.pattern(/^[A-Za-z0-9_-]{1,128}$/));
@@ -107,6 +107,22 @@ export interface OnboardingDependencies {
   sleep: typeof sleep;
   now: () => number;
 }
+/**
+ * How this machine opens the verification page: `open` on macOS, `xdg-open`
+ * in a Linux graphical session. A headless server opens nothing; the URL and
+ * code are already printed for another device.
+ */
+export function browserCommand(
+  url: string,
+  platform: NodeJS.Platform = process.platform,
+  env: Record<string, string | undefined> = process.env,
+  which: (name: string) => string | null = (name) => Bun.which(name, { PATH: env.PATH ?? "" }),
+): string[] | undefined {
+  if (platform === "darwin") return ["/usr/bin/open", url];
+  if (!env.DISPLAY && !env.WAYLAND_DISPLAY) return undefined;
+  const opener = which("xdg-open");
+  return opener ? [opener, url] : undefined;
+}
 const clean = (text: string) => text.replace(/[\p{Cc}\p{Cf}]/gu, "").slice(0, 200);
 export function terminalOnboarding(json = false): OnboardingUI {
   return {
@@ -115,7 +131,8 @@ export function terminalOnboarding(json = false): OnboardingUI {
       process.stderr.write(`${message}\n`);
     },
     async open(url, signal) {
-      await run(context(signal), ["/usr/bin/open", url], { timeout: 5000, stderr: () => {} });
+      const command = browserCommand(url);
+      if (command) await run(context(signal), command, { timeout: 5000, stderr: () => {} });
     },
     async choose(workspaces, signal) {
       const terminal = createInterface({ input: process.stdin, output: process.stderr });
@@ -220,7 +237,7 @@ export async function onboard(
       : optionalTrust(trustPath);
   const deps: OnboardingDependencies = {
     ui: terminalOnboarding(),
-    credentials: keychain(),
+    credentials: credentialStore(home),
     fetcher: fetch,
     install: installProvider,
     sleep,

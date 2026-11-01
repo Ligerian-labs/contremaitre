@@ -1,4 +1,4 @@
-Parser keys: status project listBranch workspace endpoint caFile noAI agent home env branch port http httpsPort publicPort json deleteData main rebuild detach failure follow compose offset global profile run check updateCheck timeout
+Parser keys: status project listBranch workspace endpoint caFile noAI agent home env branch port http httpsPort publicPort json deleteData main rebuild detach failure follow compose offset global profile run check updateCheck beta nightly timeout
 
 Defaults | framework help (names, aliases, types, choices and descriptions)
 agent: "" | --agent text A user-defined piece of text. Coding agent: codex, claude, pi or opencode. Overrides saved selection. This setting is optional.
@@ -29,6 +29,8 @@ workspace: "" | --workspace text A user-defined piece of text. SaaS workspace ID
 endpoint: "" | --endpoint text A user-defined piece of text. Managed tunnel service HTTPS origin; a port is allowed. Saved with the login. Default: https://contremaitre.ligerianlabs.fr. This setting is optional.
 caFile: "" | --ca-file text A user-defined piece of text. PEM CA certificates to trust for a custom --endpoint instead of the system roots. Saved for that endpoint. This setting is optional.
 updateCheck: false | --check A true or false value. Check the latest release without downloading or restarting the hub. This setting is optional. This setting is optional.
+beta: false | --beta A true or false value. Install the latest beta prerelease. This setting is optional. This setting is optional.
+nightly: false | --nightly A true or false value. Install the latest checked build of main. This setting is optional. This setting is optional.
 failure: false | --failure A true or false value. Print logs from failed services in the latest deployment; empty after success. This setting is optional. This setting is optional.
 follow: false | ( -f, --follow ) A true or false value. Follow deployment output until completion. Default: print and exit. This setting is optional. This setting is optional.
 
@@ -54,7 +56,7 @@ tunnel: workspace endpoint caFile home env branch json
 operations: home json
 attach: home json offset
 cancel: home json
-update: home json updateCheck
+update: home json updateCheck beta nightly
 self-install: home
 start: home port http httpsPort publicPort json
 stop: home json
